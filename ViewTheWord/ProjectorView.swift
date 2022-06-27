@@ -1,0 +1,48 @@
+import AppKit
+import AVFoundation
+import AVKit
+import SwiftUI
+
+class ProjectorViewModel: ObservableObject {
+    @Published var projectorViewData: ProjectorViewData = .init(title: "?", textOne: "?", textTwo: "?")
+}
+
+struct ProjectorViewData {
+    let title: String
+    let textOne: String
+    let textTwo: String
+}
+
+struct ProjectorView: View {
+    @EnvironmentObject var projectorViewModel: ProjectorViewModel
+
+    @Binding var windowOpened: Bool
+    @AppStorage("fontSizeVerse") private var fontSizeVerse = 200
+    @AppStorage("fontSizeVerseRef") private var fontSizeVerseRef = 20.0
+
+    var body: some View {
+        HStack {
+            Spacer()
+            VStack {
+                Spacer()
+                Text(projectorViewModel.projectorViewData.textOne)
+                Text(projectorViewModel.projectorViewData.title).minimumScaleFactor(0.1).lineLimit(1).font(.system(size: CGFloat(fontSizeVerseRef), weight: .heavy))
+                Text(projectorViewModel.projectorViewData.textTwo)
+                Spacer()
+            }
+            .minimumScaleFactor(0.1).lineLimit(10)
+            .font(.system(size: CGFloat(fontSizeVerse), weight: .heavy))
+            .layoutPriority(1)
+            Spacer()
+        }
+        .padding(20)
+        .onDisappear {
+            windowOpened = false
+        }
+        .onAppear {
+            windowOpened = true
+        }
+        .border(.red)
+        .multilineTextAlignment(.center)
+    }
+}
