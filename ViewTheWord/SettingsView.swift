@@ -134,8 +134,7 @@ struct BibleImportView: View {
             let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent(selectedFile.lastPathComponent)
             do {
                 try fileManager.copyItem(at: selectedFile, to: documentsURL)
-                // TODO
-                // try fileManager.setAttributes([FileAttributeKey.immutable: 1], ofItemAtPath: documentsURL.absoluteString)
+                try fileManager.setAttributes([FileAttributeKey.posixPermissions: 0o444], ofItemAtPath: documentsURL.path)
             } catch {
                 logger.error("\(error.localizedDescription)")
             }
