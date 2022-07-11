@@ -42,11 +42,13 @@ extension View {
         window.isReleasedWhenClosed = false
         window.title = title
         window.orderFront(nil)
-        window.isOpaque = false
-        window.canHide = false
+        window.canHide = true
         window.hasShadow = false  // this has to set if NSColor.clear has to work without showing prior verse as shadow.
         if transparentBackground {
+            window.isOpaque = false
             window.backgroundColor = NSColor.clear // NSColor(red: 1, green: 0.5, blue: 0.5, alpha: 0.5)
+        } else {
+            window.isOpaque = true
         }
         return window
     }
