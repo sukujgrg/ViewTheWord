@@ -64,20 +64,24 @@ class Bible {
 
     init(dbUrl: URL) {
         self.dbUrl = dbUrl
-        db = openDatabase()
+        db = openDb()
+    }
+
+    deinit {
+        self.closeDb()
     }
 
     func closeDb() {
-        if sqlite3_close(db) != SQLITE_OK {
+        if sqlite3_close_v2(db) != SQLITE_OK {
             logger.error("Error closing \(self.dbUrl.absoluteString).")
         }
     }
 
     var db: OpaquePointer?
 
-    func openDatabase() -> OpaquePointer? {
+    func openDb() -> OpaquePointer? {
         var db: OpaquePointer?
-        if sqlite3_open(dbUrl.path, &db) != SQLITE_OK {
+        if sqlite3_open_v2(dbUrl.path, &db, SQLite3.SQLITE_OPEN_READONLY, nil) != SQLITE_OK {
             let errmsg = String(cString: sqlite3_errmsg(db))
             logger.error("\(errmsg)")
             return nil
@@ -91,49 +95,31 @@ class Bible {
     }
 
     func pickAVerse(verseQuery: VerseQuery) -> AVerse? {
-        guard let _ = db else {
-            return nil
-        }
         guard let bookNumber = bookNumber(bookName: verseQuery.bookName) else {
             return nil
         }
         let queryStatementString = "SELECT * FROM bible WHERE bnumber = \(bookNumber) AND cnumber LIKE '\(verseQuery.chapterNumber)' AND vnumber LIKE '\(verseQuery.verseNumber)';"
-
-        var queryStatement: OpaquePointer?
-        if sqlite3_prepare_v2(db, queryStatementString, -1, &queryStatement, nil) == SQLITE_OK {
-            if sqlite3_step(queryStatement) == SQLITE_ROW {
-                let verseId = sqlite3_column_int(queryStatement, 0)
-                let bookNumber = sqlite3_column_int(queryStatement, 1)
-                let chapterNumber = sqlite3_column_int(queryStatement, 2)
-                let verseNumber = sqlite3_column_int(queryStatement, 3)
-                let verse = String(describing: String(cString: sqlite3_column_text(queryStatement, 4)))
-                return AVerse(
-                    verseId: Int(verseId),
-                    bookNumber: Int(bookNumber),
-                    bookName: verseQuery.bookName,
-                    chapterNumber: Int(chapterNumber),
-                    verseNumber: Int(verseNumber),
-                    verse: String(verse)
-                )
-            }
+        if let result = runVerseQuery(queryStatementString: queryStatementString, verseQuery: verseQuery) {
+            return result[0]
         } else {
-            let errmsg = String(cString: sqlite3_errmsg(db))
-            logger.error("\(errmsg)")
+            return nil
         }
-        sqlite3_finalize(queryStatement)
-        closeDb()
-        return nil
     }
 
     func pickAChapter(verseQuery: VerseQuery) -> [AVerse]? {
-        guard let _ = db else {
-            return nil
-        }
         guard let bookNumber = bookNumber(bookName: verseQuery.bookName) else {
             return nil
         }
-        var verses: [AVerse] = []
         let queryStatementString = "SELECT * FROM bible WHERE bnumber = '\(bookNumber)' and cnumber = \(verseQuery.chapterNumber);"
+        return runVerseQuery(queryStatementString: queryStatementString, verseQuery: verseQuery)
+    }
+
+    private func runVerseQuery(queryStatementString: String, verseQuery: VerseQuery) -> [AVerse]? {
+        guard let _ = db else {
+            return nil
+        }
+        var verses: [AVerse] = []
+
         var queryStatement: OpaquePointer?
         if sqlite3_prepare_v2(db, queryStatementString, -1, &queryStatement, nil) == SQLITE_OK {
             while sqlite3_step(queryStatement) == SQLITE_ROW {
@@ -156,7 +142,6 @@ class Bible {
             logger.error("\(errmsg)")
         }
         sqlite3_finalize(queryStatement)
-        closeDb()
         if verses.isEmpty {
             return nil
         }

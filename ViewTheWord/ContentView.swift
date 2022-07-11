@@ -89,6 +89,7 @@ struct MainView: View {
         }
         verseTargetModel.verseQuery = verseQuery // Observable
 
+        // Set verse for projector view
         var textOne = "?"
         var textTwo = "?"
         var title: String
@@ -105,24 +106,13 @@ struct MainView: View {
         if history.count > 22 {
             history.remove(at: 1)
         }
-        if !history.contains(title) {
+        if !history.contains(title) && textOne != "?" {
             history.append(title)
         }
         projectorViewModel.projectorViewData = ProjectorViewData(title: title, textOne: textOne, textTwo: textTwo)
-
         openProjector()
-        setVerseRow()
-    }
 
-    func setVerseRow() {
-        let bibleUrl = BibleUrl()
-        let biblePrimary = Bible(dbUrl: bibleUrl.primaryBibleUrl)
-        let bibleSecondary = Bible(dbUrl: bibleUrl.secondaryBibleUrl)
-        guard let verseQuery = SearchQuery(ask: ask).verseQuery() else {
-            return
-        }
-        verseTargetModel.verseQuery = verseQuery // Observable
-
+        // Set verse for row view
         guard let chapterA = biblePrimary.pickAChapter(verseQuery: verseQuery) else {
             return
         }
