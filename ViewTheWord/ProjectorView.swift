@@ -19,6 +19,7 @@ struct ProjectorView: View {
     @Binding var windowOpened: Bool
     @AppStorage("fontSizeVerse") private var fontSizeVerse = 200
     @AppStorage("fontSizeVerseRef") private var fontSizeVerseRef = 20.0
+    @AppStorage("vStackPadding") private var vStackPadding = 20.0
 
     var body: some View {
         HStack {
@@ -33,9 +34,9 @@ struct ProjectorView: View {
             .minimumScaleFactor(0.1).lineLimit(10)
             .font(.system(size: CGFloat(fontSizeVerse), weight: .heavy))
             .layoutPriority(1)
+            .padding(vStackPadding)
             Spacer()
         }
-        .padding(20)
         .onDisappear {
             windowOpened = false
         }

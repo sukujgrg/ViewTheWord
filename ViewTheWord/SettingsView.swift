@@ -47,18 +47,21 @@ struct GeneralSettingsView: View {
 struct FontSettingsView: View {
     @AppStorage("fontSizeVerse") private var fontSizeVerse = 100.0
     @AppStorage("fontSizeVerseRef") private var fontSizeVerseRef = 20.0
-    @AppStorage("windowOpacity") private var windowOpacity = 0.4
+    @AppStorage("vStackPadding") private var vStackPadding = 20.0
     @AppStorage("transparentBackground") var transparentBackground = false
 
     var body: some View {
         VStack {
             List {
                 Section(header: Text("Font Size")) {
-                    Slider(value: $fontSizeVerse, in: 1 ... 200) {
+                    Slider(value: $fontSizeVerse, in: 40 ... 200) {
                         Text("Verse (\(fontSizeVerse, specifier: "%.0f") pts)")
                     }
                     Slider(value: $fontSizeVerseRef, in: 20 ... 50) {
                         Text("Verse reference (\(fontSizeVerseRef, specifier: "%.0f") pts)")
+                    }
+                    Slider(value: $vStackPadding, in: 10 ... 200) {
+                        Text("Padding (\(vStackPadding, specifier: "%.0f") pts)")
                     }
                 }
                 .headerProminence(.increased)
