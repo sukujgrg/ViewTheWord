@@ -57,11 +57,3 @@ extension View {
         newWindowInternal(with: title).contentView = NSHostingView(rootView: self)
     }
 }
-
-
-extension NSTextField {
-    override open var focusRingType: NSFocusRingType {
-        get { .none }
-        set {}
-    }
-}

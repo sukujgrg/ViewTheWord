@@ -6,6 +6,10 @@ struct VerseQuery {
     let bookName: String
     let chapterNumber: Int
     let verseNumber: Int
+
+    func title() -> String {
+        return "\(bookName) \(chapterNumber): \(verseNumber)"
+    }
 }
 
 class VerseTargetModel: ObservableObject {
@@ -30,7 +34,7 @@ struct MainView: View {
     @State var isShowing = false
     @State private var error: String?
 
-    @AppStorage("history") private var history: [String] = ["John 3 16"]
+    @AppStorage("history") private var history: [String] = ["John 3: 16"]
 
     let columns = [
         GridItem(.fixed(50)),
@@ -68,7 +72,6 @@ struct MainView: View {
                         .frame(width: 400, height: 35, alignment: .center)
                         .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray, lineWidth: 1))
                         .font(.largeTitle)
-                        .padding()
                 }
                 VerseRowView(windowOpened: $windowOpened)
                     .environmentObject(projectorViewModel)
@@ -90,26 +93,26 @@ struct MainView: View {
         verseTargetModel.verseQuery = verseQuery // Observable
 
         // Set verse for projector view
-        var textOne = "?"
-        var textTwo = "?"
-        var title: String
+        let title: String = verseQuery.title()
+        var primaryText = "?"
+        var secondaryText = "?"
 
         if let verseOne = biblePrimary.pickAVerse(verseQuery: verseQuery) {
-            textOne = verseOne.verse
+            primaryText = verseOne.verse
         }
         if let verseTwo = bibleSecondary.pickAVerse(verseQuery: verseQuery) {
-            textTwo = verseTwo.verse
+            secondaryText = verseTwo.verse
         }
-
-        title = "\(verseQuery.bookName) \(verseQuery.chapterNumber): \(verseQuery.verseNumber)"
 
         if history.count > 22 {
             history.remove(at: 1)
         }
-        if !history.contains(title) && textOne != "?" {
+        if !history.contains(title) && primaryText != "?" {
             history.append(title)
         }
-        projectorViewModel.projectorViewData = ProjectorViewData(title: title, textOne: textOne, textTwo: textTwo)
+        projectorViewModel.projectorViewData = ProjectorViewData(
+            title: title, primaryText: primaryText, secondaryText: secondaryText
+        )
         openProjector()
 
         // Set verse for row view
@@ -123,7 +126,7 @@ struct MainView: View {
     }
 
     func openProjector() {
-        if !windowOpened && projectorViewModel.projectorViewData.textOne != "?" {
+        if !windowOpened && projectorViewModel.projectorViewData.primaryText != "?" {
             ProjectorView(windowOpened: $windowOpened)
                 .environmentObject(projectorViewModel)
                 .openNewWindow(with: "Projector")

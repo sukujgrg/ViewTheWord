@@ -49,7 +49,7 @@ struct FontSettingsView: View {
     @AppStorage("fontSizeVerseRef") private var fontSizeVerseRef = 20.0
     @AppStorage("vStackPadding") private var vStackPadding = 20.0
     @AppStorage("transparentBackground") var transparentBackground = false
-
+    
     var body: some View {
         VStack {
             List {
@@ -133,11 +133,16 @@ struct BibleImportView: View {
 
     func importBibleDb(selectedFile: URL) {
         let fileManager = FileManager.default
-        if ![bundledPrimaryBibleUrl.lastPathComponent, bundledSecondaryBibleUrl.lastPathComponent].contains(selectedFile.lastPathComponent) {
-            let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent(selectedFile.lastPathComponent)
+        let bundledBible = [bundledPrimaryBibleUrl.lastPathComponent, bundledSecondaryBibleUrl.lastPathComponent]
+        if bundledBible.contains(selectedFile.lastPathComponent) {
+            let documentsURL = fileManager.urls(
+                for: .documentDirectory, in: .userDomainMask
+            )[0].appendingPathComponent(selectedFile.lastPathComponent)
             do {
                 try fileManager.copyItem(at: selectedFile, to: documentsURL)
-                try fileManager.setAttributes([FileAttributeKey.posixPermissions: 0o444], ofItemAtPath: documentsURL.path)
+                try fileManager.setAttributes(
+                    [FileAttributeKey.posixPermissions: 0o444], ofItemAtPath: documentsURL.path
+                )
             } catch {
                 logger.error("\(error.localizedDescription)")
             }

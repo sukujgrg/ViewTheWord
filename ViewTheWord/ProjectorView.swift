@@ -4,13 +4,13 @@ import AVKit
 import SwiftUI
 
 class ProjectorViewModel: ObservableObject {
-    @Published var projectorViewData: ProjectorViewData = .init(title: "?", textOne: "?", textTwo: "?")
+    @Published var projectorViewData: ProjectorViewData = .init(title: "?", primaryText: "?", secondaryText: "?")
 }
 
 struct ProjectorViewData {
     let title: String
-    let textOne: String
-    let textTwo: String
+    let primaryText: String
+    let secondaryText: String
 }
 
 struct ProjectorView: View {
@@ -26,9 +26,10 @@ struct ProjectorView: View {
             Spacer()
             VStack {
                 Spacer()
-                Text(projectorViewModel.projectorViewData.textOne)
-                Text(projectorViewModel.projectorViewData.title).minimumScaleFactor(0.1).lineLimit(1).font(.system(size: CGFloat(fontSizeVerseRef), weight: .heavy))
-                Text(projectorViewModel.projectorViewData.textTwo)
+                Text(projectorViewModel.projectorViewData.primaryText)
+                Text(projectorViewModel.projectorViewData.title)
+                    .minimumScaleFactor(0.1).lineLimit(1).font(.system(size: CGFloat(fontSizeVerseRef), weight: .heavy))
+                Text(projectorViewModel.projectorViewData.secondaryText)
                 Spacer()
             }
             .minimumScaleFactor(0.1).lineLimit(10)

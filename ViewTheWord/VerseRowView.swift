@@ -16,7 +16,7 @@ struct VerseRowView: View {
     @EnvironmentObject var projectorViewModel: ProjectorViewModel
 
     @State private var clickedVerse: Int = 0
-    @State private var overText = -1
+    @State private var hoverText = -1
 
     @Binding var windowOpened: Bool
 
@@ -30,18 +30,19 @@ struct VerseRowView: View {
         ScrollView {
             LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
                 ForEach(0 ..< verseRowViewModel.verseRowData.chapterA.count, id: \.self) { index in
+                    // Primary verse
                     Text(verseRowViewModel.verseRowData.chapterA[index].verse)
+                    // Verse button
                     Button(action: { project(index: index) }) {
                         Text(String(index + 1))
                             .frame(width: 60, height: 60)
-                            .contentShape(Circle())
-                            .background(Color(overText == index ? .systemBlue : .clear))
+                            .background(Color(hoverText == index ? .systemBlue : .gray))
                     }
-                    .background(Color.gray)
                     .buttonStyle(PlainButtonStyle())
                     .onHover(perform: { _ in
-                        overText = index
+                        hoverText = index
                     })
+                    // Secondary verse
                     Text(verseRowViewModel.verseRowData.chapterB[index].verse)
                 }
             }
@@ -51,10 +52,12 @@ struct VerseRowView: View {
     }
 
     func project(index: Int) {
-        let title = "\(verseTargetModel.verseQuery.bookName) \(verseTargetModel.verseQuery.chapterNumber): " + String(index + 1)
-        let textOne = verseRowViewModel.verseRowData.chapterA[index].verse
-        let textTwo = verseRowViewModel.verseRowData.chapterB[index].verse
-        projectorViewModel.projectorViewData = ProjectorViewData(title: title, textOne: textOne, textTwo: textTwo)
+        let title = verseTargetModel.verseQuery.title()
+        let primaryText = verseRowViewModel.verseRowData.chapterA[index].verse
+        let secondaryText = verseRowViewModel.verseRowData.chapterB[index].verse
+        projectorViewModel.projectorViewData = ProjectorViewData(
+            title: title, primaryText: primaryText, secondaryText: secondaryText
+        )
         if !windowOpened {
             ProjectorView(windowOpened: $windowOpened)
                 .environmentObject(projectorViewModel)

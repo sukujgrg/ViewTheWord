@@ -98,7 +98,13 @@ class Bible {
         guard let bookNumber = bookNumber(bookName: verseQuery.bookName) else {
             return nil
         }
-        let queryStatementString = "SELECT * FROM bible WHERE bnumber = \(bookNumber) AND cnumber LIKE '\(verseQuery.chapterNumber)' AND vnumber LIKE '\(verseQuery.verseNumber)';"
+        let queryStatementString = """
+            SELECT * FROM bible
+                WHERE
+                    bnumber = \(bookNumber) AND
+                    cnumber = \(verseQuery.chapterNumber) AND
+                    vnumber = \(verseQuery.verseNumber);
+        """
         if let result = runVerseQuery(queryStatementString: queryStatementString, verseQuery: verseQuery) {
             return result[0]
         } else {
@@ -110,7 +116,12 @@ class Bible {
         guard let bookNumber = bookNumber(bookName: verseQuery.bookName) else {
             return nil
         }
-        let queryStatementString = "SELECT * FROM bible WHERE bnumber = '\(bookNumber)' and cnumber = \(verseQuery.chapterNumber);"
+        let queryStatementString = """
+            SELECT * FROM bible
+                WHERE
+                    bnumber = \(bookNumber) AND
+                    cnumber = \(verseQuery.chapterNumber);
+        """
         return runVerseQuery(queryStatementString: queryStatementString, verseQuery: verseQuery)
     }
 

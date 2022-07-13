@@ -8,12 +8,11 @@ class SearchQuery {
     }
 
     func verseQuery() -> VerseQuery? {
-        if let formattedAsk = formatVerseAsk() {
-            if let bookName = matchAsk(bookName: formattedAsk.bookName) {
-                return VerseQuery(bookName: bookName, chapterNumber: formattedAsk.chapterNumber, verseNumber: formattedAsk.verseNumber)
-            }
-        }
-        return nil
+        guard let formattedAsk = formatVerseAsk() else { return nil }
+        guard let bookName = matchAsk(bookName: formattedAsk.bookName) else { return nil }
+        return VerseQuery(
+            bookName: bookName, chapterNumber: formattedAsk.chapterNumber, verseNumber: formattedAsk.verseNumber
+        )
     }
 
     func matchAsk(bookName: String) -> String? {
