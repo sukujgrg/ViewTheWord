@@ -1,5 +1,4 @@
 import Foundation
-import SQLite3
 import SwiftUI
 
 struct VerseQuery {
@@ -31,8 +30,6 @@ struct MainView: View {
 
     @State private var ask: String = ""
     @State var windowOpened = false
-    @State var isShowing = false
-    @State private var error: String?
 
     @AppStorage("history") private var history: [String] = ["John 3: 16"]
 

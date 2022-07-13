@@ -28,7 +28,10 @@ struct ProjectorView: View {
                 Spacer()
                 Text(projectorViewModel.projectorViewData.primaryText)
                 Text(projectorViewModel.projectorViewData.title)
-                    .minimumScaleFactor(0.1).lineLimit(1).font(.system(size: CGFloat(fontSizeVerseRef), weight: .heavy))
+                    .padding()
+                    .minimumScaleFactor(0.1)
+                    .lineLimit(1)
+                    .font(.system(size: CGFloat(fontSizeVerseRef), weight: .bold))
                 Text(projectorViewModel.projectorViewData.secondaryText)
                 Spacer()
             }

@@ -15,7 +15,6 @@ struct VerseRowView: View {
     @EnvironmentObject var verseRowViewModel: VerseRowViewModel
     @EnvironmentObject var projectorViewModel: ProjectorViewModel
 
-    @State private var clickedVerse: Int = 0
     @State private var hoverText = -1
 
     @Binding var windowOpened: Bool
