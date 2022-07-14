@@ -1,13 +1,13 @@
 import SwiftUI
 
 class VerseRowViewModel: ObservableObject {
-    @Published var verseRowData: VerseRowData = .init(chapterA: [], chapterB: [])
+    @Published var verseRowData: VerseRowData = .init(primaryChapter: [], secondaryChapter: [])
 }
 
 struct VerseRowData: Identifiable {
     let id: UUID = .init()
-    let chapterA: [AVerse]
-    let chapterB: [AVerse]
+    let primaryChapter: [AVerse]
+    let secondaryChapter: [AVerse]
 }
 
 struct VerseRowView: View {
@@ -28,9 +28,9 @@ struct VerseRowView: View {
     var body: some View {
         ScrollView {
             LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
-                ForEach(0 ..< verseRowViewModel.verseRowData.chapterA.count, id: \.self) { index in
+                ForEach(0 ..< verseRowViewModel.verseRowData.primaryChapter.count, id: \.self) { index in
                     // Primary verse
-                    Text(verseRowViewModel.verseRowData.chapterA[index].verse)
+                    Text(verseRowViewModel.verseRowData.primaryChapter[index].verse)
                     // Verse button
                     Button(action: { project(index: index) }) {
                         Text(String(index + 1))
@@ -42,7 +42,7 @@ struct VerseRowView: View {
                         hoverText = index
                     })
                     // Secondary verse
-                    Text(verseRowViewModel.verseRowData.chapterB[index].verse)
+                    Text(verseRowViewModel.verseRowData.secondaryChapter[index].verse)
                 }
             }
             .padding(.horizontal)
@@ -51,12 +51,18 @@ struct VerseRowView: View {
     }
 
     func project(index: Int) {
+        verseTargetModel.verseQuery = VerseQuery(
+            bookName: verseTargetModel.verseQuery.bookName,
+            chapterNumber: verseTargetModel.verseQuery.chapterNumber,
+            verseNumber: index + 1
+        )
         let title = verseTargetModel.verseQuery.title()
-        let primaryText = verseRowViewModel.verseRowData.chapterA[index].verse
-        let secondaryText = verseRowViewModel.verseRowData.chapterB[index].verse
+        let primaryText = verseRowViewModel.verseRowData.primaryChapter[index].verse
+        let secondaryText = verseRowViewModel.verseRowData.secondaryChapter[index].verse
         projectorViewModel.projectorViewData = ProjectorViewData(
             title: title, primaryText: primaryText, secondaryText: secondaryText
         )
+        print(projectorViewModel.projectorViewData.title)
         if !windowOpened {
             ProjectorView(windowOpened: $windowOpened)
                 .environmentObject(projectorViewModel)

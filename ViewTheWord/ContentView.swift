@@ -113,13 +113,13 @@ struct MainView: View {
         openProjector()
 
         // Set verse for row view
-        guard let chapterA = biblePrimary.pickAChapter(verseQuery: verseQuery) else {
+        guard let primaryChapter = biblePrimary.pickAChapter(verseQuery: verseQuery) else {
             return
         }
-        guard let chapterB = bibleSecondary.pickAChapter(verseQuery: verseQuery) else {
+        guard let secondaryChapter = bibleSecondary.pickAChapter(verseQuery: verseQuery) else {
             return
         }
-        verseRowViewModel.verseRowData = VerseRowData(chapterA: chapterA, chapterB: chapterB)
+        verseRowViewModel.verseRowData = VerseRowData(primaryChapter: primaryChapter, secondaryChapter: secondaryChapter)
     }
 
     func openProjector() {
