@@ -91,6 +91,7 @@ struct MainView: View {
 
         // Set verse for projector view
         let title: String = verseQuery.title()
+        ask = title
         var primaryText = "?"
         var secondaryText = "?"
 
