@@ -62,7 +62,6 @@ struct VerseRowView: View {
         projectorViewModel.projectorViewData = ProjectorViewData(
             title: title, primaryText: primaryText, secondaryText: secondaryText
         )
-        print(projectorViewModel.projectorViewData.title)
         if !windowOpened {
             ProjectorView(windowOpened: $windowOpened)
                 .environmentObject(projectorViewModel)
