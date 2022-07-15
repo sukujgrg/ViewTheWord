@@ -15,6 +15,8 @@ struct VerseRowView: View {
     @EnvironmentObject var verseRowViewModel: VerseRowViewModel
     @EnvironmentObject var projectorViewModel: ProjectorViewModel
 
+    @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
+
     @State private var hoverText = -1
 
     @Binding var windowOpened: Bool
@@ -58,7 +60,10 @@ struct VerseRowView: View {
         )
         let title = verseTargetModel.verseQuery.title()
         let primaryText = verseRowViewModel.verseRowData.primaryChapter[index].verse
-        let secondaryText = verseRowViewModel.verseRowData.secondaryChapter[index].verse
+        var secondaryText: String? = nil
+        if !showOnlyPrimary {
+            secondaryText = verseRowViewModel.verseRowData.secondaryChapter[index].verse
+        }
         projectorViewModel.projectorViewData = ProjectorViewData(
             title: title, primaryText: primaryText, secondaryText: secondaryText
         )
