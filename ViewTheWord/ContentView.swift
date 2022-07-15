@@ -32,6 +32,7 @@ struct MainView: View {
     @State var windowOpened = false
 
     @AppStorage("history") private var history: [String] = ["John 3: 16"]
+    @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
 
     let columns = [
         GridItem(.fixed(50)),
@@ -81,37 +82,48 @@ struct MainView: View {
     }
 
     func setWord() {
-        let bibleUrl = BibleUrl()
-        let biblePrimary = Bible(dbUrl: bibleUrl.primaryBibleUrl)
-        let bibleSecondary = Bible(dbUrl: bibleUrl.secondaryBibleUrl)
         guard let verseQuery = SearchQuery(ask: ask).verseQuery() else {
             return
         }
         verseTargetModel.verseQuery = verseQuery // Observable
 
-        // Set verse for projector view
-        let title: String = verseQuery.title()
-        ask = title
-        var primaryText = "?"
-        var secondaryText = "?"
+        let bibleUrl = BibleUrl()
+        let biblePrimary = Bible(dbUrl: bibleUrl.primaryBibleUrl)
+        let bibleSecondary = Bible(dbUrl: bibleUrl.secondaryBibleUrl)
 
+        // Primary
+        var primaryText = "?"
         if let verseOne = biblePrimary.pickAVerse(verseQuery: verseQuery) {
             primaryText = verseOne.verse
         }
-        if let verseTwo = bibleSecondary.pickAVerse(verseQuery: verseQuery) {
-            secondaryText = verseTwo.verse
+
+        // Secondary
+        var secondaryText: String? = nil
+        if !showOnlyPrimary {
+            if let verseTwo = bibleSecondary.pickAVerse(verseQuery: verseQuery) {
+                secondaryText = verseTwo.verse
+            }
         }
 
+        // Title
+        let title: String = verseQuery.title()
+
+        // History
         if history.count > 22 {
             history.remove(at: 1)
         }
         if !history.contains(title) && primaryText != "?" {
             history.append(title)
         }
+
+        // Set verse for projector view
         projectorViewModel.projectorViewData = ProjectorViewData(
             title: title, primaryText: primaryText, secondaryText: secondaryText
         )
         openProjector()
+
+        // Resetting TextField content
+        ask = title
 
         // Set verse for row view
         guard let primaryChapter = biblePrimary.pickAChapter(verseQuery: verseQuery) else {

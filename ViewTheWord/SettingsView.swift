@@ -16,7 +16,7 @@ struct SettingsView: View {
                     Label("General", systemImage: "gear")
                 }
                 .tag(Tabs.general)
-            FontSettingsView()
+            DisplaySettingsView()
                 .tabItem {
                     Label("Display", systemImage: "display")
                 }
@@ -34,17 +34,21 @@ struct SettingsView: View {
 
 struct GeneralSettingsView: View {
     @AppStorage("history") private var history: [String] = ["John 3 16"]
+    @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
 
     var body: some View {
-        VStack {
+        List {
             Button("Clear History") {
                 history.removeAll()
             }
-        }.padding(1)
+            Toggle("Show only Primary Verse", isOn: $showOnlyPrimary)
+        }
+        .listStyle(.plain)
+
     }
 }
 
-struct FontSettingsView: View {
+struct DisplaySettingsView: View {
     @AppStorage("fontSizeVerse") private var fontSizeVerse = 100.0
     @AppStorage("fontSizeVerseRef") private var fontSizeVerseRef = 20.0
     @AppStorage("vStackPadding") private var vStackPadding = 20.0
@@ -146,21 +150,6 @@ struct BibleImportView: View {
             } catch {
                 logger.error("\(error.localizedDescription)")
             }
-        }
-    }
-}
-
-struct BibleSelectView: View {
-    var body: some View {
-        Menu {
-            ForEach(1 ... 5, id: \.self) {
-                Text("\($0)")
-                Divider()
-            }
-        } label: {
-            Image(systemName: "bookmark.circle")
-                .resizable()
-                .frame(width: 24.0, height: 24.0)
         }
     }
 }

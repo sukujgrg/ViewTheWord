@@ -10,7 +10,7 @@ class ProjectorViewModel: ObservableObject {
 struct ProjectorViewData {
     let title: String
     let primaryText: String
-    let secondaryText: String
+    let secondaryText: String?
 }
 
 struct ProjectorView: View {
@@ -32,7 +32,9 @@ struct ProjectorView: View {
                     .minimumScaleFactor(0.1)
                     .lineLimit(1)
                     .font(.system(size: CGFloat(fontSizeVerseRef), weight: .bold))
-                Text(projectorViewModel.projectorViewData.secondaryText)
+                if let secondaryText = projectorViewModel.projectorViewData.secondaryText {
+                    Text(secondaryText)
+                }
                 Spacer()
             }
             .minimumScaleFactor(0.1).lineLimit(10)
