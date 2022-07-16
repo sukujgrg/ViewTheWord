@@ -133,7 +133,17 @@ struct BibleImportView: View {
         return bibleUrl.getAvailableBibleUrls()
     }
 
+    func isValidBibleFileName(selectedFileName: String) -> Bool {
+        if selectedFileName.range(of: #"\b[A-Z]{3}_[A-Z]{3,6}.bible\b"#, options: .regularExpression) != nil {
+            return true
+        }
+        return false
+    }
+
     func importBibleDb(selectedFile: URL) {
+        guard isValidBibleFileName(selectedFileName: selectedFile.lastPathComponent) else {
+            return
+        }
         let fileManager = FileManager.default
         let bundledBible = [bundledPrimaryBibleUrl.lastPathComponent, bundledSecondaryBibleUrl.lastPathComponent]
         if !bundledBible.contains(selectedFile.lastPathComponent) {
