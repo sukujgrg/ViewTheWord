@@ -37,14 +37,12 @@ struct GeneralSettingsView: View {
     @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
 
     var body: some View {
-        List {
+        VStack(alignment: .leading) {
             Button("Clear History") {
                 history.removeAll()
             }
             Toggle("Show only Primary Verse", isOn: $showOnlyPrimary)
         }
-        .listStyle(.plain)
-
     }
 }
 
