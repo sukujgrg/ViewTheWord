@@ -136,7 +136,7 @@ struct BibleImportView: View {
     func importBibleDb(selectedFile: URL) {
         let fileManager = FileManager.default
         let bundledBible = [bundledPrimaryBibleUrl.lastPathComponent, bundledSecondaryBibleUrl.lastPathComponent]
-        if bundledBible.contains(selectedFile.lastPathComponent) {
+        if !bundledBible.contains(selectedFile.lastPathComponent) {
             let documentsURL = fileManager.urls(
                 for: .documentDirectory, in: .userDomainMask
             )[0].appendingPathComponent(selectedFile.lastPathComponent)
