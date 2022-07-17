@@ -29,22 +29,29 @@ struct VerseRowView: View {
 
     var body: some View {
         ScrollView {
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
-                ForEach(0 ..< verseRowViewModel.verseRowData.primaryChapter.count, id: \.self) { index in
-                    // Primary verse
-                    Text(verseRowViewModel.verseRowData.primaryChapter[index].verse)
-                    // Verse button
-                    Button(action: { project(index: index) }) {
-                        Text(String(index + 1))
-                            .frame(width: 60, height: 60)
-                            .background(Color(hoverText == index ? .systemBlue : .gray))
+            ScrollViewReader { value in
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
+                    ForEach(0 ..< verseRowViewModel.verseRowData.primaryChapter.count, id: \.self) { index in
+                        // Primary verse
+                        Text(verseRowViewModel.verseRowData.primaryChapter[index].verse)
+                        // Verse button
+                        Button(action: { project(index: index) }) {
+                            Text(String(index + 1))
+                                .frame(width: 60, height: 60)
+                                .background(Color(hoverText == index ? .systemBlue : .gray))
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .onHover(perform: { _ in
+                            hoverText = index
+                        })
+                        // Secondary verse
+                        Text(verseRowViewModel.verseRowData.secondaryChapter[index].verse)
                     }
-                    .buttonStyle(PlainButtonStyle())
-                    .onHover(perform: { _ in
-                        hoverText = index
-                    })
-                    // Secondary verse
-                    Text(verseRowViewModel.verseRowData.secondaryChapter[index].verse)
+                    .onChange(of: verseTargetModel.verseQuery.verseNumber) { newV in
+                        withAnimation {
+                            value.scrollTo(newV)
+                        }
+                    }
                 }
             }
             .padding(.horizontal)
