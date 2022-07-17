@@ -49,7 +49,7 @@ struct VerseRowView: View {
                     }
                     .onChange(of: verseTargetModel.verseQuery.verseNumber) { newV in
                         withAnimation {
-                            value.scrollTo(newV)
+                            value.scrollTo(newV - 1, anchor: .top)
                         }
                     }
                 }
@@ -59,7 +59,7 @@ struct VerseRowView: View {
         .frame(maxHeight: 800)
     }
 
-    func project(index: Int) {
+    private func project(index: Int) {
         verseTargetModel.verseQuery = VerseQuery(
             bookName: verseTargetModel.verseQuery.bookName,
             chapterNumber: verseTargetModel.verseQuery.chapterNumber,
