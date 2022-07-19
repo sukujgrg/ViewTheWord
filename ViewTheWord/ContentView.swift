@@ -47,7 +47,7 @@ struct MainView: View {
                         ForEach(history.reversed(), id: \.self) { item in
                             Button(item) {
                                 ask = item
-                                setWord()
+                                setWord(updateRowView: false)
                             }
                             .buttonStyle(.borderless)
                         }
@@ -81,11 +81,10 @@ struct MainView: View {
         }
     }
 
-    func setWord() {
+    func setWord(updateRowView: Bool = true) {
         guard let verseQuery = SearchQuery(ask: ask).verseQuery() else {
             return
         }
-        verseTargetModel.verseQuery = verseQuery // Observable
 
         let bibleUrl = BibleUrl()
         let biblePrimary = Bible(dbUrl: bibleUrl.primaryBibleUrl)
@@ -122,17 +121,24 @@ struct MainView: View {
         )
         openProjector()
 
-        // Resetting TextField content
-        ask = title
+        // Row view needs to set/update only when `ask` is via TextField.
+        if updateRowView {
+            verseTargetModel.verseQuery = verseQuery // Observable
 
-        // Set verse for row view
-        guard let primaryChapter = biblePrimary.pickAChapter(verseQuery: verseQuery) else {
-            return
+            // Resetting TextField content
+            ask = title
+
+            // Set verse for row view
+            guard let primaryChapter = biblePrimary.pickAChapter(verseQuery: verseQuery) else {
+                return
+            }
+            guard let secondaryChapter = bibleSecondary.pickAChapter(verseQuery: verseQuery) else {
+                return
+            }
+            verseRowViewModel.verseRowData = VerseRowData(
+                primaryChapter: primaryChapter, secondaryChapter: secondaryChapter
+            )
         }
-        guard let secondaryChapter = bibleSecondary.pickAChapter(verseQuery: verseQuery) else {
-            return
-        }
-        verseRowViewModel.verseRowData = VerseRowData(primaryChapter: primaryChapter, secondaryChapter: secondaryChapter)
     }
 
     func openProjector() {

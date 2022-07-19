@@ -28,6 +28,12 @@ struct VerseRowView: View {
     ]
 
     var body: some View {
+        if verseRowViewModel.verseRowData.primaryChapter.count > 0 {
+            let pri = verseRowViewModel.verseRowData.primaryChapter
+            Text("\(pri[0].bookName) \(pri[0].chapterNumber)")
+                .bold()
+                .padding()
+        }
         ScrollView {
             ScrollViewReader { value in
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
@@ -56,16 +62,16 @@ struct VerseRowView: View {
             }
             .padding(.horizontal)
         }
-        .frame(maxHeight: 800)
+        .frame(maxHeight: .infinity)
     }
 
     private func project(index: Int) {
-        verseTargetModel.verseQuery = VerseQuery(
+        let verseQuery = VerseQuery(
             bookName: verseTargetModel.verseQuery.bookName,
             chapterNumber: verseTargetModel.verseQuery.chapterNumber,
             verseNumber: index + 1
         )
-        let title = verseTargetModel.verseQuery.title()
+        let title = verseQuery.title()
         let primaryText = verseRowViewModel.verseRowData.primaryChapter[index].verse
         var secondaryText: String? = nil
         if !showOnlyPrimary {
