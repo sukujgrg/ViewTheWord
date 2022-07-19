@@ -1,6 +1,3 @@
-import AppKit
-import AVFoundation
-import AVKit
 import SwiftUI
 
 class ProjectorViewModel: ObservableObject {
