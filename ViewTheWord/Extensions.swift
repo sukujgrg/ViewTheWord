@@ -39,6 +39,7 @@ extension View {
 
         window.setFrame(secondScreen.frame, display: true)
         window.level = NSWindow.Level.screenSaver
+        window.orderFrontRegardless()  // useful when showing over a fullscreen background video.
         window.isReleasedWhenClosed = false
         window.title = title
         window.orderFront(nil)
