@@ -25,7 +25,6 @@ extension View {
     private func newWindowInternal(with title: String) -> NSWindow {
         @AppStorage("transparentBackground") var transparentBackground = false
 
-
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 0, height: 0),
             styleMask: [.closable, .borderless],
@@ -42,8 +41,7 @@ extension View {
         window.orderFrontRegardless()  // useful when showing over a fullscreen background video.
         window.isReleasedWhenClosed = false
         window.title = title
-        window.orderFront(nil)
-        window.canHide = true
+        window.canHide = false
         window.hasShadow = false  // this has to set if NSColor.clear has to work without showing prior verse as shadow.
         if transparentBackground {
             window.isOpaque = false
