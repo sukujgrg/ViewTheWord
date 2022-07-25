@@ -40,22 +40,28 @@ struct VerseRowView: View {
                     ForEach(0 ..< verseRowViewModel.verseRowData.primaryChapter.count, id: \.self) { index in
                         // Primary verse
                         Text(verseRowViewModel.verseRowData.primaryChapter[index].verse)
+                            .onTapGesture(perform: { project(index: index) })
+                            .padding()
+                            .onHover(perform: { _ in hoverText = index })
+
                         // Verse button
                         Button(action: { project(index: index) }) {
                             Text(String(index + 1))
                                 .frame(width: 60, height: 60)
-                                .background(Color(hoverText == index ? .systemBlue : .gray))
+                                .background(Color(hoverText == index ? .systemRed : .gray))
                         }
                         .buttonStyle(PlainButtonStyle())
-                        .onHover(perform: { _ in
-                            hoverText = index
-                        })
+                        .onHover(perform: { _ in hoverText = index })
+
                         // Secondary verse
                         Text(verseRowViewModel.verseRowData.secondaryChapter[index].verse)
+                            .onTapGesture(perform: { project(index: index) })
+                            .padding()
+                            .onHover(perform: { _ in hoverText = index })
                     }
                     .onChange(of: verseTargetModel.verseQuery.verseNumber) { newV in
                         withAnimation {
-                            value.scrollTo(newV - 1, anchor: .top)
+                            value.scrollTo(newV - 2, anchor: .top)
                         }
                     }
                 }

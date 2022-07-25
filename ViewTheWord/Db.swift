@@ -89,7 +89,6 @@ class Bible {
             return db
         }
     }
-
     func bookNumber(bookName: String) -> Int? {
         return bibleBooks[bookName]
     }
