@@ -30,6 +30,8 @@ struct MainView: View {
 
     @State private var ask: String = ""
     @State var windowOpened = false
+    @State private var validQuery = true
+
 
     @AppStorage("history") private var history: [String] = ["John 3: 16"]
     @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
@@ -66,7 +68,11 @@ struct MainView: View {
                     TextField("John 3 16", text: $ask)
                         .onSubmit {
                             setWord()
+                            withAnimation(.default) {
+                                validQuery = true
+                            }
                         }
+                        .modifier(ShakeEffect(shakes: validQuery ? 2 : 0))
                         .frame(width: 400, height: 35, alignment: .center)
                         .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray, lineWidth: 1))
                         .font(.largeTitle)
@@ -83,6 +89,7 @@ struct MainView: View {
 
     func setWord(updateRowView: Bool = true) {
         guard let verseQuery = SearchQuery(ask: ask).verseQuery() else {
+            validQuery.toggle()
             return
         }
 
@@ -94,6 +101,8 @@ struct MainView: View {
         var primaryText = "?"
         if let verseOne = biblePrimary.pickAVerse(verseQuery: verseQuery) {
             primaryText = verseOne.verse
+        } else {
+            validQuery.toggle()
         }
 
         // Secondary
@@ -115,11 +124,13 @@ struct MainView: View {
             history.append(title)
         }
 
-        // Set verse for projector view
-        projectorViewModel.projectorViewData = ProjectorViewData(
-            title: title, primaryText: primaryText, secondaryText: secondaryText
-        )
-        openProjector()
+        if primaryText != "?" {
+            // Set verse for projector view
+            projectorViewModel.projectorViewData = ProjectorViewData(
+                title: title, primaryText: primaryText, secondaryText: secondaryText
+            )
+            openProjector()
+        }
 
         // Row view needs to set/update only when `ask` is via TextField.
         if updateRowView {
@@ -152,6 +163,25 @@ struct MainView: View {
     func closeProjector() {
         windowOpened = false
         NSApplication.shared.windows.first(where: { $0.title == "Projector" })?.close()
+    }
+}
+
+
+struct ShakeEffect: GeometryEffect {
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        return ProjectionTransform(
+            CGAffineTransform(translationX: -30 * sin(position * 2 * .pi), y: 0)
+        )
+    }
+
+    init(shakes: Int) {
+        position = CGFloat(shakes)
+    }
+
+    var position: CGFloat
+    var animatableData: CGFloat {
+        get { position }
+        set { position = newValue }
     }
 }
 
