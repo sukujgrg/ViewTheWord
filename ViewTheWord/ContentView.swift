@@ -29,7 +29,7 @@ struct MainView: View {
     @StateObject var projectorViewModel: ProjectorViewModel = .init()
 
     @State private var ask: String = ""
-    @State var windowOpened = false
+    @State private var windowOpened = false
     @State private var validQuery = true
 
 
@@ -69,7 +69,7 @@ struct MainView: View {
                         .onSubmit {
                             setWord()
                             withAnimation(.default) {
-                                validQuery = true
+                                validQuery = true  // resetting to 'true'
                             }
                         }
                         .modifier(ShakeEffect(shakes: validQuery ? 2 : 0))
@@ -103,6 +103,7 @@ struct MainView: View {
             primaryText = verseOne.verse
         } else {
             validQuery.toggle()
+            return
         }
 
         // Secondary
