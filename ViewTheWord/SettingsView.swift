@@ -34,14 +34,12 @@ struct SettingsView: View {
 
 struct GeneralSettingsView: View {
     @AppStorage("history") private var history: [String] = ["John 3 16"]
-    @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
 
     var body: some View {
         VStack(alignment: .leading) {
             Button("Clear History") {
                 history.removeAll()
             }
-            Toggle("Show only Primary Verse", isOn: $showOnlyPrimary)
         }
     }
 }
@@ -84,6 +82,7 @@ struct BibleImportView: View {
 
     @AppStorage("PrimaryBibleName") private var primaryBibleName: String = bundledPrimaryBibleUrl.absoluteString
     @AppStorage("SecondaryBibleName") private var secondaryBibleName: String = bundledSecondaryBibleUrl.absoluteString
+    @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
 
     let bibleType = UTType(exportedAs: "com.viewtheword.sqlite3.database", conformingTo: .database)
 
@@ -106,6 +105,7 @@ struct BibleImportView: View {
                     logger.error("\(error.localizedDescription)")
                 }
             }
+            Toggle("Show only Primary Verse", isOn: $showOnlyPrimary)
 
             HStack {
                 Picker(selection: $primaryBibleName, label: Text("Primary")) {
@@ -123,6 +123,7 @@ struct BibleImportView: View {
                 }.onChange(of: secondaryBibleName) { name in
                     secondaryBibleName = name
                 }
+                .disabled(showOnlyPrimary)
             }
             .pickerStyle(.radioGroup)
         }
