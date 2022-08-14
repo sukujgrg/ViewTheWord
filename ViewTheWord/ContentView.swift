@@ -36,6 +36,10 @@ struct MainView: View {
     @AppStorage("history") private var history: [String] = ["John 3: 16"]
     @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
 
+    // To reload the VerseRowView and ProjectorView if the bible changes in Settings.
+    @AppStorage("PrimaryBibleName") private var primaryBibleName: String = bundledPrimaryBibleUrl.absoluteString
+    @AppStorage("SecondaryBibleName") private var secondaryBibleName: String = bundledSecondaryBibleUrl.absoluteString
+
     let columns = [
         GridItem(.fixed(50)),
         GridItem(.flexible()),
@@ -72,6 +76,8 @@ struct MainView: View {
                                 validQuery = true  // resetting to 'true'
                             }
                         }
+                        .onChange(of: primaryBibleName, perform: { _ in setWord()}) // reload primary bible verse[s]
+                        .onChange(of: secondaryBibleName, perform: { _ in setWord()}) // reload secondary bible verse[s]
                         .modifier(ShakeEffect(shakes: validQuery ? 2 : 0))
                         .frame(width: 400, height: 35, alignment: .center)
                         .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray, lineWidth: 1))

@@ -48,7 +48,7 @@ struct VerseRowView: View {
                         Button(action: { project(index: index) }) {
                             Text(String(index + 1))
                                 .frame(width: 60, height: 60)
-                                .background(Color(hoverText == index ? .systemRed : .gray))
+                                .background(Color(hoverText == index ? .systemBlue : .gray))
                         }
                         .buttonStyle(PlainButtonStyle())
                         .onHover(perform: { _ in hoverText = index })
