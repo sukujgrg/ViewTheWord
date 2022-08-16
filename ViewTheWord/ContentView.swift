@@ -32,18 +32,12 @@ struct MainView: View {
     @State private var windowOpened = false
     @State private var validQuery = true
 
-
     @AppStorage("history") private var history: [String] = ["John 3: 16"]
     @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
 
     // To reload the VerseRowView and ProjectorView if the bible changes in Settings.
     @AppStorage("PrimaryBibleName") private var primaryBibleName: String = bundledPrimaryBibleUrl.absoluteString
     @AppStorage("SecondaryBibleName") private var secondaryBibleName: String = bundledSecondaryBibleUrl.absoluteString
-
-    let columns = [
-        GridItem(.fixed(50)),
-        GridItem(.flexible()),
-    ]
 
     var body: some View {
         NavigationView {
@@ -55,20 +49,34 @@ struct MainView: View {
                                 ask = item
                                 setWord(updateRowView: false)
                             }
+                            .font(.body)
                             .buttonStyle(.borderless)
                         }
                     }
                 }
             }
-            .frame(width: 170, alignment: .leading)
+            .frame(width: 190, alignment: .leading)
             VStack {
                 Button(action: closeProjector) {
                     Text("Clear")
                 }
                 .keyboardShortcut(.cancelAction)
                 .opacity(0)
-
-                HStack(alignment: .top) {
+                HStack(alignment: .center) {
+                    Menu(content: {
+                        ForEach(bibleBooks.keys[..<39], id: \.self) { item in
+                            if item == "Psalm" {
+                                Divider()
+                            }
+                            Button(item) {
+                                ask = item
+                            }
+                        }
+                    }, label: {
+                        Image(systemName: "o.square")
+                    })
+                        .frame(width: 50)
+                        .menuStyle(.borderlessButton)
                     TextField("John 3 16", text: $ask)
                         .onSubmit {
                             setWord()
@@ -79,9 +87,20 @@ struct MainView: View {
                         .onChange(of: primaryBibleName, perform: { _ in setWord()}) // reload primary bible verse[s]
                         .onChange(of: secondaryBibleName, perform: { _ in setWord()}) // reload secondary bible verse[s]
                         .modifier(ShakeEffect(shakes: validQuery ? 2 : 0))
-                        .frame(width: 400, height: 35, alignment: .center)
+                        .frame(width: 450, height: 35, alignment: .center)
                         .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray, lineWidth: 1))
                         .font(.largeTitle)
+                    Menu(content: {
+                        ForEach(bibleBooks.keys[39...], id: \.self) { item in
+                            Button(item) {
+                                ask = item
+                            }
+                        }
+                    }, label: {
+                        Image(systemName: "n.square")
+                    })
+                        .frame(width: 50)
+                        .menuStyle(.borderlessButton)
                 }
                 VerseRowView(windowOpened: $windowOpened)
                     .environmentObject(projectorViewModel)
