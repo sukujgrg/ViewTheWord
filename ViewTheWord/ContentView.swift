@@ -63,20 +63,7 @@ struct MainView: View {
                 .keyboardShortcut(.cancelAction)
                 .opacity(0)
                 HStack(alignment: .center) {
-                    Menu(content: {
-                        ForEach(bibleBooks.keys[..<39], id: \.self) { item in
-                            if item == "Psalm" {
-                                Divider()
-                            }
-                            Button(item) {
-                                ask = item
-                            }
-                        }
-                    }, label: {
-                        Image(systemName: "o.square")
-                    })
-                        .frame(width: 50)
-                        .menuStyle(.borderlessButton)
+
                     TextField("John 3 16", text: $ask)
                         .onSubmit {
                             setWord()
@@ -90,17 +77,23 @@ struct MainView: View {
                         .frame(width: 450, height: 35, alignment: .center)
                         .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray, lineWidth: 1))
                         .font(.largeTitle)
-                    Menu(content: {
-                        ForEach(bibleBooks.keys[39...], id: \.self) { item in
-                            Button(item) {
-                                ask = item
+                    VStack {
+                        Menu("OT") {
+                            ForEach(bibleBooks.keys[..<39], id: \.self) { item in
+                                if item == "Psalm" { Divider() }
+                                Button(item) { ask = item }
                             }
                         }
-                    }, label: {
-                        Image(systemName: "n.square")
-                    })
-                        .frame(width: 50)
                         .menuStyle(.borderlessButton)
+                        Menu("NT") {
+                            ForEach(bibleBooks.keys[39...], id: \.self) { item in
+                                Button(item) { ask = item }
+                            }
+                        }
+                        .menuStyle(.borderlessButton)
+                    }
+                        .frame(width: 50)
+
                 }
                 VerseRowView(windowOpened: $windowOpened)
                     .environmentObject(projectorViewModel)
