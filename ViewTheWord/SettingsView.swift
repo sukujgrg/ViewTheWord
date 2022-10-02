@@ -49,7 +49,7 @@ struct DisplaySettingsView: View {
     @AppStorage("fontSizeVerseRef") private var fontSizeVerseRef = 20.0
     @AppStorage("vStackPadding") private var vStackPadding = 20.0
     @AppStorage("transparentBackground") var transparentBackground = false
-    
+
     var body: some View {
         VStack {
             List {

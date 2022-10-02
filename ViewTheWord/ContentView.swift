@@ -125,7 +125,7 @@ struct MainView: View {
         }
 
         // Secondary
-        var secondaryText: String? = nil
+        var secondaryText: String?
         if !showOnlyPrimary {
             if let verseTwo = bibleSecondary.pickAVerse(verseQuery: verseQuery) {
                 secondaryText = verseTwo.verse
@@ -185,7 +185,6 @@ struct MainView: View {
     }
 }
 
-
 struct ShakeEffect: GeometryEffect {
     func effectValue(size: CGSize) -> ProjectionTransform {
         return ProjectionTransform(
@@ -209,4 +208,3 @@ struct ContentView_Previews: PreviewProvider {
         ContentView()
     }
 }
-

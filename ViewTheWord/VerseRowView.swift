@@ -18,13 +18,14 @@ struct VerseRowView: View {
     @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
 
     @State private var hoverText = -1
+    @State private var clickedText = -1
 
     @Binding var windowOpened: Bool
 
     let columns = [
         GridItem(.flexible()),
         GridItem(.fixed(60)),
-        GridItem(.flexible()),
+        GridItem(.flexible())
     ]
 
     var body: some View {
@@ -48,7 +49,9 @@ struct VerseRowView: View {
                         Button(action: { project(index: index) }) {
                             Text(String(index + 1))
                                 .frame(width: 60, height: 60)
-                                .background(Color(hoverText == index ? .systemBlue : .gray))
+                                .background(
+                                    Color(hoverText == index ? .systemBlue : ((clickedText == index) ? .systemRed : .gray))
+                                )
                         }
                         .buttonStyle(PlainButtonStyle())
                         .onHover(perform: { _ in hoverText = index })
@@ -72,6 +75,7 @@ struct VerseRowView: View {
     }
 
     private func project(index: Int) {
+        clickedText = index
         let verseQuery = VerseQuery(
             bookName: verseTargetModel.verseQuery.bookName,
             chapterNumber: verseTargetModel.verseQuery.chapterNumber,
@@ -79,7 +83,7 @@ struct VerseRowView: View {
         )
         let title = verseQuery.title()
         let primaryText = verseRowViewModel.verseRowData.primaryChapter[index].verse
-        var secondaryText: String? = nil
+        var secondaryText: String?
         if !showOnlyPrimary {
             secondaryText = verseRowViewModel.verseRowData.secondaryChapter[index].verse
         }

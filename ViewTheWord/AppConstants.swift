@@ -73,5 +73,5 @@ let bibleBooks: OrderedDictionary<String, Int> = [
     "2 John": 63,
     "3 John": 64,
     "Jude": 65,
-    "Revelation": 66,
+    "Revelation": 66
 ]
