@@ -77,6 +77,7 @@ struct MainView: View {
                         .frame(width: 450, height: 35, alignment: .center)
                         .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray, lineWidth: 1))
                         .font(.largeTitle)
+                        .disableAutocorrection(true)
                     VStack {
                         Menu("OT") {
                             ForEach(bibleBooks.keys[..<39], id: \.self) { item in

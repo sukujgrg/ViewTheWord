@@ -19,6 +19,7 @@ struct VerseRowView: View {
 
     @State private var hoverText = -1
     @State private var clickedText = -1
+    @State var selection: Int = 0
 
     @Binding var windowOpened: Bool
 
@@ -50,7 +51,10 @@ struct VerseRowView: View {
                             Text(String(index + 1))
                                 .frame(width: 60, height: 60)
                                 .background(
-                                    Color(hoverText == index ? .systemBlue : ((clickedText == index) ? .systemRed : .gray))
+                                    Color(
+                                        hoverText == index && hoverText != clickedText ? .systemBlue :
+                                            ((clickedText == index) ? .systemRed : .gray)
+                                    )
                                 )
                         }
                         .buttonStyle(PlainButtonStyle())
@@ -65,6 +69,23 @@ struct VerseRowView: View {
                     .onChange(of: verseTargetModel.verseQuery.verseNumber) { newV in
                         withAnimation {
                             value.scrollTo(newV - 2, anchor: .top)
+                        }
+                    }
+                    .onAppear {
+                        NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { nsevent in
+                            let maxSelectionIndex = verseRowViewModel.verseRowData.primaryChapter.count - 1
+                            if nsevent.keyCode == 125 || nsevent.keyCode == 124 { // arrow down or right
+                                if selection < maxSelectionIndex {
+                                    selection = selection + 1
+                                    project(index: selection)
+                                }
+                            } else if nsevent.keyCode == 126 || nsevent.keyCode == 123 { // arrow up or left
+                                if selection > 0 {
+                                    selection = selection - 1
+                                    project(index: selection)
+                                }
+                            }
+                            return nsevent
                         }
                     }
                 }
