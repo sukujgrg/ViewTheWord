@@ -68,9 +68,9 @@ struct VerseRowView: View {
                     .onChange(of: verseTargetModel.verseQuery.verseNumber) { newV in
                         currentIndex = verseTargetModel.verseQuery.verseNumber - 1
                         withAnimation {
-                            value.scrollTo(newV - 2, anchor: .top)
+                            value.scrollTo(newV)
                         }
-                    } 
+                    }
                     .onAppear {
                         NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { nsevent in
                             let maxSelectionIndex = verseRowViewModel.verseRowData.primaryChapter.count - 1
@@ -92,7 +92,7 @@ struct VerseRowView: View {
         }
         .frame(maxHeight: .infinity)
     }
-    
+
     private func newVerseTargetModel(index: Int) {
         verseTargetModel.verseQuery = VerseQuery(
             bookName: verseTargetModel.verseQuery.bookName,

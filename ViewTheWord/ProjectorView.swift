@@ -44,6 +44,7 @@ struct ProjectorView: View {
         .onDisappear {
             windowOpened = false
         }
+
         .onAppear {
             windowOpened = true
         }

@@ -93,7 +93,7 @@ struct MainView: View {
                         }
                         .menuStyle(.borderlessButton)
                     }
-                        .frame(width: 50)
+                    .frame(width: 50)
 
                 }
                 VerseRowView(windowOpened: $windowOpened)
