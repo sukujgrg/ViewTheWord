@@ -38,6 +38,7 @@ struct ProjectorView: View {
             .font(.system(size: CGFloat(fontSizeVerse), weight: .heavy))
             .layoutPriority(1)
             .padding(vStackPadding)
+            .preferredColorScheme(.dark)
             Spacer()
         }
         .onDisappear {

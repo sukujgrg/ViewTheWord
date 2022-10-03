@@ -18,8 +18,7 @@ struct VerseRowView: View {
     @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
 
     @State private var hoverText = -1
-    @State private var clickedText = -1
-    @State var selection: Int = 0
+    @State private var currentIndex: Int = 0
 
     @Binding var windowOpened: Bool
 
@@ -52,8 +51,8 @@ struct VerseRowView: View {
                                 .frame(width: 60, height: 60)
                                 .background(
                                     Color(
-                                        hoverText == index && hoverText != clickedText ? .systemBlue :
-                                            ((clickedText == index) ? .systemRed : .gray)
+                                        hoverText == index && hoverText != currentIndex ? .systemBlue :
+                                            ((currentIndex == index) ? .systemRed : .gray)
                                     )
                                 )
                         }
@@ -67,22 +66,21 @@ struct VerseRowView: View {
                             .onHover(perform: { _ in hoverText = index })
                     }
                     .onChange(of: verseTargetModel.verseQuery.verseNumber) { newV in
+                        currentIndex = verseTargetModel.verseQuery.verseNumber - 1
                         withAnimation {
                             value.scrollTo(newV - 2, anchor: .top)
                         }
-                    }
+                    } 
                     .onAppear {
                         NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { nsevent in
                             let maxSelectionIndex = verseRowViewModel.verseRowData.primaryChapter.count - 1
                             if nsevent.keyCode == 125 || nsevent.keyCode == 124 { // arrow down or right
-                                if selection < maxSelectionIndex {
-                                    selection = selection + 1
-                                    project(index: selection)
+                                if currentIndex >= 0 && currentIndex < maxSelectionIndex {
+                                    project(index: currentIndex + 1)
                                 }
                             } else if nsevent.keyCode == 126 || nsevent.keyCode == 123 { // arrow up or left
-                                if selection > 0 {
-                                    selection = selection - 1
-                                    project(index: selection)
+                                if currentIndex > 0 && currentIndex <= maxSelectionIndex {
+                                    project(index: currentIndex - 1)
                                 }
                             }
                             return nsevent
@@ -94,15 +92,18 @@ struct VerseRowView: View {
         }
         .frame(maxHeight: .infinity)
     }
-
-    private func project(index: Int) {
-        clickedText = index
-        let verseQuery = VerseQuery(
+    
+    private func newVerseTargetModel(index: Int) {
+        verseTargetModel.verseQuery = VerseQuery(
             bookName: verseTargetModel.verseQuery.bookName,
             chapterNumber: verseTargetModel.verseQuery.chapterNumber,
             verseNumber: index + 1
         )
-        let title = verseQuery.title()
+    }
+
+    private func project(index: Int) {
+        newVerseTargetModel(index: index)
+        let title = verseTargetModel.verseQuery.title()
         let primaryText = verseRowViewModel.verseRowData.primaryChapter[index].verse
         var secondaryText: String?
         if !showOnlyPrimary {
