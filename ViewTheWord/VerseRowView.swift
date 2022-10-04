@@ -55,6 +55,7 @@ struct VerseRowView: View {
                                             ((currentIndex == index) ? lemonYellow : .gray)
                                     )
                                 )
+                                .foregroundColor(.black)
                         }
                         .buttonStyle(PlainButtonStyle())
                         .onHover(perform: { _ in hoverText = index })
