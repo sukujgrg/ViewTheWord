@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import OrderedCollections
 import os
 
@@ -75,3 +76,5 @@ let bibleBooks: OrderedDictionary<String, Int> = [
     "Jude": 65,
     "Revelation": 66
 ]
+
+let lemonYellow = NSColor(Color(hue: 0.1639, saturation: 1, brightness: 1))

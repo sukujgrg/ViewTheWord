@@ -52,7 +52,7 @@ struct VerseRowView: View {
                                 .background(
                                     Color(
                                         hoverText == index && hoverText != currentIndex ? .systemBlue :
-                                            ((currentIndex == index) ? .systemRed : .gray)
+                                            ((currentIndex == index) ? lemonYellow : .gray)
                                     )
                                 )
                         }
@@ -67,9 +67,7 @@ struct VerseRowView: View {
                     }
                     .onChange(of: verseTargetModel.verseQuery.verseNumber) { newV in
                         currentIndex = verseTargetModel.verseQuery.verseNumber - 1
-                        withAnimation {
-                            value.scrollTo(newV)
-                        }
+                        value.scrollTo(newV - 1, anchor: .center)
                     }
                     .onAppear {
                         NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { nsevent in
