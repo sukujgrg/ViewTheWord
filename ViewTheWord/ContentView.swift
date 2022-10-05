@@ -29,8 +29,10 @@ struct MainView: View {
     @StateObject var projectorViewModel: ProjectorViewModel = .init()
 
     @State private var ask: String = ""
+    @State private var sideAsk: String = ""
     @State private var windowOpened = false
     @State private var validQuery = true
+    @State private var chapterCount: Int32 = 0
 
     @AppStorage("history") private var history: [String] = ["John 3: 16"]
     @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
@@ -42,20 +44,34 @@ struct MainView: View {
     var body: some View {
         NavigationView {
             VStack {
-                List {
-                    Section(header: Text("History")) {
-                        ForEach(history.reversed(), id: \.self) { item in
-                            Button(item) {
-                                ask = item
-                                setWord(updateRowView: false)
+                HStack{
+                    List {
+                        Section(header: Text("Books")) {
+                            ForEach(bibleBooks.keys[..<39], id: \.self) { item in
+                                if item == "Psalm" { Divider() }
+                                Button(action: { getChapterCount(ask: item)}) {
+                                    Text(item)
+                                }
+                                    .font(.body)
+                                    .buttonStyle(.borderless)
                             }
-                            .font(.body)
-                            .buttonStyle(.borderless)
+                        }
+                    }
+                    List {
+                        if chapterCount > 0 {
+                            ForEach(1...chapterCount, id: \.self) { i in
+                                Button(String(i)) {
+                                    ask = "\(sideAsk) \(String(i))"
+                                    setWord(updateRowView: true)
+                                }
+                                .font(.body)
+                                .buttonStyle(.borderless)
+                            }
                         }
                     }
                 }
             }
-            .frame(width: 190, alignment: .leading)
+            .frame(width: 300, alignment: .leading)
             VStack {
                 Button(action: closeProjector) {
                     Text("Clear")
@@ -106,6 +122,14 @@ struct MainView: View {
         }
     }
 
+    func getChapterCount(ask: String) {
+        sideAsk = ask
+        let bibleUrl = BibleUrl()
+        let biblePrimary = Bible(dbUrl: bibleUrl.primaryBibleUrl)
+        let count = biblePrimary.getChapterCount(bookName: ask)
+        chapterCount = count ?? 0
+    }
+    
     func setWord(updateRowView: Bool = true) {
         guard let verseQuery = SearchQuery(ask: ask).verseQuery() else {
             validQuery.toggle()
