@@ -47,16 +47,22 @@ struct MainView: View {
                 HStack{
                     List {
                         Section(header: Text("Books")) {
-                            ForEach(bibleBooks.keys[..<39], id: \.self) { item in
+                            ForEach(bibleBooks.keys, id: \.self) { item in
                                 if item == "Psalm" { Divider() }
                                 Button(action: { getChapterCount(ask: item)}) {
                                     Text(item)
                                 }
-                                    .font(.body)
-                                    .buttonStyle(.borderless)
+                                .font(.body)
+                                .buttonStyle(.borderless)
+                                .background(
+                                    Color(
+                                        sideAsk == item ? lemonYellow : .clear
+                                    )
+                                )
                             }
                         }
                     }
+                    .frame(width: 190, alignment: .leading)
                     List {
                         if chapterCount > 0 {
                             ForEach(1...chapterCount, id: \.self) { i in
@@ -66,12 +72,18 @@ struct MainView: View {
                                 }
                                 .font(.body)
                                 .buttonStyle(.borderless)
+                                .background(
+                                    Color(
+                                        ask == "\(sideAsk) \(String(i))" ? lemonYellow : .clear
+                                    )
+                                )
                             }
                         }
                     }
+                    .frame(width: 90, alignment: .center)
                 }
             }
-            .frame(width: 300, alignment: .leading)
+            .frame(width: 270, alignment: .leading)
             VStack {
                 Button(action: closeProjector) {
                     Text("Clear")
