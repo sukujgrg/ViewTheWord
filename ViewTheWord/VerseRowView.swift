@@ -73,11 +73,11 @@ struct VerseRowView: View {
                     .onAppear {
                         NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { nsevent in
                             let maxSelectionIndex = verseRowViewModel.verseRowData.primaryChapter.count - 1
-                            if nsevent.keyCode == 125 || nsevent.keyCode == 124 { // arrow down or right
+                            if nsevent.keyCode == 125 { // arrow down
                                 if currentIndex >= 0 && currentIndex < maxSelectionIndex {
                                     project(index: currentIndex + 1)
                                 }
-                            } else if nsevent.keyCode == 126 || nsevent.keyCode == 123 { // arrow up or left
+                            } else if nsevent.keyCode == 126 { // arrow up
                                 if currentIndex > 0 && currentIndex <= maxSelectionIndex {
                                     project(index: currentIndex - 1)
                                 }

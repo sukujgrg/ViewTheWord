@@ -29,7 +29,8 @@ struct MainView: View {
     @StateObject var projectorViewModel: ProjectorViewModel = .init()
 
     @State private var ask: String = ""
-    @State private var sideAsk: String = ""
+    @State private var sideAskBook: String = ""
+    @State private var sideAskChapter: Int = 0
     @State private var windowOpened = false
     @State private var validQuery = true
     @State private var chapterCount: Int32 = 0
@@ -44,43 +45,57 @@ struct MainView: View {
     var body: some View {
         NavigationView {
             VStack {
-                HStack{
-                    List {
-                        Section(header: Text("Books")) {
-                            ForEach(bibleBooks.keys, id: \.self) { item in
-                                if item == "Psalm" { Divider() }
-                                Button(action: { getChapterCount(ask: item)}) {
-                                    Text(item)
-                                }
-                                .font(.body)
-                                .buttonStyle(.borderless)
-                                .background(
-                                    Color(
-                                        sideAsk == item ? lemonYellow : .clear
+                HStack {
+                    ScrollViewReader { value in
+                        List {
+                            Section(header: Text("Books")) {
+                                ForEach(bibleBooks.keys, id: \.self) { item in
+                                    if item == "Psalm" { Divider() }
+                                    if item == "Matthew" { Divider() }
+                                    Button(action: { getChapterCount(bookName: item)}) {
+                                        Text(item)
+                                            .padding(5)
+                                            .cornerRadius(100)
+                                    }
+                                    .font(.body)
+                                    .buttonStyle(PlainButtonStyle())
+                                    .background(
+                                        Color(
+                                            sideAskBook == item ? .systemBlue : .clear
+                                        )
                                     )
-                                )
+                                }
+                                .onChange(of: sideAskBook) { newBook in
+                                    value.scrollTo(newBook)
+                                }
                             }
                         }
+                        .frame(width: 190, alignment: .leading)
                     }
-                    .frame(width: 190, alignment: .leading)
-                    List {
-                        if chapterCount > 0 {
-                            ForEach(1...chapterCount, id: \.self) { i in
-                                Button(String(i)) {
-                                    ask = "\(sideAsk) \(String(i))"
-                                    setWord(updateRowView: true)
+                    ScrollViewReader { _ in
+                        List {
+                            Section(header: Text("Chapters")) {
+                                if chapterCount > 0 {
+                                    ForEach(1...chapterCount, id: \.self) { i in
+                                        Button(String(i)) {
+                                            sideAskChapter = Int(i)
+                                            ask = "\(sideAskBook) \(sideAskChapter)"
+                                            setWord(updateRowView: true, project: false)
+                                        }
+                                        .padding(3)
+                                        .font(.body)
+                                        .buttonStyle(.borderless)
+                                        .background(
+                                            Color(
+                                                sideAskChapter == Int(i) ? .systemBlue : .clear
+                                            )
+                                        )
+                                    }
                                 }
-                                .font(.body)
-                                .buttonStyle(.borderless)
-                                .background(
-                                    Color(
-                                        ask == "\(sideAsk) \(String(i))" ? lemonYellow : .clear
-                                    )
-                                )
                             }
                         }
+                        .frame(width: 90, alignment: .center)
                     }
-                    .frame(width: 90, alignment: .center)
                 }
             }
             .frame(width: 270, alignment: .leading)
@@ -90,40 +105,22 @@ struct MainView: View {
                 }
                 .keyboardShortcut(.cancelAction)
                 .opacity(0)
-                HStack(alignment: .center) {
 
-                    TextField("John 3 16", text: $ask)
-                        .onSubmit {
-                            setWord()
-                            withAnimation(.default) {
-                                validQuery = true  // resetting to 'true'
-                            }
+                TextField("John 3 16", text: $ask)
+                    .onSubmit {
+                        setWord()
+                        withAnimation(.default) {
+                            validQuery = true  // resetting to 'true'
                         }
-                        .onChange(of: primaryBibleName, perform: { _ in setWord()}) // reload primary bible verse[s]
-                        .onChange(of: secondaryBibleName, perform: { _ in setWord()}) // reload secondary bible verse[s]
-                        .modifier(ShakeEffect(shakes: validQuery ? 2 : 0))
-                        .frame(width: 450, height: 35, alignment: .center)
-                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray, lineWidth: 1))
-                        .font(.largeTitle)
-                        .disableAutocorrection(true)
-                    VStack {
-                        Menu("OT") {
-                            ForEach(bibleBooks.keys[..<39], id: \.self) { item in
-                                if item == "Psalm" { Divider() }
-                                Button(item) { ask = item }
-                            }
-                        }
-                        .menuStyle(.borderlessButton)
-                        Menu("NT") {
-                            ForEach(bibleBooks.keys[39...], id: \.self) { item in
-                                Button(item) { ask = item }
-                            }
-                        }
-                        .menuStyle(.borderlessButton)
                     }
-                    .frame(width: 50)
+                    .onChange(of: primaryBibleName, perform: { _ in setWord()}) // reload primary bible verse[s]
+                    .onChange(of: secondaryBibleName, perform: { _ in setWord()}) // reload secondary bible verse[s]
+                    .modifier(ShakeEffect(shakes: validQuery ? 2 : 0))
+                    .frame(width: 450, height: 35, alignment: .center)
+                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray, lineWidth: 1))
+                    .font(.largeTitle)
+                    .disableAutocorrection(true)
 
-                }
                 VerseRowView(windowOpened: $windowOpened)
                     .environmentObject(projectorViewModel)
                     .environmentObject(verseTargetModel)
@@ -134,18 +131,25 @@ struct MainView: View {
         }
     }
 
-    func getChapterCount(ask: String) {
-        sideAsk = ask
+    func getChapterCount(bookName: String) {
+        sideAskBook = bookName
         let bibleUrl = BibleUrl()
         let biblePrimary = Bible(dbUrl: bibleUrl.primaryBibleUrl)
-        let count = biblePrimary.getChapterCount(bookName: ask)
+        let count = biblePrimary.getChapterCount(bookName: bookName)
         chapterCount = count ?? 0
     }
-    
-    func setWord(updateRowView: Bool = true) {
+
+    func setWord(updateRowView: Bool = true, project: Bool = true) {
         guard let verseQuery = SearchQuery(ask: ask).verseQuery() else {
             validQuery.toggle()
             return
+        }
+
+        if verseQuery.bookName != "" && verseQuery.chapterNumber != 0 {
+            getChapterCount(bookName: verseQuery.bookName)
+//            sideAskBook = verseQuery.bookName
+            sideAskChapter = verseQuery.chapterNumber
+
         }
 
         let bibleUrl = BibleUrl()
@@ -180,7 +184,7 @@ struct MainView: View {
             history.append(title)
         }
 
-        if primaryText != "?" {
+        if primaryText != "?" && project {
             // Set verse for projector view
             projectorViewModel.projectorViewData = ProjectorViewData(
                 title: title, primaryText: primaryText, secondaryText: secondaryText

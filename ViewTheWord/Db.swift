@@ -61,24 +61,24 @@ class BibleUrl {
 
 class Bible {
     let dbUrl: URL
-    
+
     init(dbUrl: URL) {
         self.dbUrl = dbUrl
         db = openDb()
     }
-    
+
     deinit {
         self.closeDb()
     }
-    
+
     func closeDb() {
         if sqlite3_close_v2(db) != SQLITE_OK {
             logger.error("Error closing \(self.dbUrl.absoluteString).")
         }
     }
-    
+
     var db: OpaquePointer?
-    
+
     func openDb() -> OpaquePointer? {
         var db: OpaquePointer?
         if sqlite3_open_v2(dbUrl.path, &db, SQLite3.SQLITE_OPEN_READONLY, nil) != SQLITE_OK {
@@ -92,7 +92,7 @@ class Bible {
     func bookNumber(bookName: String) -> Int? {
         return bibleBooks[bookName]
     }
-    
+
     func getChapterCount(bookName: String) -> Int32? {
         guard let bookNumber = bookNumber(bookName: bookName) else {
             return nil
@@ -100,7 +100,7 @@ class Bible {
         let q = "SELECT COUNT(DISTINCT cnumber) FROM bible WHERE bnumber = \(bookNumber);"
         return runChapterCountQuery(queryStatementString: q)
     }
-    
+
     func pickAVerse(verseQuery: VerseQuery) -> AVerse? {
         guard let bookNumber = bookNumber(bookName: verseQuery.bookName) else {
             return nil
@@ -118,7 +118,7 @@ class Bible {
             return nil
         }
     }
-    
+
     func pickAChapter(verseQuery: VerseQuery) -> [AVerse]? {
         guard let bookNumber = bookNumber(bookName: verseQuery.bookName) else {
             return nil
@@ -131,13 +131,13 @@ class Bible {
         """
         return runVerseQuery(queryStatementString: queryStatementString, verseQuery: verseQuery)
     }
-    
+
     private func runVerseQuery(queryStatementString: String, verseQuery: VerseQuery) -> [AVerse]? {
         guard let _ = db else {
             return nil
         }
         var verses: [AVerse] = []
-        
+
         var queryStatement: OpaquePointer?
         if sqlite3_prepare_v2(db, queryStatementString, -1, &queryStatement, nil) == SQLITE_OK {
             while sqlite3_step(queryStatement) == SQLITE_ROW {
@@ -165,12 +165,12 @@ class Bible {
         }
         return verses
     }
-    
+
     private func runChapterCountQuery(queryStatementString: String) -> Int32? {
         guard let _ = db else {
             return nil
         }
-        var count: Int32? = nil
+        var count: Int32?
         var queryStatement: OpaquePointer?
         if sqlite3_prepare_v2(db, queryStatementString, -1, &queryStatement, nil) == SQLITE_OK {
             while sqlite3_step(queryStatement) == SQLITE_ROW {
