@@ -66,11 +66,12 @@ struct MainView: View {
                                     )
                                 }
                                 .onChange(of: sideAskBook) { newBook in
+                                    sideAskChapter = 0
                                     value.scrollTo(newBook)
                                 }
                             }
                         }
-                        .frame(width: 190, alignment: .leading)
+                        .frame(width: 180, alignment: .leading)
                     }
                     ScrollViewReader { _ in
                         List {
@@ -82,7 +83,7 @@ struct MainView: View {
                                             ask = "\(sideAskBook) \(sideAskChapter)"
                                             setWord(updateRowView: true, project: false)
                                         }
-                                        .padding(3)
+                                        .padding(5)
                                         .font(.body)
                                         .buttonStyle(.borderless)
                                         .background(
@@ -94,11 +95,11 @@ struct MainView: View {
                                 }
                             }
                         }
-                        .frame(width: 90, alignment: .center)
+                        .frame(width: 100, alignment: .center)
                     }
                 }
             }
-            .frame(width: 270, alignment: .leading)
+            .frame(width: 280, alignment: .leading)
             VStack {
                 Button(action: closeProjector) {
                     Text("Clear")
