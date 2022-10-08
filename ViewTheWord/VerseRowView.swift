@@ -18,7 +18,7 @@ struct VerseRowView: View {
     @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
 
     @State private var hoverText = -1
-    @State private var currentIndex: Int = 0
+    @State private var currentIndex: Int = -1
 
     @Binding var windowOpened: Bool
 
@@ -51,7 +51,7 @@ struct VerseRowView: View {
                                 .frame(width: 60, height: 60)
                                 .background(
                                     Color(
-                                        hoverText == index && hoverText != currentIndex ? .systemBlue :
+                                        hoverText == index && hoverText != currentIndex ? .systemMint :
                                             ((currentIndex == index) ? lemonYellow : .gray)
                                     )
                                 )

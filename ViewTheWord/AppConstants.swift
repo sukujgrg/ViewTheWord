@@ -79,4 +79,4 @@ let bibleBooks: OrderedDictionary<String, [Int]> = [
     "Revelation": [66, 22]
 ]
 
-let lemonYellow = NSColor(Color(hue: 0.1639, saturation: 1, brightness: 1))
+let lemonYellow = NSColor(Color(hue: 0.175, saturation: 0.33, brightness: 0.92))

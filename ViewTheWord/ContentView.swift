@@ -64,6 +64,7 @@ struct MainView: View {
                                     .font(
                                         sideAskBook == item ? .title2 : .body
                                     )
+                                    .foregroundColor(sideAskBook == item ? .mint : .primary)
                                 }
                                 .onChange(of: sideAskBook) { newBook in
                                     value.scrollTo(newBook)
@@ -72,7 +73,7 @@ struct MainView: View {
                         }
                         .frame(width: 180, alignment: .leading)
                     }
-                    ScrollViewReader { _ in
+                    ScrollViewReader { value in
                         List {
                             Section(header: Text("Chapters")) {
                                 if chapterCount > 0 {
@@ -90,6 +91,10 @@ struct MainView: View {
                                         .font(
                                             sideAskChapter == Int(i) ? .title2 : .body
                                         )
+                                        .foregroundColor(sideAskChapter == i ? .mint : .primary)
+                                    }
+                                    .onAppear() {
+                                        value.scrollTo(sideAskChapter)
                                     }
                                 }
                             }
