@@ -52,21 +52,20 @@ struct MainView: View {
                                 ForEach(bibleBooks.keys, id: \.self) { item in
                                     if item == "Psalm" { Divider() }
                                     if item == "Matthew" { Divider() }
-                                    Button(action: { getChapterCount(bookName: item)}) {
+                                    HStack {
                                         Text(item)
-                                            .padding(5)
-                                            .cornerRadius(100)
+                                        Spacer()
                                     }
-                                    .font(.body)
-                                    .buttonStyle(PlainButtonStyle())
-                                    .background(
-                                        Color(
-                                            sideAskBook == item ? .systemBlue : .clear
-                                        )
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        sideAskChapter = 0
+                                        getChapterCount(bookName: item)
+                                    }
+                                    .font(
+                                        sideAskBook == item ? .title2 : .body
                                     )
                                 }
                                 .onChange(of: sideAskBook) { newBook in
-                                    sideAskChapter = 0
                                     value.scrollTo(newBook)
                                 }
                             }
@@ -78,18 +77,18 @@ struct MainView: View {
                             Section(header: Text("Chapters")) {
                                 if chapterCount > 0 {
                                     ForEach(1...chapterCount, id: \.self) { i in
-                                        Button(String(i)) {
+                                        HStack {
+                                            Text("\(i)")
+                                            Spacer()
+                                        }
+                                        .contentShape(Rectangle())
+                                        .onTapGesture {
                                             sideAskChapter = Int(i)
                                             ask = "\(sideAskBook) \(sideAskChapter)"
                                             setWord(updateRowView: true, project: false)
                                         }
-                                        .padding(5)
-                                        .font(.body)
-                                        .buttonStyle(.borderless)
-                                        .background(
-                                            Color(
-                                                sideAskChapter == Int(i) ? .systemBlue : .clear
-                                            )
+                                        .font(
+                                            sideAskChapter == Int(i) ? .title2 : .body
                                         )
                                     }
                                 }
@@ -134,10 +133,7 @@ struct MainView: View {
 
     func getChapterCount(bookName: String) {
         sideAskBook = bookName
-        let bibleUrl = BibleUrl()
-        let biblePrimary = Bible(dbUrl: bibleUrl.primaryBibleUrl)
-        let count = biblePrimary.getChapterCount(bookName: bookName)
-        chapterCount = count ?? 0
+        chapterCount = Int32(bibleBooks[bookName]?.last ?? 0)
     }
 
     func setWord(updateRowView: Bool = true, project: Bool = true) {
@@ -148,7 +144,6 @@ struct MainView: View {
 
         if verseQuery.bookName != "" && verseQuery.chapterNumber != 0 {
             getChapterCount(bookName: verseQuery.bookName)
-//            sideAskBook = verseQuery.bookName
             sideAskChapter = verseQuery.chapterNumber
 
         }

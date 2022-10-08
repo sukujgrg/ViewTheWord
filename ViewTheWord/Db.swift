@@ -90,7 +90,7 @@ class Bible {
         }
     }
     func bookNumber(bookName: String) -> Int? {
-        return bibleBooks[bookName]
+        return bibleBooks[bookName]?.first
     }
 
     func getChapterCount(bookName: String) -> Int32? {
