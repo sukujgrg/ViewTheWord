@@ -16,8 +16,11 @@ struct VerseRowView: View {
     @EnvironmentObject var projectorViewModel: ProjectorViewModel
 
     @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
+    @AppStorage("scrollTo") var scrollTo = true
 
-    @State private var hoverText = -1
+    @AppStorage("PrimaryBibleName") private var primaryBibleName: String = bundledPrimaryBibleUrl.absoluteString
+    @AppStorage("SecondaryBibleName") private var secondaryBibleName: String = bundledSecondaryBibleUrl.absoluteString
+
     @State private var currentIndex: Int = -1
 
     @Binding var windowOpened: Bool
@@ -30,20 +33,38 @@ struct VerseRowView: View {
 
     var body: some View {
         if verseRowViewModel.verseRowData.primaryChapter.count > 0 {
+            let pb = primaryBibleName.components(separatedBy: "/").last
+            let sb = secondaryBibleName.components(separatedBy: "/").last
             let pri = verseRowViewModel.verseRowData.primaryChapter
-            Text("\(pri[0].bookName) \(pri[0].chapterNumber)")
-                .bold()
-                .padding()
+            Grid {
+                Divider()
+                GridRow {
+                    Text("\(pb?.replacingOccurrences(of: ".bible", with: "").replacingOccurrences(of: "_", with: " ") ?? "")")
+                    Text("\(pri[0].bookName) \(pri[0].chapterNumber)")
+                    Text("\(sb?.replacingOccurrences(of: ".bible", with: "").replacingOccurrences(of: "_", with: " ") ?? "")")
+                }
+                Divider()
+            }
         }
         ScrollView {
             ScrollViewReader { value in
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
-                    ForEach(0 ..< verseRowViewModel.verseRowData.primaryChapter.count, id: \.self) { index in
+                    let count = max(verseRowViewModel.verseRowData.primaryChapter.count, verseRowViewModel.verseRowData.secondaryChapter.count)
+                    ForEach(0 ..< count, id: \.self) { index in
+
                         // Primary verse
-                        Text(verseRowViewModel.verseRowData.primaryChapter[index].verse)
-                            .onTapGesture(perform: { project(index: index) })
-                            .padding()
-                            .onHover(perform: { _ in hoverText = index })
+                        if index < verseRowViewModel.verseRowData.primaryChapter.count {
+                            Text(verseRowViewModel.verseRowData.primaryChapter[index].verse)
+                                .onTapGesture(perform: { project(index: index) })
+                                .padding()
+                                .background(
+                                    Color(
+                                        projectorViewModel.projectorViewData.title == verseTargetModel.verseQuery.title() && windowOpened == true && currentIndex == index ? .systemBlue : .clear
+                                    )
+                                )
+                        } else {
+                            Text("\u{200c}")
+                        }
 
                         // Verse button
                         Button(action: { project(index: index) }) {
@@ -51,24 +72,37 @@ struct VerseRowView: View {
                                 .frame(width: 60, height: 60)
                                 .background(
                                     Color(
-                                        hoverText == index && hoverText != currentIndex ? .systemMint :
-                                            ((currentIndex == index) ? lemonYellow : .gray)
+                                        projectorViewModel.projectorViewData.title == verseTargetModel.verseQuery.title() && windowOpened == true && currentIndex == index ? .systemBlue : .gray
                                     )
                                 )
-                                .foregroundColor(.black)
+                                .foregroundColor(.white)
                         }
                         .buttonStyle(PlainButtonStyle())
-                        .onHover(perform: { _ in hoverText = index })
 
                         // Secondary verse
-                        Text(verseRowViewModel.verseRowData.secondaryChapter[index].verse)
-                            .onTapGesture(perform: { project(index: index) })
-                            .padding()
-                            .onHover(perform: { _ in hoverText = index })
+                        if index < verseRowViewModel.verseRowData.secondaryChapter.count {
+                            Text(verseRowViewModel.verseRowData.secondaryChapter[index].verse)
+                                .onTapGesture(perform: { project(index: index) })
+                                .padding()
+                                .background(
+                                    Color(
+                                        projectorViewModel.projectorViewData.title == verseTargetModel.verseQuery.title() && windowOpened == true && currentIndex == index ? .systemBlue : .clear
+                                    )
+                                )
+                        } else {
+                            Text("\u{200c}")
+                        }
                     }
-                    .onChange(of: verseTargetModel.verseQuery.verseNumber) { newV in
+                    .onChange(of: verseTargetModel.verseQuery.verseNumber) { _ in
                         currentIndex = verseTargetModel.verseQuery.verseNumber - 1
-                        value.scrollTo(newV - 1, anchor: .center)
+                        if scrollTo {
+                            value.scrollTo(currentIndex, anchor: .center)
+                        }
+                    }
+                    // this scroll is needed when switching between books/chapters
+                    .onChange(of: verseTargetModel.verseQuery.bookAndChapter()) { _ in
+                        currentIndex = verseTargetModel.verseQuery.verseNumber - 1
+                        value.scrollTo(currentIndex, anchor: .center)
                     }
                     .onAppear {
                         NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { nsevent in
@@ -103,13 +137,20 @@ struct VerseRowView: View {
     private func project(index: Int) {
         newVerseTargetModel(index: index)
         let title = verseTargetModel.verseQuery.title()
-        let primaryText = verseRowViewModel.verseRowData.primaryChapter[index].verse
+
+        var primaryText: String?
+        if index < verseRowViewModel.verseRowData.primaryChapter.count {
+            primaryText = verseRowViewModel.verseRowData.primaryChapter[index].verse
+        }
+
         var secondaryText: String?
         if !showOnlyPrimary {
-            secondaryText = verseRowViewModel.verseRowData.secondaryChapter[index].verse
+            if index < verseRowViewModel.verseRowData.secondaryChapter.count {
+                secondaryText = verseRowViewModel.verseRowData.secondaryChapter[index].verse
+            }
         }
         projectorViewModel.projectorViewData = ProjectorViewData(
-            title: title, primaryText: primaryText, secondaryText: secondaryText
+            title: title, primaryText: primaryText ?? "\u{200c}", secondaryText: secondaryText ?? "\u{200c}"
         )
         if !windowOpened {
             ProjectorView(windowOpened: $windowOpened)

@@ -50,7 +50,7 @@ class BibleUrl {
         let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
         do {
             let fileURLs = try fileManager.contentsOfDirectory(at: documentsURL, includingPropertiesForKeys: nil)
-            let bibleDbUrls = fileURLs.filter { $0.pathExtension == "bible" }
+            let bibleDbUrls = fileURLs.filter { $0.pathExtension == "bible" && BibleImportView().isValidBibleFileName(selectedFileName: $0.absoluteString)}
             availableBibleUrls += bibleDbUrls
         } catch {
             logger.error("\(documentsURL.path): \(error.localizedDescription)")
@@ -84,6 +84,7 @@ class Bible {
         if sqlite3_open_v2(dbUrl.path, &db, SQLite3.SQLITE_OPEN_READONLY, nil) != SQLITE_OK {
             let errmsg = String(cString: sqlite3_errmsg(db))
             logger.error("\(errmsg)")
+            closeDb()
             return nil
         } else {
             return db
@@ -158,6 +159,7 @@ class Bible {
         } else {
             let errmsg = String(cString: sqlite3_errmsg(db))
             logger.error("\(errmsg)")
+            closeDb()
         }
         sqlite3_finalize(queryStatement)
         if verses.isEmpty {
@@ -179,6 +181,7 @@ class Bible {
         } else {
             let errmsg = String(cString: sqlite3_errmsg(db))
             logger.error("\(errmsg)")
+            closeDb()
         }
         sqlite3_finalize(queryStatement)
         if count != nil {

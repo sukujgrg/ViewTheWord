@@ -9,6 +9,10 @@ struct VerseQuery {
     func title() -> String {
         return "\(bookName) \(chapterNumber): \(verseNumber)"
     }
+
+    func bookAndChapter() -> String {
+        return "\(bookName) \(chapterNumber)"
+    }
 }
 
 class VerseTargetModel: ObservableObject {
@@ -17,6 +21,7 @@ class VerseTargetModel: ObservableObject {
 
 struct ContentView: View {
     @StateObject var verseTargetModel: VerseTargetModel = .init()
+    @AppStorage("history") private var history: [String] = ["John 3: 16"]
 
     var body: some View {
         MainView().environmentObject(verseTargetModel)
@@ -50,7 +55,6 @@ struct MainView: View {
                         List {
                             Section(header: Text("Books")) {
                                 ForEach(bibleBooks.keys, id: \.self) { item in
-                                    if item == "Psalm" { Divider() }
                                     if item == "Matthew" { Divider() }
                                     HStack {
                                         Text(item)
@@ -113,19 +117,19 @@ struct MainView: View {
 
                 TextField("John 3 16", text: $ask)
                     .onSubmit {
-                        setWord()
+                        setWord(updateRowView: true)
                         withAnimation(.default) {
                             validQuery = true  // resetting to 'true'
                         }
                     }
-                    .onChange(of: primaryBibleName, perform: { _ in setWord()}) // reload primary bible verse[s]
-                    .onChange(of: secondaryBibleName, perform: { _ in setWord()}) // reload secondary bible verse[s]
+                    .onChange(of: primaryBibleName, perform: { _ in setWord(updateRowView: true, project: false)}) // reload primary bible verse[s]
+                    .onChange(of: secondaryBibleName, perform: { _ in setWord(updateRowView: true, project: false)}) // reload secondary bible verse[s]
                     .modifier(ShakeEffect(shakes: validQuery ? 2 : 0))
                     .frame(width: 450, height: 35, alignment: .center)
                     .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray, lineWidth: 1))
                     .font(.largeTitle)
                     .disableAutocorrection(true)
-
+                
                 VerseRowView(windowOpened: $windowOpened)
                     .environmentObject(projectorViewModel)
                     .environmentObject(verseTargetModel)
@@ -134,7 +138,20 @@ struct MainView: View {
             }
             .frame(minWidth: 850, maxWidth: .infinity, minHeight: 600, maxHeight: .infinity)
         }
+        .contextMenu {
+            Text("History")
+            Divider()
+            ForEach(history, id: \.self) { item in
+                Button {
+                    ask = item
+                    setWord(updateRowView: false)
+                } label: {
+                    Text(item)
+                }
+            }
+        }
     }
+    
 
     func getChapterCount(bookName: String) {
         sideAskBook = bookName
