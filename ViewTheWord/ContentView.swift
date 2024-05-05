@@ -9,6 +9,10 @@ struct VerseQuery {
     func title() -> String {
         return "\(bookName) \(chapterNumber): \(verseNumber)"
     }
+
+    func bookAndChapter() -> String {
+        return "\(bookName) \(chapterNumber)"
+    }
 }
 
 class VerseTargetModel: ObservableObject {
@@ -17,6 +21,7 @@ class VerseTargetModel: ObservableObject {
 
 struct ContentView: View {
     @StateObject var verseTargetModel: VerseTargetModel = .init()
+    @AppStorage("history") private var history: [String] = ["John 3: 16"]
 
     var body: some View {
         MainView().environmentObject(verseTargetModel)
@@ -29,8 +34,11 @@ struct MainView: View {
     @StateObject var projectorViewModel: ProjectorViewModel = .init()
 
     @State private var ask: String = ""
+    @State private var sideAskBook: String = ""
+    @State private var sideAskChapter: Int = 0
     @State private var windowOpened = false
     @State private var validQuery = true
+    @State private var chapterCount: Int32 = 0
 
     @AppStorage("history") private var history: [String] = ["John 3: 16"]
     @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
@@ -42,60 +50,86 @@ struct MainView: View {
     var body: some View {
         NavigationView {
             VStack {
-                List {
-                    Section(header: Text("History")) {
-                        ForEach(history.reversed(), id: \.self) { item in
-                            Button(item) {
-                                ask = item
-                                setWord(updateRowView: false)
+                HStack {
+                    ScrollViewReader { value in
+                        List {
+                            Section(header: Text("Books")) {
+                                ForEach(bibleBooks.keys, id: \.self) { item in
+                                    if item == "Matthew" { Divider() }
+                                    HStack {
+                                        Text(item)
+                                        Spacer()
+                                    }
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        sideAskChapter = 0
+                                        getChapterCount(bookName: item)
+                                    }
+                                    .font(
+                                        sideAskBook == item ? .title2 : .body
+                                    )
+                                    .foregroundColor(sideAskBook == item ? .mint : .primary)
+                                }
+                                .onChange(of: sideAskBook) { newBook in
+                                    value.scrollTo(newBook)
+                                }
                             }
-                            .font(.body)
-                            .buttonStyle(.borderless)
                         }
+                        .frame(width: 180, alignment: .leading)
+                    }
+                    ScrollViewReader { value in
+                        List {
+                            Section(header: Text("Chapters")) {
+                                if chapterCount > 0 {
+                                    ForEach(1...chapterCount, id: \.self) { i in
+                                        HStack {
+                                            Text("\(i)")
+                                            Spacer()
+                                        }
+                                        .contentShape(Rectangle())
+                                        .onTapGesture {
+                                            sideAskChapter = Int(i)
+                                            ask = "\(sideAskBook) \(sideAskChapter)"
+                                            setWord(updateRowView: true, project: false)
+                                        }
+                                        .font(
+                                            sideAskChapter == Int(i) ? .title2 : .body
+                                        )
+                                        .foregroundColor(sideAskChapter == i ? .mint : .primary)
+                                    }
+                                    .onAppear() {
+                                        value.scrollTo(sideAskChapter)
+                                    }
+                                }
+                            }
+                        }
+                        .frame(width: 100, alignment: .center)
                     }
                 }
             }
-            .frame(width: 190, alignment: .leading)
+            .frame(width: 280, alignment: .leading)
             VStack {
                 Button(action: closeProjector) {
                     Text("Clear")
                 }
                 .keyboardShortcut(.cancelAction)
                 .opacity(0)
-                HStack(alignment: .center) {
 
-                    TextField("John 3 16", text: $ask)
-                        .onSubmit {
-                            setWord()
-                            withAnimation(.default) {
-                                validQuery = true  // resetting to 'true'
-                            }
+                TextField("John 3 16", text: $ask)
+                    .onSubmit {
+                        setWord(updateRowView: true)
+                        withAnimation(.default) {
+                            validQuery = true  // resetting to 'true'
                         }
-                        .onChange(of: primaryBibleName, perform: { _ in setWord()}) // reload primary bible verse[s]
-                        .onChange(of: secondaryBibleName, perform: { _ in setWord()}) // reload secondary bible verse[s]
-                        .modifier(ShakeEffect(shakes: validQuery ? 2 : 0))
-                        .frame(width: 450, height: 35, alignment: .center)
-                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray, lineWidth: 1))
-                        .font(.largeTitle)
-                        .disableAutocorrection(true)
-                    VStack {
-                        Menu("OT") {
-                            ForEach(bibleBooks.keys[..<39], id: \.self) { item in
-                                if item == "Psalm" { Divider() }
-                                Button(item) { ask = item }
-                            }
-                        }
-                        .menuStyle(.borderlessButton)
-                        Menu("NT") {
-                            ForEach(bibleBooks.keys[39...], id: \.self) { item in
-                                Button(item) { ask = item }
-                            }
-                        }
-                        .menuStyle(.borderlessButton)
                     }
-                    .frame(width: 50)
-
-                }
+                    .onChange(of: primaryBibleName, perform: { _ in setWord(updateRowView: true, project: false)}) // reload primary bible verse[s]
+                    .onChange(of: secondaryBibleName, perform: { _ in setWord(updateRowView: true, project: false)}) // reload secondary bible verse[s]
+                    .modifier(ShakeEffect(shakes: validQuery ? 2 : 0))
+                    .frame(width: 450, height: 35, alignment: .center)
+                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray, lineWidth: 1))
+                    .font(.largeTitle)
+                    .disableAutocorrection(true)
+                
                 VerseRowView(windowOpened: $windowOpened)
                     .environmentObject(projectorViewModel)
                     .environmentObject(verseTargetModel)
@@ -104,12 +138,36 @@ struct MainView: View {
             }
             .frame(minWidth: 850, maxWidth: .infinity, minHeight: 600, maxHeight: .infinity)
         }
+        .contextMenu {
+            Text("History")
+            Divider()
+            ForEach(history, id: \.self) { item in
+                Button {
+                    ask = item
+                    setWord(updateRowView: false)
+                } label: {
+                    Text(item)
+                }
+            }
+        }
+    }
+    
+
+    func getChapterCount(bookName: String) {
+        sideAskBook = bookName
+        chapterCount = Int32(bibleBooks[bookName]?.last ?? 0)
     }
 
-    func setWord(updateRowView: Bool = true) {
+    func setWord(updateRowView: Bool = true, project: Bool = true) {
         guard let verseQuery = SearchQuery(ask: ask).verseQuery() else {
             validQuery.toggle()
             return
+        }
+
+        if verseQuery.bookName != "" && verseQuery.chapterNumber != 0 {
+            getChapterCount(bookName: verseQuery.bookName)
+            sideAskChapter = verseQuery.chapterNumber
+
         }
 
         let bibleUrl = BibleUrl()
@@ -144,7 +202,7 @@ struct MainView: View {
             history.append(title)
         }
 
-        if primaryText != "?" {
+        if primaryText != "?" && project {
             // Set verse for projector view
             projectorViewModel.projectorViewData = ProjectorViewData(
                 title: title, primaryText: primaryText, secondaryText: secondaryText

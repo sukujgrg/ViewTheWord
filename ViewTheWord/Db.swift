@@ -50,7 +50,7 @@ class BibleUrl {
         let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
         do {
             let fileURLs = try fileManager.contentsOfDirectory(at: documentsURL, includingPropertiesForKeys: nil)
-            let bibleDbUrls = fileURLs.filter { $0.pathExtension == "bible" }
+            let bibleDbUrls = fileURLs.filter { $0.pathExtension == "bible" && BibleImportView().isValidBibleFileName(selectedFileName: $0.absoluteString)}
             availableBibleUrls += bibleDbUrls
         } catch {
             logger.error("\(documentsURL.path): \(error.localizedDescription)")
@@ -84,13 +84,22 @@ class Bible {
         if sqlite3_open_v2(dbUrl.path, &db, SQLite3.SQLITE_OPEN_READONLY, nil) != SQLITE_OK {
             let errmsg = String(cString: sqlite3_errmsg(db))
             logger.error("\(errmsg)")
+            closeDb()
             return nil
         } else {
             return db
         }
     }
     func bookNumber(bookName: String) -> Int? {
-        return bibleBooks[bookName]
+        return bibleBooks[bookName]?.first
+    }
+
+    func getChapterCount(bookName: String) -> Int32? {
+        guard let bookNumber = bookNumber(bookName: bookName) else {
+            return nil
+        }
+        let q = "SELECT COUNT(DISTINCT cnumber) FROM bible WHERE bnumber = \(bookNumber);"
+        return runChapterCountQuery(queryStatementString: q)
     }
 
     func pickAVerse(verseQuery: VerseQuery) -> AVerse? {
@@ -150,11 +159,34 @@ class Bible {
         } else {
             let errmsg = String(cString: sqlite3_errmsg(db))
             logger.error("\(errmsg)")
+            closeDb()
         }
         sqlite3_finalize(queryStatement)
         if verses.isEmpty {
             return nil
         }
         return verses
+    }
+
+    private func runChapterCountQuery(queryStatementString: String) -> Int32? {
+        guard let _ = db else {
+            return nil
+        }
+        var count: Int32?
+        var queryStatement: OpaquePointer?
+        if sqlite3_prepare_v2(db, queryStatementString, -1, &queryStatement, nil) == SQLITE_OK {
+            while sqlite3_step(queryStatement) == SQLITE_ROW {
+                count = sqlite3_column_int(queryStatement, 0)
+            }
+        } else {
+            let errmsg = String(cString: sqlite3_errmsg(db))
+            logger.error("\(errmsg)")
+            closeDb()
+        }
+        sqlite3_finalize(queryStatement)
+        if count != nil {
+            return count
+        }
+        return nil
     }
 }

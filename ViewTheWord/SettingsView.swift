@@ -83,6 +83,7 @@ struct BibleImportView: View {
     @AppStorage("PrimaryBibleName") private var primaryBibleName: String = bundledPrimaryBibleUrl.absoluteString
     @AppStorage("SecondaryBibleName") private var secondaryBibleName: String = bundledSecondaryBibleUrl.absoluteString
     @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
+    @AppStorage("scrollTo") var scrollTo = true
 
     let bibleType = UTType(exportedAs: "com.viewtheword.sqlite3.database", conformingTo: .database)
 
@@ -106,6 +107,8 @@ struct BibleImportView: View {
                 }
             }
             Toggle("Show only Primary Verse", isOn: $showOnlyPrimary)
+            Toggle("Scroll to the current verse automatically", isOn: $scrollTo)
+
 
             HStack {
                 Picker(selection: $primaryBibleName, label: Text("Primary")) {
@@ -143,21 +146,23 @@ struct BibleImportView: View {
 
     func importBibleDb(selectedFile: URL) {
         guard isValidBibleFileName(selectedFileName: selectedFile.lastPathComponent) else {
+            logger.error("\(selectedFile) is an invalid bible db name. It should be in '<LANG>_<NAME>.bible' format.")
             return
         }
         let fileManager = FileManager.default
         let bundledBible = [bundledPrimaryBibleUrl.lastPathComponent, bundledSecondaryBibleUrl.lastPathComponent]
         if !bundledBible.contains(selectedFile.lastPathComponent) {
-            let documentsURL = fileManager.urls(
-                for: .documentDirectory, in: .userDomainMask
-            )[0].appendingPathComponent(selectedFile.lastPathComponent)
+            let docDir = try! FileManager.default.url(
+                for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+            )
+            let documentsURL = docDir.appendingPathComponent(selectedFile.lastPathComponent)
             do {
                 try fileManager.copyItem(at: selectedFile, to: documentsURL)
                 try fileManager.setAttributes(
                     [FileAttributeKey.posixPermissions: 0o444], ofItemAtPath: documentsURL.path
                 )
             } catch {
-                logger.error("\(error.localizedDescription)")
+                logger.error("\(documentsURL.path): \(error.localizedDescription)")
             }
         }
     }
