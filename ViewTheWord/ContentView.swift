@@ -68,9 +68,9 @@ struct MainView: View {
                                     .font(
                                         sideAskBook == item ? .title2 : .body
                                     )
-                                    .foregroundColor(sideAskBook == item ? .mint : .primary)
+                                    .foregroundColor(sideAskBook == item ? .blue : .primary)
                                 }
-                                .onChange(of: sideAskBook) { newBook in
+                                .onChange(of: sideAskBook) { _, newBook in
                                     value.scrollTo(newBook)
                                 }
                             }
@@ -95,7 +95,9 @@ struct MainView: View {
                                         .font(
                                             sideAskChapter == Int(i) ? .title2 : .body
                                         )
-                                        .foregroundColor(sideAskChapter == i ? .mint : .primary)
+                                        .foregroundColor(
+                                            sideAskChapter == i ? .blue : .primary
+                                        )
                                     }
                                     .onAppear() {
                                         value.scrollTo(sideAskChapter)
@@ -122,8 +124,12 @@ struct MainView: View {
                             validQuery = true  // resetting to 'true'
                         }
                     }
-                    .onChange(of: primaryBibleName, perform: { _ in setWord(updateRowView: true, project: false)}) // reload primary bible verse[s]
-                    .onChange(of: secondaryBibleName, perform: { _ in setWord(updateRowView: true, project: false)}) // reload secondary bible verse[s]
+                    .onChange(of: primaryBibleName) {
+                        setWord(updateRowView: true, project: false)
+                    } // reload primary bible verse[s]
+                    .onChange(of: secondaryBibleName) {
+                        setWord(updateRowView: true, project: false)
+                    } // reload secondary bible verse[s]
                     .modifier(ShakeEffect(shakes: validQuery ? 2 : 0))
                     .frame(width: 450, height: 35, alignment: .center)
                     .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray, lineWidth: 1))

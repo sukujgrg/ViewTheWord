@@ -115,7 +115,7 @@ struct BibleImportView: View {
                     ForEach(bibleUrls(), id: \.absoluteString) { name in
                         Text(String(name.lastPathComponent))
                     }
-                }.onChange(of: primaryBibleName) { name in
+                }.onChange(of: primaryBibleName) { _, name in
                     primaryBibleName = name
                 }
                 Divider()
@@ -123,7 +123,7 @@ struct BibleImportView: View {
                     ForEach(bibleUrls(), id: \.absoluteString) { name in
                         Text(name.lastPathComponent)
                     }
-                }.onChange(of: secondaryBibleName) { name in
+                }.onChange(of: secondaryBibleName) { _, name in
                     secondaryBibleName = name
                 }
                 .disabled(showOnlyPrimary)
@@ -146,7 +146,7 @@ struct BibleImportView: View {
 
     func importBibleDb(selectedFile: URL) {
         guard isValidBibleFileName(selectedFileName: selectedFile.lastPathComponent) else {
-            logger.error("\(selectedFile) is an invalid bible db name. It should be in '<LANG>_<NAME>.bible' format.")
+            logger.error("\(selectedFile.lastPathComponent) is an invalid bible db name. It should be in '<LANG>_<NAME>.bible' format.")
             return
         }
         let fileManager = FileManager.default

@@ -22,6 +22,7 @@ struct VerseRowView: View {
     @AppStorage("SecondaryBibleName") private var secondaryBibleName: String = bundledSecondaryBibleUrl.absoluteString
 
     @State private var currentIndex: Int = -1
+    @State private var maxVersesOnCurrentChapter: Int = -1
 
     @Binding var windowOpened: Bool
 
@@ -40,18 +41,19 @@ struct VerseRowView: View {
                 Divider()
                 GridRow {
                     Text("\(pb?.replacingOccurrences(of: ".bible", with: "").replacingOccurrences(of: "_", with: " ") ?? "")")
+                        .bold()
                     Text("\(pri[0].bookName) \(pri[0].chapterNumber)")
                     Text("\(sb?.replacingOccurrences(of: ".bible", with: "").replacingOccurrences(of: "_", with: " ") ?? "")")
+                        .bold()
                 }
                 Divider()
             }
         }
-        ScrollView {
-            ScrollViewReader { value in
+        ScrollViewReader { value in
+            ScrollView {
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
                     let count = max(verseRowViewModel.verseRowData.primaryChapter.count, verseRowViewModel.verseRowData.secondaryChapter.count)
                     ForEach(0 ..< count, id: \.self) { index in
-
                         // Primary verse
                         if index < verseRowViewModel.verseRowData.primaryChapter.count {
                             Text(verseRowViewModel.verseRowData.primaryChapter[index].verse)
@@ -93,26 +95,35 @@ struct VerseRowView: View {
                             Text("\u{200c}")
                         }
                     }
-                    .onChange(of: verseTargetModel.verseQuery.verseNumber) { _ in
+                    .onChange(of: verseTargetModel.verseQuery.title()) {
                         currentIndex = verseTargetModel.verseQuery.verseNumber - 1
+                        // scroll to the verse regardless of `scrollTo` setting.
+                        let keyCodes: [UInt16] = [76, 36, 125, 126] // enter, arrow down, arrow up
+                        NSEvent.addLocalMonitorForEvents(matching: [.keyUp]) { nsevent in
+                            if keyCodes.contains(nsevent.keyCode) {
+                                value.scrollTo(currentIndex, anchor: .center)
+                            }
+                            return nsevent
+                        }
+                        // scroll to index based on `scrollTo` setting.
                         if scrollTo {
                             value.scrollTo(currentIndex, anchor: .center)
                         }
                     }
                     // this scroll is needed when switching between books/chapters
-                    .onChange(of: verseTargetModel.verseQuery.bookAndChapter()) { _ in
+                    .onChange(of: verseTargetModel.verseQuery.bookAndChapter()) {
+                        maxVersesOnCurrentChapter = count
                         currentIndex = verseTargetModel.verseQuery.verseNumber - 1
                         value.scrollTo(currentIndex, anchor: .center)
                     }
                     .onAppear {
                         NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { nsevent in
-                            let maxSelectionIndex = verseRowViewModel.verseRowData.primaryChapter.count - 1
                             if nsevent.keyCode == 125 { // arrow down
-                                if currentIndex >= 0 && currentIndex < maxSelectionIndex {
+                                if currentIndex >= 0 && currentIndex < maxVersesOnCurrentChapter - 1 {
                                     project(index: currentIndex + 1)
                                 }
                             } else if nsevent.keyCode == 126 { // arrow up
-                                if currentIndex > 0 && currentIndex <= maxSelectionIndex {
+                                if currentIndex > 0 && currentIndex <= maxVersesOnCurrentChapter - 1 {
                                     project(index: currentIndex - 1)
                                 }
                             }
