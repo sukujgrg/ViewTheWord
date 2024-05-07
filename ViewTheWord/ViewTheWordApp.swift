@@ -13,9 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct ViewTheWordApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-
     var body: some Scene {
-        Window("View The Word App", id: "main") {
+        Window("View The Word", id: "main") {
             ContentView()
         }
         .windowResizability(.contentSize)
