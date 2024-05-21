@@ -1,14 +1,14 @@
 #!/bin/bash
 
-export SCHEMA_NAME=ViewTheWord
-export XCODE_PROJECT_PATH=$(find . -name ${SCHEMA_NAME}.xcodeproj)
+export SCHEME_NAME=ViewTheWord
+export XCODE_PROJECT_PATH=$(find . -name ${SCHEME_NAME}.xcodeproj)
 export ARCHIVE_TMP_DIR=$(mktemp -d)
 
 echo "Archive temp directory : ${ARCHIVE_TMP_DIR}"
 
 function archive () {
     xcodebuild archive \
-        -scheme ${SCHEMA_NAME} \
+        -scheme ${SCHEME_NAME} \
         -project $XCODE_PROJECT_PATH \
         -configuration Release \
         -archivePath $ARCHIVE_TMP_DIR
