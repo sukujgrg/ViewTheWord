@@ -1,0 +1,36 @@
+#!/bin/bash
+
+export SCHEMA_NAME=ViewTheWord
+export XCODE_PROJECT_PATH=$(find . -name ${SCHEMA_NAME}.xcodeproj)
+export ARCHIVE_TMP_DIR=$(mktemp -d)
+
+echo "Archive temp directory : ${ARCHIVE_TMP_DIR}"
+
+function archive () {
+    xcodebuild archive \
+        -scheme ${SCHEMA_NAME} \
+        -project $XCODE_PROJECT_PATH \
+        -configuration Release \
+        -archivePath $ARCHIVE_TMP_DIR
+}
+
+function exportArchive () {
+    export EXPORT_OPTIONS_PLIST=$(mktemp)
+    cat << EOF > ${EXPORT_OPTIONS_PLIST}
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+   	<key>method</key>
+   	<string>mac-application</string>
+</dict>
+</plist>
+EOF
+    xcodebuild -exportArchive \
+        -archivePath ${ARCHIVE_TMP_DIR}.xcarchive \
+        -exportPath . \
+        -exportOptionsPlist ${EXPORT_OPTIONS_PLIST}
+}
+
+archive
+exportArchive
