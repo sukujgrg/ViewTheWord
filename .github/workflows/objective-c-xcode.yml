@@ -8,18 +8,31 @@ on:
 
 jobs:
   build:
-    name: Build and analyse default scheme using xcodebuild command
+    name: Build and upload DMG
     runs-on: macos-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Set Default Scheme
+      - name: Create Archive
         run: |
           bash archive.sh
-      - name: Upload Archived app
+      - name: Install create-dmg
+        run: |
+          brew install create-dmg
+      - name: Create DMG
+        run: |
+          create-dmg \ 
+                --skip-jenkins \
+                --icon ".VolumeIcon.icns" 512 758 \
+                --app-drop-link 512 245 \
+                --window-pos 400 100 \
+                --window-size 640 694 \
+                ViewTheWord.dmg \
+                ViewTheWord.app
+      - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
           name: ViewTheWord
-          path: ViewTheWord.app
-          retention-days: 10
+          path: ViewTheWord.dmg
+          retention-days: 1
