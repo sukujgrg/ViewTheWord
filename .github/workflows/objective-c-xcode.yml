@@ -22,14 +22,7 @@ jobs:
           brew install create-dmg
       - name: Create DMG
         run: |
-          create-dmg \ 
-                --skip-jenkins \
-                --icon ".VolumeIcon.icns" 512 758 \
-                --app-drop-link 512 245 \
-                --window-pos 400 100 \
-                --window-size 640 694 \
-                ViewTheWord.dmg \
-                ViewTheWord.app
+          create-dmg --skip-jenkins --icon ".VolumeIcon.icns" 512 758 --app-drop-link 512 245 --window-pos 400 100 --window-size 640 694 ViewTheWord.dmg ViewTheWord.app
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
