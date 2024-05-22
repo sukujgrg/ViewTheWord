@@ -11,7 +11,9 @@ function archive () {
         -scheme ${SCHEME_NAME} \
         -project $XCODE_PROJECT_PATH \
         -configuration Release \
-        -archivePath $ARCHIVE_TMP_DIR
+        -archivePath $ARCHIVE_TMP_DIR \
+        -destination "platform=macOS,arch=arm64" \
+        -json
 }
 
 function exportArchive () {
@@ -28,8 +30,10 @@ function exportArchive () {
 EOF
     xcodebuild -exportArchive \
         -archivePath ${ARCHIVE_TMP_DIR}.xcarchive \
+        -exportOptionsPlist ${EXPORT_OPTIONS_PLIST} \
         -exportPath . \
-        -exportOptionsPlist ${EXPORT_OPTIONS_PLIST}
+        -json
+
 }
 
 archive
