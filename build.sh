@@ -3,8 +3,10 @@
 export SCHEME_NAME=ViewTheWord
 export XCODE_PROJECT_PATH=$(find . -name ${SCHEME_NAME}.xcodeproj)
 export ARCHIVE_TMP_DIR=$(mktemp -d)
+echo $ARCHIVE_TMP_DIR
 
-echo "Archive temp directory : ${ARCHIVE_TMP_DIR}"
+# pre-cleanup
+find . -maxdepth 1 -name \*.dmg -exec rm -f {} \;2>&1 >/dev/null
 
 function archive () {
     xcodebuild archive \
@@ -36,5 +38,4 @@ EOF
 
 }
 
-archive
-exportArchive
+archive && exportArchive

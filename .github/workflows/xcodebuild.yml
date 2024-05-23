@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@v4
       - name: Create Archive
         run: |
-          bash archive.sh
+          bash build.sh
       - name: Install create-dmg
         run: |
           brew install create-dmg
