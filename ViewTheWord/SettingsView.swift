@@ -49,6 +49,7 @@ struct DisplaySettingsView: View {
     @AppStorage("fontSizeVerseRef") private var fontSizeVerseRef = 20.0
     @AppStorage("vStackPadding") private var vStackPadding = 20.0
     @AppStorage("transparentBackground") var transparentBackground = false
+    @AppStorage("apiUrlToPost") var apiUrlToPost: URL?
 
     var body: some View {
         VStack {
@@ -70,6 +71,13 @@ struct DisplaySettingsView: View {
                     Toggle("Transparent background", isOn: $transparentBackground)
                 }
                 .headerProminence(.increased)
+
+                Section(header: Text("API to POST verse")) {
+                    TextField("API URL", text: Binding(
+                            get: { apiUrlToPost?.absoluteString ?? "" },
+                            set: { apiUrlToPost = URL(string: $0) }
+                    )).textFieldStyle(.roundedBorder)
+                }
             }
             .listStyle(.inset)
         }

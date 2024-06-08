@@ -43,10 +43,14 @@ struct ProjectorView: View {
         }
         .onDisappear {
             windowOpened = false
+            clearApi()
         }
 
         .onAppear {
             windowOpened = true
+        }
+        .onChange(of: projectorViewModel.projectorViewData.title, initial: true){
+            sendTextOverNetwork(text: projectorViewModel.projectorViewData.primaryText, title: projectorViewModel.projectorViewData.title)
         }
         .border(.red)
         .multilineTextAlignment(.center)
