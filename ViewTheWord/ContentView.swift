@@ -47,7 +47,40 @@ struct MainView: View {
     @AppStorage("PrimaryBibleName") private var primaryBibleName: String = bundledPrimaryBibleUrl.absoluteString
     @AppStorage("SecondaryBibleName") private var secondaryBibleName: String = bundledSecondaryBibleUrl.absoluteString
 
+    @State private var columnVisibility = NavigationSplitViewVisibility.all
+    @State var bookName: String?
+    @State var chapterNumber: String?
+    
+    
     var body: some View {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            List(bibleBooks.keys, id: \.self, selection: $bookName, rowContent: Text.init)
+                .navigationSplitViewColumnWidth(200)
+          // Side bar view e.g. list of books
+        } content: {
+            if let item = bookName {
+                let count: Int = bibleBooks[item]?.last ?? 0
+                if count > 0 {
+                    let chapters = Array(1...count).map {String($0)}
+                    List(chapters, id: \.self, selection: $chapterNumber, rowContent: Text.init)
+                        .navigationTitle(item)
+                        .listStyle(SidebarListStyle())
+                        .navigationSplitViewColumnWidth(100)
+                } else {
+                    Text("Please select a book.")
+                }
+            }
+          // Content view e.g. chapter list of the selected book
+            
+        } detail: {
+            Text("asas")
+          // Detail view e.g. details of the selected chapter of the selected book
+        }
+        .navigationSplitViewStyle(.automatic)
+    }
+    
+    
+    var bdody: some View {
         NavigationView {
             VStack {
                 HStack {
@@ -164,6 +197,10 @@ struct MainView: View {
         chapterCount = Int32(bibleBooks[bookName]?.last ?? 0)
     }
 
+    func getChapterCount1(bookName: String) -> Int {
+        return Int(bibleBooks[bookName]?.last ?? 0)
+    }
+    
     func setWord(updateRowView: Bool = true, project: Bool = true) {
         guard let verseQuery = SearchQuery(ask: ask).verseQuery() else {
             validQuery.toggle()
