@@ -30,7 +30,9 @@ struct ProjectorView: View {
                     .lineLimit(1)
                     .font(.system(size: CGFloat(fontSizeVerseRef), weight: .bold))
                 if let secondaryText = projectorViewModel.projectorViewData.secondaryText {
-                    Text(secondaryText)
+                    if secondaryText != "\u{200c}" {
+                        Text(secondaryText)
+                    }
                 }
                 Spacer()
             }
