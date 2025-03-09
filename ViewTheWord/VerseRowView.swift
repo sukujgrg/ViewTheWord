@@ -146,6 +146,7 @@ struct VerseRowView: View {
     }
 
     private func project(index: Int) {
+        @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
         newVerseTargetModel(index: index)
         let title = verseTargetModel.verseQuery.title()
 
