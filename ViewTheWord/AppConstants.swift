@@ -5,8 +5,8 @@ import os
 
 let logger = Logger()
 
-let bundledPrimaryBibleUrl: URL = Bundle.main.url(forResource: "MAL_BSI", withExtension: "bible")!
-let bundledSecondaryBibleUrl: URL = Bundle.main.url(forResource: "ENG_UKJV", withExtension: "bible")!
+let bundledPrimaryBibleUrl: URL? = Bundle.main.url(forResource: "MAL_BSI", withExtension: "bible")
+let bundledSecondaryBibleUrl: URL? = Bundle.main.url(forResource: "ENG_UKJV", withExtension: "bible")
 
 // bookName: [bookNumber, numberOfChapter]
 

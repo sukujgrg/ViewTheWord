@@ -38,4 +38,4 @@ EOF
 
 }
 
-archive && exportArchive
+archive #&& exportArchive

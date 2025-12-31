@@ -40,6 +40,8 @@ struct GeneralSettingsView: View {
             Button("Clear History") {
                 history.removeAll()
             }
+            .accessibilityLabel("Clear verse search history")
+            .accessibilityHint("Removes all previously searched verses from history")
         }
     }
 }
@@ -88,8 +90,8 @@ struct BibleImportView: View {
     @State var showFileChooser = false
     @State private var isImporting: Bool = false
 
-    @AppStorage("PrimaryBibleName") private var primaryBibleName: String = bundledPrimaryBibleUrl.absoluteString
-    @AppStorage("SecondaryBibleName") private var secondaryBibleName: String = bundledSecondaryBibleUrl.absoluteString
+    @AppStorage("PrimaryBibleName") private var primaryBibleName: String = bundledPrimaryBibleUrl?.absoluteString ?? ""
+    @AppStorage("SecondaryBibleName") private var secondaryBibleName: String = bundledSecondaryBibleUrl?.absoluteString ?? ""
     @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
     @AppStorage("scrollTo") var scrollTo = true
 
@@ -157,21 +159,42 @@ struct BibleImportView: View {
             logger.error("\(selectedFile.lastPathComponent) is an invalid bible db name. It should be in '<LANG>_<NAME>.bible' format.")
             return
         }
+
         let fileManager = FileManager.default
-        let bundledBible = [bundledPrimaryBibleUrl.lastPathComponent, bundledSecondaryBibleUrl.lastPathComponent]
-        if !bundledBible.contains(selectedFile.lastPathComponent) {
-            let docDir = try! FileManager.default.url(
+        var bundledBible: [String] = []
+
+        if let primary = bundledPrimaryBibleUrl {
+            bundledBible.append(primary.lastPathComponent)
+        }
+        if let secondary = bundledSecondaryBibleUrl {
+            bundledBible.append(secondary.lastPathComponent)
+        }
+
+        // Don't import bundled Bibles
+        if bundledBible.contains(selectedFile.lastPathComponent) {
+            logger.info("Cannot import bundled Bible: \(selectedFile.lastPathComponent)")
+            return
+        }
+
+        do {
+            let docDir = try FileManager.default.url(
                 for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true
             )
             let documentsURL = docDir.appendingPathComponent(selectedFile.lastPathComponent)
-            do {
-                try fileManager.copyItem(at: selectedFile, to: documentsURL)
-                try fileManager.setAttributes(
-                    [FileAttributeKey.posixPermissions: 0o444], ofItemAtPath: documentsURL.path
-                )
-            } catch {
-                logger.error("\(documentsURL.path): \(error.localizedDescription)")
+
+            // Check if file already exists
+            if fileManager.fileExists(atPath: documentsURL.path) {
+                logger.warning("Bible file already exists: \(selectedFile.lastPathComponent)")
+                return
             }
+
+            try fileManager.copyItem(at: selectedFile, to: documentsURL)
+            try fileManager.setAttributes(
+                [FileAttributeKey.posixPermissions: 0o444], ofItemAtPath: documentsURL.path
+            )
+            logger.info("Successfully imported Bible: \(selectedFile.lastPathComponent)")
+        } catch {
+            logger.error("Failed to import Bible at \(selectedFile.path): \(error.localizedDescription)")
         }
     }
 }
