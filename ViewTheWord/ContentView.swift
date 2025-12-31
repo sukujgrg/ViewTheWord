@@ -192,8 +192,6 @@ struct MainContentView: View {
     let secondaryBibleName: String
     let showOnlyPrimary: Bool
     let onSubmit: () -> Void
-    let onPrimaryBibleChange: () -> Void
-    let onSecondaryBibleChange: () -> Void
     let closeProjector: () -> Void
     let onSearchVerseSelected: (AVerse) -> Void
 
@@ -214,12 +212,6 @@ struct MainContentView: View {
                 .focused($isSearchFieldFocused)
                 .onSubmit {
                     onSubmit()
-                }
-                .onChange(of: primaryBibleName) {
-                    onPrimaryBibleChange()
-                }
-                .onChange(of: secondaryBibleName) {
-                    onSecondaryBibleChange()
                 }
                 .modifier(ShakeEffect(shakes: validQuery ? 2 : 0))
                 .frame(width: 500, height: 35, alignment: .center)
@@ -315,6 +307,16 @@ struct MainView: View {
     @AppStorage("PrimaryBibleName") private var primaryBibleName: String = bundledPrimaryBibleUrl?.absoluteString ?? ""
     @AppStorage("SecondaryBibleName") private var secondaryBibleName: String = bundledSecondaryBibleUrl?.absoluteString ?? ""
 
+    // Long-lived database connections (reused across queries)
+    @State private var biblePrimary: Bible
+    @State private var bibleSecondary: Bible
+
+    init() {
+        let bibleUrl = BibleUrl()
+        _biblePrimary = State(initialValue: Bible(dbUrl: bibleUrl.primaryBibleUrl))
+        _bibleSecondary = State(initialValue: Bible(dbUrl: bibleUrl.secondaryBibleUrl))
+    }
+
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             // Sidebar: Books
@@ -363,12 +365,6 @@ struct MainView: View {
                         validQuery = true
                     }
                     focusedColumn = .verses
-                },
-                onPrimaryBibleChange: {
-                    processSearchQuery(updateRowView: true, project: false)
-                },
-                onSecondaryBibleChange: {
-                    processSearchQuery(updateRowView: true, project: false)
                 },
                 closeProjector: closeProjector,
                 onSearchVerseSelected: { verse in
@@ -423,6 +419,30 @@ struct MainView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ToggleKeyboardShortcuts"))) { _ in
             showKeyboardShortcuts.toggle()
         }
+        .onChange(of: primaryBibleName) { oldValue, newValue in
+            // Recreate primary Bible connection when translation changes
+            // Note: Old instance will be deallocated by ARC after ongoing queries complete
+            if let newUrl = URL(string: newValue) {
+                biblePrimary = Bible(dbUrl: newUrl)
+
+                // Reload current verse with new translation
+                if verseRowViewModel.verseRowData.primaryChapter.count > 0 {
+                    processSearchQuery(updateRowView: true, project: windowOpened)
+                }
+            }
+        }
+        .onChange(of: secondaryBibleName) { oldValue, newValue in
+            // Recreate secondary Bible connection when translation changes
+            // Note: Old instance will be deallocated by ARC after ongoing queries complete
+            if let newUrl = URL(string: newValue) {
+                bibleSecondary = Bible(dbUrl: newUrl)
+
+                // Reload current verse with new translation
+                if verseRowViewModel.verseRowData.primaryChapter.count > 0 {
+                    processSearchQuery(updateRowView: true, project: windowOpened)
+                }
+            }
+        }
         .animation(.easeInOut(duration: 0.3), value: selectedBook)
     }
     
@@ -450,11 +470,7 @@ struct MainView: View {
     }
 
     func performPhraseSearch(searchText: String, filter: SearchFilter) {
-        let bibleUrl = BibleUrl()
-        let biblePrimary = Bible(dbUrl: bibleUrl.primaryBibleUrl)
-        let bibleSecondary = Bible(dbUrl: bibleUrl.secondaryBibleUrl)
-
-        // Phrase search with optional filter
+        // Phrase search with optional filter using long-lived connections
         let primaryResults = biblePrimary.searchTextWithFilter(searchQuery: searchText, filter: filter) ?? []
         let secondaryResults = bibleSecondary.searchTextWithFilter(searchQuery: searchText, filter: filter) ?? []
 
@@ -466,11 +482,7 @@ struct MainView: View {
     }
 
     func performMultiTermSearch(searchText: String, filter: SearchFilter) {
-        let bibleUrl = BibleUrl()
-        let biblePrimary = Bible(dbUrl: bibleUrl.primaryBibleUrl)
-        let bibleSecondary = Bible(dbUrl: bibleUrl.secondaryBibleUrl)
-
-        // Parse as expression-based search (with AND/OR/NOT)
+        // Parse as expression-based search (with AND/OR/NOT) using long-lived connections
         let parser = SearchParser(query: searchText)
         if let expression = parser.parse() {
             // Use expression-based search
@@ -514,17 +526,13 @@ struct MainView: View {
             }
         }
 
-        let bibleUrl = BibleUrl()
-        let biblePrimary = Bible(dbUrl: bibleUrl.primaryBibleUrl)
-        let bibleSecondary = Bible(dbUrl: bibleUrl.secondaryBibleUrl)
-
-        // Try to get verse from primary Bible
+        // Try to get verse from primary Bible using long-lived connection
         var primaryText: String?
         if let verseOne = biblePrimary.pickAVerse(verseQuery: verseQuery) {
             primaryText = verseOne.verse
         }
 
-        // Try to get verse from secondary Bible
+        // Try to get verse from secondary Bible using long-lived connection
         var secondaryText: String?
         if !showOnlyPrimary {
             if let verseTwo = bibleSecondary.pickAVerse(verseQuery: verseQuery) {
@@ -581,17 +589,13 @@ struct MainView: View {
     }
 
     func projectSearchResult(verse: AVerse) {
-        let bibleUrl = BibleUrl()
-        let biblePrimary = Bible(dbUrl: bibleUrl.primaryBibleUrl)
-        let bibleSecondary = Bible(dbUrl: bibleUrl.secondaryBibleUrl)
-
         let verseQuery = VerseQuery(
             bookName: verse.bookName,
             chapterNumber: verse.chapterNumber,
             verseNumber: verse.verseNumber
         )
 
-        // Get verse text from both Bibles
+        // Get verse text from both Bibles using long-lived connections
         var primaryText = verse.verse
         if let verseOne = biblePrimary.pickAVerse(verseQuery: verseQuery) {
             primaryText = verseOne.verse

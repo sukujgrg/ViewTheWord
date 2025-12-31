@@ -92,6 +92,15 @@ class Bible {
     private var db: OpaquePointer?
     private let dbQueue = DispatchQueue(label: "com.viewtheword.database", qos: .userInitiated)
 
+    // Cache for O(1) book number to name lookups
+    private static let bookNumberToName: [Int: String] = {
+        var cache: [Int: String] = [:]
+        for (name, details) in bibleBooks {
+            cache[details[0]] = name
+        }
+        return cache
+    }()
+
     init(dbUrl: URL) {
         self.dbUrl = dbUrl
         db = openDb()
@@ -194,11 +203,13 @@ class Bible {
     func searchTextWithFilter(searchQuery: String, filter: SearchFilter, limit: Int = 100) -> [AVerse]? {
         return dbQueue.sync {
             var whereClause = "verse LIKE ?"
+            var bookNumbers: [Int]? = nil
 
             // Add book filter if specified
-            if let bookNumbers = filter.bookNumbers() {
-                let bookNumbersStr = bookNumbers.map { String($0) }.joined(separator: ",")
-                whereClause = "(\(whereClause)) AND bnumber IN (\(bookNumbersStr))"
+            if let numbers = filter.bookNumbers() {
+                bookNumbers = numbers
+                let placeholders = numbers.map { _ in "?" }.joined(separator: ",")
+                whereClause = "(\(whereClause)) AND bnumber IN (\(placeholders))"
             }
 
             let queryStatementString = """
@@ -207,7 +218,12 @@ class Bible {
                     ORDER BY bnumber, cnumber, vnumber
                     LIMIT ?;
             """
-            return runSearchQuery(queryStatementString: queryStatementString, searchPattern: "%\(searchQuery)%", limit: limit)
+            return runSearchQueryWithFilter(
+                queryStatementString: queryStatementString,
+                searchPattern: "%\(searchQuery)%",
+                bookNumbers: bookNumbers,
+                limit: limit
+            )
         }
     }
 
@@ -215,11 +231,13 @@ class Bible {
         return dbQueue.sync {
             let sql = expression.toSQL()
             var whereClause = sql.whereClause
+            var bookNumbers: [Int]? = nil
 
             // Add book filter if specified
-            if let bookNumbers = filter.bookNumbers() {
-                let bookNumbersStr = bookNumbers.map { String($0) }.joined(separator: ",")
-                whereClause = "(\(whereClause)) AND bnumber IN (\(bookNumbersStr))"
+            if let numbers = filter.bookNumbers() {
+                bookNumbers = numbers
+                let placeholders = numbers.map { _ in "?" }.joined(separator: ",")
+                whereClause = "(\(whereClause)) AND bnumber IN (\(placeholders))"
             }
 
             let queryStatementString = """
@@ -229,9 +247,10 @@ class Bible {
                     LIMIT ?;
             """
 
-            return runSearchQueryWithExpression(
+            return runSearchQueryWithExpressionAndFilter(
                 queryStatementString: queryStatementString,
                 searchTerms: sql.terms,
+                bookNumbers: bookNumbers,
                 limit: limit
             )
         }
@@ -270,8 +289,8 @@ class Bible {
             }
             let verse = String(cString: verseText)
 
-            // Look up book name from number
-            let bookName = bibleBooks.first { $0.value[0] == Int(bookNumber) }?.key ?? "Unknown"
+            // Look up book name from number using cached mapping
+            let bookName = Bible.bookNumberToName[Int(bookNumber)] ?? "Unknown"
 
             verses.append(AVerse(
                 verseId: Int(verseId),
@@ -388,8 +407,139 @@ class Bible {
             }
             let verse = String(cString: verseText)
 
-            // Look up book name from number
-            let bookName = bibleBooks.first { $0.value[0] == Int(bookNumber) }?.key ?? "Unknown"
+            // Look up book name from number using cached mapping
+            let bookName = Bible.bookNumberToName[Int(bookNumber)] ?? "Unknown"
+
+            verses.append(AVerse(
+                verseId: Int(verseId),
+                bookNumber: Int(bookNumber),
+                bookName: bookName,
+                chapterNumber: Int(chapterNumber),
+                verseNumber: Int(verseNumber),
+                verse: verse
+            ))
+        }
+
+        sqlite3_finalize(queryStatement)
+        return verses.isEmpty ? nil : verses
+    }
+
+    private func runSearchQueryWithFilter(
+        queryStatementString: String,
+        searchPattern: String,
+        bookNumbers: [Int]?,
+        limit: Int
+    ) -> [AVerse]? {
+        guard db != nil else {
+            return nil
+        }
+        var verses: [AVerse] = []
+        var queryStatement: OpaquePointer?
+
+        guard sqlite3_prepare_v2(db, queryStatementString, -1, &queryStatement, nil) == SQLITE_OK else {
+            let errmsg = String(cString: sqlite3_errmsg(db))
+            logger.error("Failed to prepare search query: \(errmsg)")
+            return nil
+        }
+
+        // Bind parameters: search pattern, book numbers (if any), and limit
+        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        var paramIndex: Int32 = 1
+
+        // Bind search pattern
+        sqlite3_bind_text(queryStatement, paramIndex, (searchPattern as NSString).utf8String, -1, SQLITE_TRANSIENT)
+        paramIndex += 1
+
+        // Bind book numbers if present
+        if let bookNumbers = bookNumbers {
+            for bookNum in bookNumbers {
+                sqlite3_bind_int(queryStatement, paramIndex, Int32(bookNum))
+                paramIndex += 1
+            }
+        }
+
+        // Bind limit
+        sqlite3_bind_int(queryStatement, paramIndex, Int32(limit))
+
+        while sqlite3_step(queryStatement) == SQLITE_ROW {
+            let verseId = sqlite3_column_int(queryStatement, 0)
+            let bookNumber = sqlite3_column_int(queryStatement, 1)
+            let chapterNumber = sqlite3_column_int(queryStatement, 2)
+            let verseNumber = sqlite3_column_int(queryStatement, 3)
+
+            guard let verseText = sqlite3_column_text(queryStatement, 4) else {
+                continue
+            }
+            let verse = String(cString: verseText)
+
+            // Look up book name from number using cached mapping
+            let bookName = Bible.bookNumberToName[Int(bookNumber)] ?? "Unknown"
+
+            verses.append(AVerse(
+                verseId: Int(verseId),
+                bookNumber: Int(bookNumber),
+                bookName: bookName,
+                chapterNumber: Int(chapterNumber),
+                verseNumber: Int(verseNumber),
+                verse: verse
+            ))
+        }
+
+        sqlite3_finalize(queryStatement)
+        return verses.isEmpty ? nil : verses
+    }
+
+    private func runSearchQueryWithExpressionAndFilter(
+        queryStatementString: String,
+        searchTerms: [String],
+        bookNumbers: [Int]?,
+        limit: Int
+    ) -> [AVerse]? {
+        guard db != nil else {
+            return nil
+        }
+        var verses: [AVerse] = []
+        var queryStatement: OpaquePointer?
+
+        guard sqlite3_prepare_v2(db, queryStatementString, -1, &queryStatement, nil) == SQLITE_OK else {
+            let errmsg = String(cString: sqlite3_errmsg(db))
+            logger.error("Failed to prepare search query: \(errmsg)")
+            return nil
+        }
+
+        // Bind search terms
+        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        var paramIndex: Int32 = 1
+
+        for term in searchTerms {
+            sqlite3_bind_text(queryStatement, paramIndex, (term as NSString).utf8String, -1, SQLITE_TRANSIENT)
+            paramIndex += 1
+        }
+
+        // Bind book numbers if present
+        if let bookNumbers = bookNumbers {
+            for bookNum in bookNumbers {
+                sqlite3_bind_int(queryStatement, paramIndex, Int32(bookNum))
+                paramIndex += 1
+            }
+        }
+
+        // Bind limit
+        sqlite3_bind_int(queryStatement, paramIndex, Int32(limit))
+
+        while sqlite3_step(queryStatement) == SQLITE_ROW {
+            let verseId = sqlite3_column_int(queryStatement, 0)
+            let bookNumber = sqlite3_column_int(queryStatement, 1)
+            let chapterNumber = sqlite3_column_int(queryStatement, 2)
+            let verseNumber = sqlite3_column_int(queryStatement, 3)
+
+            guard let verseText = sqlite3_column_text(queryStatement, 4) else {
+                continue
+            }
+            let verse = String(cString: verseText)
+
+            // Look up book name from number using cached mapping
+            let bookName = Bible.bookNumberToName[Int(bookNumber)] ?? "Unknown"
 
             verses.append(AVerse(
                 verseId: Int(verseId),
