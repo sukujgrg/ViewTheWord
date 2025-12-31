@@ -117,11 +117,14 @@ struct VerseRowView: View {
                         // Update max verses whenever verse data changes
                         maxVersesOnCurrentChapter = max(verseRowViewModel.verseRowData.primaryChapter.count, verseRowViewModel.verseRowData.secondaryChapter.count)
                         currentIndex = verseTargetModel.verseQuery.verseNumber - 1
+                        // Scroll to the verse after data is loaded and LazyVGrid renders the content
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            value.scrollTo(currentIndex, anchor: .center)
+                        }
                     }
                     .onChange(of: verseTargetModel.verseQuery.title()) {
                         currentIndex = verseTargetModel.verseQuery.verseNumber - 1
-                        // scroll to index based on `scrollTo` setting.
-                        if scrollTo {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                             value.scrollTo(currentIndex, anchor: .center)
                         }
                     }
@@ -129,7 +132,9 @@ struct VerseRowView: View {
                     .onChange(of: verseTargetModel.verseQuery.bookAndChapter()) {
                         maxVersesOnCurrentChapter = count
                         currentIndex = verseTargetModel.verseQuery.verseNumber - 1
-                        value.scrollTo(currentIndex, anchor: .center)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            value.scrollTo(currentIndex, anchor: .center)
+                        }
                     }
                 }
             }
