@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-extension Array: RawRepresentable where Element: Codable {
+extension Array: @retroactive RawRepresentable where Element: Codable {
     public init?(rawValue: String) {
         guard let data = rawValue.data(using: .utf8),
               let result = try? JSONDecoder().decode([Element].self, from: data)
@@ -22,8 +22,8 @@ extension Array: RawRepresentable where Element: Codable {
 }
 
 extension View {
-    private func newWindowInternal(with title: String) -> NSWindow {
-        @AppStorage("transparentBackground") var transparentBackground = false
+    private func newWindowInternal(with title: String) -> NSWindow? {
+        let transparentBackground = UserDefaults.standard.bool(forKey: "transparentBackground")
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 0, height: 0),
@@ -32,27 +32,41 @@ extension View {
             defer: true
         )
 
-        guard let secondScreen = NSScreen.screens.last else {
-            return window
+        // Use the last screen if available (typically the projector), otherwise use main screen
+        // Filter to only active screens to avoid stale display identifiers
+        let availableScreens = NSScreen.screens.filter { screen in
+            // Check if screen frame is valid (not zero)
+            return screen.frame.width > 0 && screen.frame.height > 0
         }
 
-        window.setFrame(secondScreen.frame, display: true)
+        guard let targetScreen = availableScreens.last ?? NSScreen.main else {
+            logger.warning("No screen available for projector window")
+            return nil
+        }
+
+        window.setFrame(targetScreen.frame, display: true)
         window.level = NSWindow.Level.screenSaver
         window.orderFrontRegardless()  // useful when showing over a fullscreen background video.
         window.isReleasedWhenClosed = false
         window.title = title
         window.canHide = false
-        window.hasShadow = false  // this has to set if NSColor.clear has to work without showing prior verse as shadow.
+        window.hasShadow = false  // this has to be set if NSColor.clear has to work without showing prior verse as shadow.
+
         if transparentBackground {
             window.isOpaque = false
-            window.backgroundColor = NSColor.clear // NSColor(red: 1, green: 0.5, blue: 0.5, alpha: 0.5)
+            window.backgroundColor = NSColor.clear
         } else {
             window.isOpaque = true
         }
+
         return window
     }
 
     func openNewWindow(with title: String = "new Window") {
-        newWindowInternal(with: title).contentView = NSHostingView(rootView: self)
+        guard let window = newWindowInternal(with: title) else {
+            logger.error("Failed to create projector window")
+            return
+        }
+        window.contentView = NSHostingView(rootView: self)
     }
 }

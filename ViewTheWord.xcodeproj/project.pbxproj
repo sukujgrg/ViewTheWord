@@ -20,6 +20,10 @@
 		03EEAE5428798B57008EC35C /* OrderedCollections in Frameworks */ = {isa = PBXBuildFile; productRef = 03EEAE5328798B57008EC35C /* OrderedCollections */; };
 		03EFCF7928703DC500A69AD2 /* ProjectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03EFCF7828703DC500A69AD2 /* ProjectorView.swift */; };
 		03EFCF7B28703E1A00A69AD2 /* VerseRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03EFCF7A28703E1A00A69AD2 /* VerseRowView.swift */; };
+		436501622F05CAE400A2C331 /* OpenAIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 436501612F05CAE400A2C331 /* OpenAIClient.swift */; };
+		436501642F05E08200A2C331 /* EmbeddingsDb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 436501632F05E08200A2C331 /* EmbeddingsDb.swift */; };
+		436501662F05E47B00A2C331 /* FileLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 436501652F05E47B00A2C331 /* FileLogger.swift */; };
+		436501682F05E48C00A2C331 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 436501672F05E48C00A2C331 /* KeychainHelper.swift */; };
 		B20522252C13983700585F6D /* ApiCalls.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20522242C13983700585F6D /* ApiCalls.swift */; };
 		B26FEF50287B94F000DAD012 /* Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26FEF4F287B94F000DAD012 /* Extensions.swift */; };
 /* End PBXBuildFile section */
@@ -40,6 +44,10 @@
 		03EEAE4E28793D69008EC35C /* AppConstants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConstants.swift; sourceTree = "<group>"; };
 		03EFCF7828703DC500A69AD2 /* ProjectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectorView.swift; sourceTree = "<group>"; };
 		03EFCF7A28703E1A00A69AD2 /* VerseRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerseRowView.swift; sourceTree = "<group>"; };
+		436501612F05CAE400A2C331 /* OpenAIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIClient.swift; sourceTree = "<group>"; };
+		436501632F05E08200A2C331 /* EmbeddingsDb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbeddingsDb.swift; sourceTree = "<group>"; };
+		436501652F05E47B00A2C331 /* FileLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileLogger.swift; sourceTree = "<group>"; };
+		436501672F05E48C00A2C331 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
 		B20522242C13983700585F6D /* ApiCalls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApiCalls.swift; sourceTree = "<group>"; };
 		B26FEF4F287B94F000DAD012 /* Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Extensions.swift; sourceTree = "<group>"; };
 		B26FEF51287B9F6900DAD012 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
@@ -88,6 +96,10 @@
 		03A1D26228672D1700511E73 /* ViewTheWord */ = {
 			isa = PBXGroup;
 			children = (
+				436501652F05E47B00A2C331 /* FileLogger.swift */,
+				436501672F05E48C00A2C331 /* KeychainHelper.swift */,
+				436501632F05E08200A2C331 /* EmbeddingsDb.swift */,
+				436501612F05CAE400A2C331 /* OpenAIClient.swift */,
 				B2B7BDE52BE4A13B00A1CB41 /* ViewTheWordRelease.entitlements */,
 				033226FB2876908800336EDD /* Resources */,
 				038BC61F287410DA005B8728 /* Info.plist */,
@@ -146,7 +158,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1340;
-				LastUpgradeCheck = 1530;
+				LastUpgradeCheck = 1620;
 				TargetAttributes = {
 					03A1D25F28672D1700511E73 = {
 						CreatedOnToolsVersion = 13.4.1;
@@ -195,12 +207,16 @@
 			files = (
 				039A40972872325E00A672BD /* SettingsView.swift in Sources */,
 				B26FEF50287B94F000DAD012 /* Extensions.swift in Sources */,
+				436501622F05CAE400A2C331 /* OpenAIClient.swift in Sources */,
 				B20522252C13983700585F6D /* ApiCalls.swift in Sources */,
 				03EFCF7928703DC500A69AD2 /* ProjectorView.swift in Sources */,
+				436501642F05E08200A2C331 /* EmbeddingsDb.swift in Sources */,
 				03A1D26628672D1700511E73 /* ContentView.swift in Sources */,
 				03EEAE4F28793D69008EC35C /* AppConstants.swift in Sources */,
 				03A1D27D2867FBC800511E73 /* Db.swift in Sources */,
 				03A1D26428672D1700511E73 /* ViewTheWordApp.swift in Sources */,
+				436501662F05E47B00A2C331 /* FileLogger.swift in Sources */,
+				436501682F05E48C00A2C331 /* KeychainHelper.swift in Sources */,
 				03EFCF7B28703E1A00A69AD2 /* VerseRowView.swift in Sources */,
 				03A1D27F28685D5400511E73 /* RxVerse.swift in Sources */,
 			);

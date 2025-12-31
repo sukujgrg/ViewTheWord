@@ -44,17 +44,20 @@ struct ProjectorView: View {
             Spacer()
         }
         .onDisappear {
-            windowOpened = false
+            // Only update flag if window is actually closed
+            DispatchQueue.main.async {
+                if !NSApplication.shared.windows.contains(where: { $0.title == "Projector" }) {
+                    windowOpened = false
+                }
+            }
             clearApi()
         }
-
-        .onAppear {
-            windowOpened = true
+        .onChange(of: projectorViewModel.projectorViewData.title){
+            // Only send if we have valid data (not placeholder)
+            if projectorViewModel.projectorViewData.primaryText != "?" {
+                sendTextOverNetwork(text: projectorViewModel.projectorViewData.primaryText, title: projectorViewModel.projectorViewData.title)
+            }
         }
-        .onChange(of: projectorViewModel.projectorViewData.title, initial: true){
-            sendTextOverNetwork(text: projectorViewModel.projectorViewData.primaryText, title: projectorViewModel.projectorViewData.title)
-        }
-        .border(.red)
         .multilineTextAlignment(.center)
     }
 }

@@ -1,24 +1,37 @@
 #!/bin/bash
 
+set -e  # Exit on error
+
 export SCHEME_NAME=ViewTheWord
 export XCODE_PROJECT_PATH=$(find . -name ${SCHEME_NAME}.xcodeproj)
 export ARCHIVE_TMP_DIR=$(mktemp -d)
-echo $ARCHIVE_TMP_DIR
+export BUILD_DIR="./build"
+
+echo "Archive directory: $ARCHIVE_TMP_DIR"
 
 # pre-cleanup
-find . -maxdepth 1 -name \*.dmg -exec rm -f {} \;2>&1 >/dev/null
+find . -maxdepth 1 -name \*.dmg -exec rm -f {} \; 2>&1 >/dev/null
+rm -rf ${BUILD_DIR} 2>&1 >/dev/null
+mkdir -p ${BUILD_DIR}
 
 function archive () {
+    echo "Building and archiving..."
     xcodebuild archive \
         -scheme ${SCHEME_NAME} \
         -project $XCODE_PROJECT_PATH \
         -configuration Release \
-        -archivePath $ARCHIVE_TMP_DIR \
+        -archivePath ${ARCHIVE_TMP_DIR} \
         -destination "platform=macOS,arch=arm64" \
-        -json
+        COPY_PHASE_STRIP=YES \
+        STRIP_INSTALLED_PRODUCT=YES \
+        DEPLOYMENT_POSTPROCESSING=YES \
+        | grep -E "^(Build|Archive|error|warning|note:)" || true
+
+    echo "Archive created at: ${ARCHIVE_TMP_DIR}.xcarchive"
 }
 
 function exportArchive () {
+    echo "Exporting archive..."
     export EXPORT_OPTIONS_PLIST=$(mktemp)
     cat << EOF > ${EXPORT_OPTIONS_PLIST}
 <?xml version="1.0" encoding="UTF-8"?>
@@ -27,15 +40,73 @@ function exportArchive () {
 <dict>
    	<key>method</key>
    	<string>mac-application</string>
+   	<key>stripSwiftSymbols</key>
+   	<true/>
 </dict>
 </plist>
 EOF
     xcodebuild -exportArchive \
         -archivePath ${ARCHIVE_TMP_DIR}.xcarchive \
         -exportOptionsPlist ${EXPORT_OPTIONS_PLIST} \
-        -exportPath . \
-        -json
+        -exportPath ${BUILD_DIR} \
+        | grep -E "^(Export|error|warning|note:)" || true
 
+    echo "App exported to: ${BUILD_DIR}"
+
+    # Show binary info
+    if [ -f "${BUILD_DIR}/${SCHEME_NAME}.app/Contents/MacOS/${SCHEME_NAME}" ]; then
+        echo ""
+        echo "Binary information:"
+        echo "=================="
+        ls -lh "${BUILD_DIR}/${SCHEME_NAME}.app/Contents/MacOS/${SCHEME_NAME}"
+        file "${BUILD_DIR}/${SCHEME_NAME}.app/Contents/MacOS/${SCHEME_NAME}"
+
+        # Check if symbols are stripped
+        if nm "${BUILD_DIR}/${SCHEME_NAME}.app/Contents/MacOS/${SCHEME_NAME}" 2>&1 | grep -q "no symbols"; then
+            echo "✓ Symbols are STRIPPED"
+        else
+            echo "⚠ Warning: Symbols may not be fully stripped"
+        fi
+    fi
+
+    rm -f ${EXPORT_OPTIONS_PLIST}
 }
 
-archive && exportArchive
+function createDMG () {
+    echo ""
+    echo "Creating DMG..."
+
+    # Use fixed name in CI, timestamped name locally
+    if [ -n "$CI" ] || [ -n "$GITHUB_ACTIONS" ]; then
+        DMG_NAME="${SCHEME_NAME}.dmg"
+    else
+        DMG_NAME="${SCHEME_NAME}-$(date +%Y%m%d-%H%M%S).dmg"
+    fi
+
+    # Create DMG
+    hdiutil create -volname "${SCHEME_NAME}" \
+        -srcfolder "${BUILD_DIR}/${SCHEME_NAME}.app" \
+        -ov -format UDZO \
+        "${DMG_NAME}"
+
+    echo "✓ DMG created: ${DMG_NAME}"
+    ls -lh "${DMG_NAME}"
+}
+
+# Run the build process
+# In CI, skip DMG creation (workflow creates it with create-dmg)
+if [ -n "$CI" ] || [ -n "$GITHUB_ACTIONS" ]; then
+    archive && exportArchive
+    echo ""
+    echo "Build complete!"
+    echo "==============="
+    echo "App bundle: ${BUILD_DIR}/${SCHEME_NAME}.app"
+    echo "Note: DMG creation skipped in CI (workflow will create it)"
+else
+    archive && exportArchive && createDMG
+    echo ""
+    echo "Build complete!"
+    echo "==============="
+    echo "App bundle: ${BUILD_DIR}/${SCHEME_NAME}.app"
+    echo "DMG file: ${DMG_NAME}"
+fi

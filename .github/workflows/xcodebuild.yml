@@ -22,7 +22,7 @@ jobs:
           brew install create-dmg
       - name: Create DMG
         run: |
-          create-dmg --eula LICENSE --no-internet-enable --skip-jenkins --icon "ViewTheWord.app" 20 300 --app-drop-link 100 300 --window-pos 400 100 --window-size 640 400 ViewTheWord.dmg ViewTheWord.app
+          create-dmg --eula LICENSE --no-internet-enable --skip-jenkins --icon "ViewTheWord.app" 20 300 --app-drop-link 100 300 --window-pos 400 100 --window-size 640 400 ViewTheWord.dmg build/ViewTheWord.app
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:

@@ -18,33 +18,62 @@ struct VerseRowView: View {
     @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
     @AppStorage("scrollTo") var scrollTo = true
 
-    @AppStorage("PrimaryBibleName") private var primaryBibleName: String = bundledPrimaryBibleUrl.absoluteString
-    @AppStorage("SecondaryBibleName") private var secondaryBibleName: String = bundledSecondaryBibleUrl.absoluteString
+    @AppStorage("PrimaryBibleName") private var primaryBibleName: String = bundledPrimaryBibleUrl?.absoluteString ?? ""
+    @AppStorage("SecondaryBibleName") private var secondaryBibleName: String = bundledSecondaryBibleUrl?.absoluteString ?? ""
 
     @State private var currentIndex: Int = -1
     @State private var maxVersesOnCurrentChapter: Int = -1
 
     @Binding var windowOpened: Bool
 
-    let columns = [
-        GridItem(.flexible()),
-        GridItem(.fixed(60)),
-        GridItem(.flexible())
-    ]
+    // MARK: - Computed Properties
+
+    private var columns: [GridItem] {
+        if showOnlyPrimary {
+            return [
+                GridItem(.flexible())
+            ]
+        } else {
+            return [
+                GridItem(.flexible()),
+                GridItem(.fixed(60)),
+                GridItem(.flexible())
+            ]
+        }
+    }
+
+    private var isVerseProjected: Bool {
+        projectorViewModel.projectorViewData.title == verseTargetModel.verseQuery.title && windowOpened
+    }
+
+    private func isCurrentVerse(_ index: Int) -> Bool {
+        isVerseProjected && currentIndex == index
+    }
+
+    private func formatBibleName(_ bibleUrl: String) -> String {
+        bibleUrl.components(separatedBy: "/")
+            .last?
+            .replacingOccurrences(of: ".bible", with: "")
+            .replacingOccurrences(of: "_", with: " ") ?? ""
+    }
+
+    // MARK: - Body
 
     var body: some View {
         if verseRowViewModel.verseRowData.primaryChapter.count > 0 {
-            let pb = primaryBibleName.components(separatedBy: "/").last
-            let sb = secondaryBibleName.components(separatedBy: "/").last
-            let pri = verseRowViewModel.verseRowData.primaryChapter
+            let primaryChapter = verseRowViewModel.verseRowData.primaryChapter
+
+            // Header with Bible names and chapter reference
             Grid {
                 Divider()
                 GridRow {
-                    Text("\(pb?.replacingOccurrences(of: ".bible", with: "").replacingOccurrences(of: "_", with: " ") ?? "")")
+                    Text(formatBibleName(primaryBibleName))
                         .bold()
-                    Text("\(pri[0].bookName) \(pri[0].chapterNumber)")
-                    Text("\(sb?.replacingOccurrences(of: ".bible", with: "").replacingOccurrences(of: "_", with: " ") ?? "")")
-                        .bold()
+                    Text("\(primaryChapter[0].bookName) \(primaryChapter[0].chapterNumber)")
+                    if !showOnlyPrimary {
+                        Text(formatBibleName(secondaryBibleName))
+                            .bold()
+                    }
                 }
                 Divider()
             }
@@ -54,90 +83,237 @@ struct VerseRowView: View {
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
                     let count = max(verseRowViewModel.verseRowData.primaryChapter.count, verseRowViewModel.verseRowData.secondaryChapter.count)
                     ForEach(0 ..< count, id: \.self) { index in
-                        // Primary verse
-                        if index < verseRowViewModel.verseRowData.primaryChapter.count {
-                            Text(verseRowViewModel.verseRowData.primaryChapter[index].verse)
-                                .onTapGesture(perform: { project(index: index) })
-                                .padding()
-                                .background(
-                                    Color(
-                                        projectorViewModel.projectorViewData.title == verseTargetModel.verseQuery.title() && windowOpened == true && currentIndex == index ? .systemBlue : .clear
-                                    )
-                                )
+                        if showOnlyPrimary {
+                            // Show only primary mode: Verse with superscript number
+                            verseCellWithSuperscript(
+                                text: verseRowViewModel.verseRowData.primaryChapter.indices.contains(index)
+                                    ? verseRowViewModel.verseRowData.primaryChapter[index].verse
+                                    : "\u{200c}",
+                                index: index,
+                                isActive: isCurrentVerse(index)
+                            )
                         } else {
-                            Text("\u{200c}")
-                        }
-
-                        // Verse button
-                        Button(action: { project(index: index) }) {
-                            Text(String(index + 1))
-                                .frame(width: 60, height: 60)
-                                .background(
-                                    Color(
-                                        projectorViewModel.projectorViewData.title == verseTargetModel.verseQuery.title() && windowOpened == true && currentIndex == index ? .systemBlue : .gray
-                                    )
-                                )
-                                .foregroundColor(.white)
-                        }
-                        .buttonStyle(PlainButtonStyle())
-
-                        // Secondary verse
-                        if index < verseRowViewModel.verseRowData.secondaryChapter.count {
-                            Text(verseRowViewModel.verseRowData.secondaryChapter[index].verse)
-                                .onTapGesture(perform: { project(index: index) })
-                                .padding()
-                                .background(
-                                    Color(
-                                        projectorViewModel.projectorViewData.title == verseTargetModel.verseQuery.title() && windowOpened == true && currentIndex == index ? .systemBlue : .clear
-                                    )
-                                )
-                        } else {
-                            Text("\u{200c}")
+                            // Full mode: Primary verse, verse number, secondary verse
+                            verseCell(
+                                text: verseRowViewModel.verseRowData.primaryChapter.indices.contains(index)
+                                    ? verseRowViewModel.verseRowData.primaryChapter[index].verse
+                                    : "\u{200c}",
+                                index: index,
+                                isActive: isCurrentVerse(index)
+                            )
+                            verseNumberButton(index: index, isActive: isCurrentVerse(index))
+                            verseCell(
+                                text: verseRowViewModel.verseRowData.secondaryChapter.indices.contains(index)
+                                    ? verseRowViewModel.verseRowData.secondaryChapter[index].verse
+                                    : "\u{200c}",
+                                index: index,
+                                isActive: isCurrentVerse(index)
+                            )
                         }
                     }
-                    .onChange(of: verseTargetModel.verseQuery.title()) {
+                    .onChange(of: verseRowViewModel.verseRowData.id) {
+                        // Update max verses whenever verse data changes
+                        maxVersesOnCurrentChapter = max(verseRowViewModel.verseRowData.primaryChapter.count, verseRowViewModel.verseRowData.secondaryChapter.count)
                         currentIndex = verseTargetModel.verseQuery.verseNumber - 1
-                        // scroll to the verse regardless of `scrollTo` setting.
-                        let keyCodes: [UInt16] = [76, 36, 125, 126] // enter, arrow down, arrow up
-                        NSEvent.addLocalMonitorForEvents(matching: [.keyUp]) { nsevent in
-                            if keyCodes.contains(nsevent.keyCode) {
-                                value.scrollTo(currentIndex, anchor: .center)
-                            }
-                            return nsevent
+                        // Scroll after data loads
+                        DispatchQueue.main.async {
+                            value.scrollTo(currentIndex, anchor: .center)
                         }
-                        // scroll to index based on `scrollTo` setting.
-                        if scrollTo {
+                    }
+                    .onChange(of: verseTargetModel.verseQuery.title) {
+                        currentIndex = verseTargetModel.verseQuery.verseNumber - 1
+                        DispatchQueue.main.async {
                             value.scrollTo(currentIndex, anchor: .center)
                         }
                     }
                     // this scroll is needed when switching between books/chapters
-                    .onChange(of: verseTargetModel.verseQuery.bookAndChapter()) {
+                    .onChange(of: verseTargetModel.verseQuery.bookAndChapter) {
                         maxVersesOnCurrentChapter = count
                         currentIndex = verseTargetModel.verseQuery.verseNumber - 1
-                        value.scrollTo(currentIndex, anchor: .center)
-                    }
-                    .onAppear {
-                        NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { nsevent in
-                            if nsevent.keyCode == 125 { // arrow down
-                                if currentIndex >= 0 && currentIndex < maxVersesOnCurrentChapter - 1 {
-                                    project(index: currentIndex + 1)
-                                }
-                            } else if nsevent.keyCode == 126 { // arrow up
-                                if currentIndex > 0 && currentIndex <= maxVersesOnCurrentChapter - 1 {
-                                    project(index: currentIndex - 1)
-                                }
-                            }
-                            return nsevent
+                        DispatchQueue.main.async {
+                            value.scrollTo(currentIndex, anchor: .center)
                         }
                     }
                 }
             }
             .padding(.horizontal)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                // Make sure the view can receive keyboard events
+            }
         }
         .frame(maxHeight: .infinity)
+        .focusable()
+        .focusEffectDisabled()
+        .onAppear {
+            // Initialize on first appearance
+            let count = max(verseRowViewModel.verseRowData.primaryChapter.count, verseRowViewModel.verseRowData.secondaryChapter.count)
+            maxVersesOnCurrentChapter = count
+            currentIndex = verseTargetModel.verseQuery.verseNumber - 1
+        }
+        .onKeyPress(keys: [.upArrow, .downArrow]) { keyPress in
+            let modifiers = keyPress.modifiers
+
+            if keyPress.key == .downArrow {
+                if modifiers.contains(.command) {
+                    navigateVerses(offset: 5)
+                } else if modifiers.contains(.option) {
+                    navigateToNextChapter()
+                } else {
+                    navigateVerses(offset: 1)
+                }
+                return .handled
+            }
+
+            if keyPress.key == .upArrow {
+                if modifiers.contains(.command) {
+                    navigateVerses(offset: -5)
+                } else if modifiers.contains(.option) {
+                    navigateToPreviousChapter()
+                } else {
+                    navigateVerses(offset: -1)
+                }
+                return .handled
+            }
+
+            return .ignored
+        }
+        .onKeyPress(characters: CharacterSet(charactersIn: " ")) { _ in
+            if currentIndex >= 0 {
+                toggleProjector(at: currentIndex)
+            }
+            return .handled
+        }
+        .onKeyPress { keyPress in
+            // Handle special function keys that don't have KeyEquivalent
+            // Check by characters for Page Up/Down, Home/End
+            if keyPress.characters == "\u{F72C}" { // Page Up
+                navigateVerses(offset: -10)
+                return .handled
+            }
+
+            if keyPress.characters == "\u{F72D}" { // Page Down
+                navigateVerses(offset: 10)
+                return .handled
+            }
+
+            if keyPress.characters == "\u{F729}" { // Home
+                navigateToVerse(0)
+                return .handled
+            }
+
+            if keyPress.characters == "\u{F72B}" { // End
+                navigateToVerse(maxVersesOnCurrentChapter - 1)
+                return .handled
+            }
+
+            return .ignored
+        }
     }
 
-    private func newVerseTargetModel(index: Int) {
+    // MARK: - View Components
+
+    @ViewBuilder
+    private func verseCell(text: String, index: Int, isActive: Bool) -> some View {
+        Text(text)
+            .onTapGesture { projectVerse(at: index) }
+            .padding()
+            .background(Color(isActive ? .systemBlue : .clear))
+    }
+
+    @ViewBuilder
+    private func verseCellWithSuperscript(text: String, index: Int, isActive: Bool) -> some View {
+        HStack(alignment: .top, spacing: 4) {
+            Text(String(index + 1))
+                .font(.system(size: 12))
+                .baselineOffset(8)
+                .foregroundColor(.secondary)
+
+            Text(text)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .onTapGesture { projectVerse(at: index) }
+        .padding()
+        .background(Color(isActive ? .systemBlue : .clear))
+        .accessibilityLabel("Verse \(index + 1): \(text)")
+        .accessibilityHint("Tap to project this verse to the projector window")
+    }
+
+    @ViewBuilder
+    private func verseNumberButton(index: Int, isActive: Bool) -> some View {
+        Button(action: { projectVerse(at: index) }) {
+            Text(String(index + 1))
+                .frame(width: 60, height: 60)
+                .background(Color(isActive ? .systemBlue : .gray))
+                .foregroundColor(.white)
+        }
+        .buttonStyle(PlainButtonStyle())
+        .accessibilityLabel("Verse \(index + 1)")
+        .accessibilityHint("Project this verse to the projector window")
+    }
+
+    // MARK: - Navigation Helpers
+
+    private func navigateVerses(offset: Int) {
+        let newIndex = currentIndex + offset
+        if newIndex >= 0 && newIndex < maxVersesOnCurrentChapter {
+            // Use DispatchQueue to avoid "Publishing changes from within view updates" error
+            DispatchQueue.main.async {
+                self.projectVerse(at: newIndex)
+            }
+        }
+    }
+
+    private func navigateToVerse(_ index: Int) {
+        if index >= 0 && index < maxVersesOnCurrentChapter {
+            DispatchQueue.main.async {
+                self.projectVerse(at: index)
+            }
+        }
+    }
+
+    private func navigateToNextChapter() {
+        let nextChapter = verseTargetModel.verseQuery.chapterNumber + 1
+        guard let maxChapter = bibleBooks[verseTargetModel.verseQuery.bookName]?.last,
+              nextChapter <= maxChapter else {
+            return
+        }
+
+        let newQuery = VerseQuery(
+            bookName: verseTargetModel.verseQuery.bookName,
+            chapterNumber: nextChapter,
+            verseNumber: 1
+        )
+        verseTargetModel.verseQuery = newQuery
+    }
+
+    private func navigateToPreviousChapter() {
+        let prevChapter = verseTargetModel.verseQuery.chapterNumber - 1
+        guard prevChapter >= 1 else {
+            return
+        }
+
+        let newQuery = VerseQuery(
+            bookName: verseTargetModel.verseQuery.bookName,
+            chapterNumber: prevChapter,
+            verseNumber: 1
+        )
+        verseTargetModel.verseQuery = newQuery
+    }
+
+    private func toggleProjector(at index: Int) {
+        if windowOpened && currentIndex == index {
+            // Close projector if showing same verse
+            NSApplication.shared.windows.first(where: { $0.title == "Projector" })?.close()
+        } else {
+            // Project the verse
+            DispatchQueue.main.async {
+                self.projectVerse(at: index)
+            }
+        }
+    }
+
+    private func updateVerseTarget(at index: Int) {
         verseTargetModel.verseQuery = VerseQuery(
             bookName: verseTargetModel.verseQuery.bookName,
             chapterNumber: verseTargetModel.verseQuery.chapterNumber,
@@ -145,10 +321,9 @@ struct VerseRowView: View {
         )
     }
 
-    private func project(index: Int) {
-        @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
-        newVerseTargetModel(index: index)
-        let title = verseTargetModel.verseQuery.title()
+    private func projectVerse(at index: Int) {
+        updateVerseTarget(at: index)
+        let title = verseTargetModel.verseQuery.title
 
         var primaryText: String?
         if index < verseRowViewModel.verseRowData.primaryChapter.count {
@@ -161,10 +336,21 @@ struct VerseRowView: View {
                 secondaryText = verseRowViewModel.verseRowData.secondaryChapter[index].verse
             }
         }
+
         projectorViewModel.projectorViewData = ProjectorViewData(
             title: title, primaryText: primaryText ?? "\u{200c}", secondaryText: secondaryText ?? "\u{200c}"
         )
+
+        // Check if projector window already exists
+        if NSApplication.shared.windows.contains(where: { $0.title == "Projector" }) {
+            // Window exists, just update flag
+            windowOpened = true
+            return
+        }
+
+        // Create new window only if it doesn't exist
         if !windowOpened {
+            windowOpened = true
             ProjectorView(windowOpened: $windowOpened)
                 .environmentObject(projectorViewModel)
                 .openNewWindow(with: "Projector")
