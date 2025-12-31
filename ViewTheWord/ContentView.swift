@@ -305,6 +305,7 @@ struct MainView: View {
     @State private var showKeyboardShortcuts = false
     @State private var searchResults: (primary: [AVerse], secondary: [AVerse])? = nil
     @State private var currentSearchQuery: String? = nil
+    @State private var isUpdatingFromTextField = false
     @FocusState private var focusedColumn: NavigationColumn?
 
     @AppStorage("history") private var history: [String] = ["John 3: 16"]
@@ -331,10 +332,13 @@ struct MainView: View {
                     selectedChapter: $selectedChapter,
                     chapterCount: chapterCount,
                     onChapterSelected: { chapter in
-                        ask = "\(selectedBook) \(chapter)"
-                        // Run setWord asynchronously to avoid blocking UI
-                        Task { @MainActor in
-                            setWord(updateRowView: true, project: false)
+                        // Only update if user clicked in sidebar (not programmatic update from text field)
+                        if !isUpdatingFromTextField {
+                            ask = "\(selectedBook) \(chapter)"
+                            // Run setWord asynchronously to avoid blocking UI
+                            Task { @MainActor in
+                                setWord(updateRowView: true, project: false)
+                            }
                         }
                     }
                 )
@@ -494,8 +498,20 @@ struct MainView: View {
         currentSearchQuery = nil
 
         if verseQuery.bookName != "" && verseQuery.chapterNumber != 0 {
+            // Set flag to prevent onChange handler from re-parsing when updating from text field
+            if updateRowView {
+                isUpdatingFromTextField = true
+            }
+
             getChapterCount(bookName: verseQuery.bookName)
             selectedChapter = verseQuery.chapterNumber
+
+            // Reset flag after sidebar is updated
+            if updateRowView {
+                DispatchQueue.main.async {
+                    isUpdatingFromTextField = false
+                }
+            }
         }
 
         let bibleUrl = BibleUrl()
