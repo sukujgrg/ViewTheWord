@@ -31,7 +31,6 @@ struct VerseRowView: View {
     private var columns: [GridItem] {
         if showOnlyPrimary {
             return [
-                GridItem(.fixed(60)),
                 GridItem(.flexible())
             ]
         } else {
@@ -85,9 +84,8 @@ struct VerseRowView: View {
                     let count = max(verseRowViewModel.verseRowData.primaryChapter.count, verseRowViewModel.verseRowData.secondaryChapter.count)
                     ForEach(0 ..< count, id: \.self) { index in
                         if showOnlyPrimary {
-                            // Show only primary mode: Verse number on left, then primary verse
-                            verseNumberButton(index: index, isActive: isCurrentVerse(index))
-                            verseCell(
+                            // Show only primary mode: Verse with superscript number
+                            verseCellWithSuperscript(
                                 text: verseRowViewModel.verseRowData.primaryChapter.indices.contains(index)
                                     ? verseRowViewModel.verseRowData.primaryChapter[index].verse
                                     : "\u{200c}",
@@ -221,6 +219,24 @@ struct VerseRowView: View {
             .onTapGesture { projectVerse(at: index) }
             .padding()
             .background(Color(isActive ? .systemBlue : .clear))
+    }
+
+    @ViewBuilder
+    private func verseCellWithSuperscript(text: String, index: Int, isActive: Bool) -> some View {
+        HStack(alignment: .top, spacing: 4) {
+            Text(String(index + 1))
+                .font(.system(size: 12))
+                .baselineOffset(8)
+                .foregroundColor(.secondary)
+
+            Text(text)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .onTapGesture { projectVerse(at: index) }
+        .padding()
+        .background(Color(isActive ? .systemBlue : .clear))
+        .accessibilityLabel("Verse \(index + 1): \(text)")
+        .accessibilityHint("Tap to project this verse to the projector window")
     }
 
     @ViewBuilder
