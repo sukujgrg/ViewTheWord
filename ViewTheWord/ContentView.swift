@@ -6,11 +6,11 @@ struct VerseQuery {
     let chapterNumber: Int
     let verseNumber: Int
 
-    func title() -> String {
+    var title: String {
         return "\(bookName) \(chapterNumber): \(verseNumber)"
     }
 
-    func bookAndChapter() -> String {
+    var bookAndChapter: String {
         return "\(bookName) \(chapterNumber)"
     }
 }
@@ -335,9 +335,9 @@ struct MainView: View {
                         // Only update if user clicked in sidebar (not programmatic update from text field)
                         if !isUpdatingFromTextField {
                             ask = "\(selectedBook) \(chapter)"
-                            // Run setWord asynchronously to avoid blocking UI
+                            // Run processSearchQuery asynchronously to avoid blocking UI
                             Task { @MainActor in
-                                setWord(updateRowView: true, project: false)
+                                processSearchQuery(updateRowView: true, project: false)
                             }
                         }
                     }
@@ -358,17 +358,17 @@ struct MainView: View {
                 secondaryBibleName: secondaryBibleName,
                 showOnlyPrimary: showOnlyPrimary,
                 onSubmit: {
-                    setWord(updateRowView: true)
+                    processSearchQuery(updateRowView: true)
                     withAnimation(.default) {
                         validQuery = true
                     }
                     focusedColumn = .verses
                 },
                 onPrimaryBibleChange: {
-                    setWord(updateRowView: true, project: false)
+                    processSearchQuery(updateRowView: true, project: false)
                 },
                 onSecondaryBibleChange: {
-                    setWord(updateRowView: true, project: false)
+                    processSearchQuery(updateRowView: true, project: false)
                 },
                 closeProjector: closeProjector,
                 onSearchVerseSelected: { verse in
@@ -399,7 +399,7 @@ struct MainView: View {
             ForEach(history, id: \.self) { item in
                 Button {
                     ask = item
-                    setWord(updateRowView: false)
+                    processSearchQuery(updateRowView: false)
                 } label: {
                     Text(item)
                 }
@@ -432,7 +432,7 @@ struct MainView: View {
         chapterCount = Int32(bibleBooks[bookName]?.last ?? 0)
     }
 
-    func setWord(updateRowView: Bool = true, project: Bool = true) {
+    func processSearchQuery(updateRowView: Bool = true, project: Bool = true) {
         // Check if this is a text search or verse query
         guard let searchType = SearchQuery(ask: ask).searchType() else {
             validQuery.toggle()
@@ -518,16 +518,13 @@ struct MainView: View {
         let biblePrimary = Bible(dbUrl: bibleUrl.primaryBibleUrl)
         let bibleSecondary = Bible(dbUrl: bibleUrl.secondaryBibleUrl)
 
-        // Primary
-        var primaryText = "?"
+        // Try to get verse from primary Bible
+        var primaryText: String?
         if let verseOne = biblePrimary.pickAVerse(verseQuery: verseQuery) {
             primaryText = verseOne.verse
-        } else {
-            validQuery.toggle()
-            return
         }
 
-        // Secondary
+        // Try to get verse from secondary Bible
         var secondaryText: String?
         if !showOnlyPrimary {
             if let verseTwo = bibleSecondary.pickAVerse(verseQuery: verseQuery) {
@@ -535,21 +532,33 @@ struct MainView: View {
             }
         }
 
+        // If neither Bible has the verse, show error
+        if primaryText == nil && secondaryText == nil {
+            validQuery.toggle()
+            return
+        }
+
         // Title
-        let title: String = verseQuery.title()
+        let title: String = verseQuery.title
 
         // History
         if history.count > 22 {
             history.remove(at: 1)
         }
-        if !history.contains(title) && primaryText != "?" {
+        if !history.contains(title) && (primaryText != nil || secondaryText != nil) {
             history.append(title)
         }
 
-        if primaryText != "?" && project {
+        if (primaryText != nil || secondaryText != nil) && project {
             // Set verse for projector view
+            let displayPrimaryText = primaryText ?? secondaryText ?? "\u{200c}"
+            // Only show secondary if primary exists AND they're different
+            let displaySecondaryText = primaryText != nil ? secondaryText : nil
+
             projectorViewModel.projectorViewData = ProjectorViewData(
-                title: title, primaryText: primaryText, secondaryText: secondaryText
+                title: title,
+                primaryText: displayPrimaryText,
+                secondaryText: displaySecondaryText
             )
             openProjector()
         }
@@ -561,13 +570,10 @@ struct MainView: View {
             // Resetting TextField content
             ask = title
 
-            // Set verse for row view
-            guard let primaryChapter = biblePrimary.pickAChapter(verseQuery: verseQuery) else {
-                return
-            }
-            guard let secondaryChapter = bibleSecondary.pickAChapter(verseQuery: verseQuery) else {
-                return
-            }
+            // Set verse for row view - show whatever chapters are available
+            let primaryChapter = biblePrimary.pickAChapter(verseQuery: verseQuery) ?? []
+            let secondaryChapter = bibleSecondary.pickAChapter(verseQuery: verseQuery) ?? []
+
             verseRowViewModel.verseRowData = VerseRowData(
                 primaryChapter: primaryChapter, secondaryChapter: secondaryChapter
             )
@@ -598,7 +604,7 @@ struct MainView: View {
             }
         }
 
-        let title = verseQuery.title()
+        let title = verseQuery.title
 
         // Set verse for projector view
         projectorViewModel.projectorViewData = ProjectorViewData(

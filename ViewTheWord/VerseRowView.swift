@@ -44,7 +44,7 @@ struct VerseRowView: View {
     }
 
     private var isVerseProjected: Bool {
-        projectorViewModel.projectorViewData.title == verseTargetModel.verseQuery.title() && windowOpened
+        projectorViewModel.projectorViewData.title == verseTargetModel.verseQuery.title && windowOpened
     }
 
     private func isCurrentVerse(_ index: Int) -> Bool {
@@ -117,23 +117,22 @@ struct VerseRowView: View {
                         // Update max verses whenever verse data changes
                         maxVersesOnCurrentChapter = max(verseRowViewModel.verseRowData.primaryChapter.count, verseRowViewModel.verseRowData.secondaryChapter.count)
                         currentIndex = verseTargetModel.verseQuery.verseNumber - 1
-                        // Delay scroll to allow LazyVGrid to render cells, especially when jumping to higher verse numbers
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        // Scroll after data loads
+                        DispatchQueue.main.async {
                             value.scrollTo(currentIndex, anchor: .center)
                         }
                     }
-                    .onChange(of: verseTargetModel.verseQuery.title()) {
+                    .onChange(of: verseTargetModel.verseQuery.title) {
                         currentIndex = verseTargetModel.verseQuery.verseNumber - 1
                         DispatchQueue.main.async {
                             value.scrollTo(currentIndex, anchor: .center)
                         }
                     }
                     // this scroll is needed when switching between books/chapters
-                    .onChange(of: verseTargetModel.verseQuery.bookAndChapter()) {
+                    .onChange(of: verseTargetModel.verseQuery.bookAndChapter) {
                         maxVersesOnCurrentChapter = count
                         currentIndex = verseTargetModel.verseQuery.verseNumber - 1
-                        // Delay scroll when switching chapters to allow LazyVGrid to render
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        DispatchQueue.main.async {
                             value.scrollTo(currentIndex, anchor: .center)
                         }
                     }
@@ -219,14 +218,14 @@ struct VerseRowView: View {
     @ViewBuilder
     private func verseCell(text: String, index: Int, isActive: Bool) -> some View {
         Text(text)
-            .onTapGesture { project(index: index) }
+            .onTapGesture { projectVerse(at: index) }
             .padding()
             .background(Color(isActive ? .systemBlue : .clear))
     }
 
     @ViewBuilder
     private func verseNumberButton(index: Int, isActive: Bool) -> some View {
-        Button(action: { project(index: index) }) {
+        Button(action: { projectVerse(at: index) }) {
             Text(String(index + 1))
                 .frame(width: 60, height: 60)
                 .background(Color(isActive ? .systemBlue : .gray))
@@ -244,7 +243,7 @@ struct VerseRowView: View {
         if newIndex >= 0 && newIndex < maxVersesOnCurrentChapter {
             // Use DispatchQueue to avoid "Publishing changes from within view updates" error
             DispatchQueue.main.async {
-                self.project(index: newIndex)
+                self.projectVerse(at: newIndex)
             }
         }
     }
@@ -252,7 +251,7 @@ struct VerseRowView: View {
     private func navigateToVerse(_ index: Int) {
         if index >= 0 && index < maxVersesOnCurrentChapter {
             DispatchQueue.main.async {
-                self.project(index: index)
+                self.projectVerse(at: index)
             }
         }
     }
@@ -293,12 +292,12 @@ struct VerseRowView: View {
         } else {
             // Project the verse
             DispatchQueue.main.async {
-                self.project(index: index)
+                self.projectVerse(at: index)
             }
         }
     }
 
-    private func newVerseTargetModel(index: Int) {
+    private func updateVerseTarget(at index: Int) {
         verseTargetModel.verseQuery = VerseQuery(
             bookName: verseTargetModel.verseQuery.bookName,
             chapterNumber: verseTargetModel.verseQuery.chapterNumber,
@@ -306,9 +305,9 @@ struct VerseRowView: View {
         )
     }
 
-    private func project(index: Int) {
-        newVerseTargetModel(index: index)
-        let title = verseTargetModel.verseQuery.title()
+    private func projectVerse(at index: Int) {
+        updateVerseTarget(at: index)
+        let title = verseTargetModel.verseQuery.title
 
         var primaryText: String?
         if index < verseRowViewModel.verseRowData.primaryChapter.count {

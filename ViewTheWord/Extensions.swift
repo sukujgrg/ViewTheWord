@@ -33,7 +33,13 @@ extension View {
         )
 
         // Use the last screen if available (typically the projector), otherwise use main screen
-        guard let targetScreen = NSScreen.screens.last ?? NSScreen.main else {
+        // Filter to only active screens to avoid stale display identifiers
+        let availableScreens = NSScreen.screens.filter { screen in
+            // Check if screen frame is valid (not zero)
+            return screen.frame.width > 0 && screen.frame.height > 0
+        }
+
+        guard let targetScreen = availableScreens.last ?? NSScreen.main else {
             logger.warning("No screen available for projector window")
             return nil
         }

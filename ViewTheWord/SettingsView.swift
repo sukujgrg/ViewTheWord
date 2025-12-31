@@ -122,7 +122,7 @@ struct BibleImportView: View {
 
             HStack {
                 Picker(selection: $primaryBibleName, label: Text("Primary")) {
-                    ForEach(bibleUrls(), id: \.absoluteString) { name in
+                    ForEach(BibleUrl().getAvailableBibleUrls(), id: \.absoluteString) { name in
                         Text(String(name.lastPathComponent))
                     }
                 }.onChange(of: primaryBibleName) { _, name in
@@ -130,7 +130,7 @@ struct BibleImportView: View {
                 }
                 Divider()
                 Picker(selection: $secondaryBibleName, label: Text("Secondary")) {
-                    ForEach(bibleUrls(), id: \.absoluteString) { name in
+                    ForEach(BibleUrl().getAvailableBibleUrls(), id: \.absoluteString) { name in
                         Text(name.lastPathComponent)
                     }
                 }.onChange(of: secondaryBibleName) { _, name in
@@ -140,11 +140,6 @@ struct BibleImportView: View {
             }
             .pickerStyle(.radioGroup)
         }
-    }
-
-    func bibleUrls() -> [URL] {
-        let bibleUrl = BibleUrl()
-        return bibleUrl.getAvailableBibleUrls()
     }
 
     func isValidBibleFileName(selectedFileName: String) -> Bool {
