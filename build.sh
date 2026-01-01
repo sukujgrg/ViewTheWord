@@ -76,7 +76,12 @@ function createDMG () {
     echo ""
     echo "Creating DMG..."
 
-    DMG_NAME="${SCHEME_NAME}-$(date +%Y%m%d-%H%M%S).dmg"
+    # Use fixed name in CI, timestamped name locally
+    if [ -n "$CI" ] || [ -n "$GITHUB_ACTIONS" ]; then
+        DMG_NAME="${SCHEME_NAME}.dmg"
+    else
+        DMG_NAME="${SCHEME_NAME}-$(date +%Y%m%d-%H%M%S).dmg"
+    fi
 
     # Create DMG
     hdiutil create -volname "${SCHEME_NAME}" \
@@ -89,10 +94,19 @@ function createDMG () {
 }
 
 # Run the build process
-archive && exportArchive && createDMG
-
-echo ""
-echo "Build complete!"
-echo "==============="
-echo "App bundle: ${BUILD_DIR}/${SCHEME_NAME}.app"
-echo "DMG file: ${DMG_NAME}"
+# In CI, skip DMG creation (workflow creates it with create-dmg)
+if [ -n "$CI" ] || [ -n "$GITHUB_ACTIONS" ]; then
+    archive && exportArchive
+    echo ""
+    echo "Build complete!"
+    echo "==============="
+    echo "App bundle: ${BUILD_DIR}/${SCHEME_NAME}.app"
+    echo "Note: DMG creation skipped in CI (workflow will create it)"
+else
+    archive && exportArchive && createDMG
+    echo ""
+    echo "Build complete!"
+    echo "==============="
+    echo "App bundle: ${BUILD_DIR}/${SCHEME_NAME}.app"
+    echo "DMG file: ${DMG_NAME}"
+fi
