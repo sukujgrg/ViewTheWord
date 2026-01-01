@@ -7,6 +7,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = false
+
+        // Migrate sensitive data from UserDefaults to Keychain
+        KeychainHelper.shared.migrateFromUserDefaults(key: "OpenAIAPIKey")
     }
 }
 

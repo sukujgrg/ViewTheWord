@@ -24,6 +24,8 @@ struct BooksListView: View {
     @Binding var selectedBook: String?
     @Binding var chapterCount: Int32
 
+    private let allBooks = Array(bibleBooks.keys)
+
     var body: some View {
         ScrollViewReader { proxy in
             List(selection: $selectedBook) {
@@ -62,7 +64,53 @@ struct BooksListView: View {
                     proxy.scrollTo(book, anchor: .center)
                 }
             }
+            .onKeyPress { keyPress in
+                // Handle Page Up/Down for book navigation
+                if keyPress.characters == "\u{F72C}" { // Page Up
+                    navigateBooks(offset: -10, proxy: proxy)
+                    return .handled
+                }
+
+                if keyPress.characters == "\u{F72D}" { // Page Down
+                    navigateBooks(offset: 10, proxy: proxy)
+                    return .handled
+                }
+
+                return .ignored
+            }
             .accessibilityLabel("Bible books list")
+        }
+    }
+
+    private func navigateBooks(offset: Int, proxy: ScrollViewProxy) {
+        guard let currentBook = selectedBook,
+              let currentIndex = allBooks.firstIndex(of: currentBook) else {
+            // If no book selected, start from beginning or end based on direction
+            if offset > 0, let firstBook = allBooks.first {
+                selectedBook = firstBook
+                proxy.scrollTo(firstBook, anchor: .center)
+            } else if offset < 0, let lastBook = allBooks.last {
+                selectedBook = lastBook
+                proxy.scrollTo(lastBook, anchor: .center)
+            }
+            return
+        }
+
+        let newIndex = currentIndex + offset
+        if newIndex >= 0 && newIndex < allBooks.count {
+            let newBook = allBooks[newIndex]
+            selectedBook = newBook
+            proxy.scrollTo(newBook, anchor: .center)
+        } else if newIndex < 0 {
+            // Jump to first book
+            let firstBook = allBooks[0]
+            selectedBook = firstBook
+            proxy.scrollTo(firstBook, anchor: .center)
+        } else {
+            // Jump to last book
+            let lastBook = allBooks[allBooks.count - 1]
+            selectedBook = lastBook
+            proxy.scrollTo(lastBook, anchor: .center)
         }
     }
 }
@@ -83,7 +131,7 @@ struct ChaptersListView: View {
                             NavigationLink(value: chapter) {
                                 HStack {
                                     Text("\(chapter)")
-                                        .font(.system(size: 16, weight: selectedChapter == chapter ? .semibold : .regular))
+                                        .font(.system(size: 13, weight: selectedChapter == chapter ? .semibold : .regular))
                                         .frame(maxWidth: .infinity, alignment: .center)
                                 }
                                 .padding(.vertical, 4)
@@ -106,7 +154,41 @@ struct ChaptersListView: View {
                     proxy.scrollTo(chapter, anchor: .center)
                 }
             }
+            .onKeyPress { keyPress in
+                // Handle Page Up/Down for chapter navigation
+                if keyPress.characters == "\u{F72C}" { // Page Up
+                    navigateChapters(offset: -10, proxy: proxy)
+                    return .handled
+                }
+
+                if keyPress.characters == "\u{F72D}" { // Page Down
+                    navigateChapters(offset: 10, proxy: proxy)
+                    return .handled
+                }
+
+                return .ignored
+            }
             .accessibilityLabel("Chapter list")
+        }
+    }
+
+    private func navigateChapters(offset: Int, proxy: ScrollViewProxy) {
+        guard chapterCount > 0 else { return }
+
+        let current = selectedChapter ?? 1
+        let newChapter = current + offset
+
+        if newChapter >= 1 && newChapter <= chapterCount {
+            selectedChapter = newChapter
+            proxy.scrollTo(newChapter, anchor: .center)
+        } else if newChapter < 1 {
+            // Jump to first chapter
+            selectedChapter = 1
+            proxy.scrollTo(1, anchor: .center)
+        } else {
+            // Jump to last chapter
+            selectedChapter = Int(chapterCount)
+            proxy.scrollTo(Int(chapterCount), anchor: .center)
         }
     }
 }
@@ -187,6 +269,7 @@ struct MainContentView: View {
     @Binding var searchResults: (primary: [AVerse], secondary: [AVerse])?
     @Binding var searchQuery: String?
     @FocusState.Binding var focusedColumn: NavigationColumn?
+    @Binding var isLoadingSemanticSearch: Bool
 
     let primaryBibleName: String
     let secondaryBibleName: String
@@ -208,10 +291,25 @@ struct MainContentView: View {
             .accessibilityLabel("Clear projector")
             .accessibilityHint("Closes the projector window")
 
-            TextField("John 3:16  or  s: his only begotten son  or  m: jesus AND fig", text: $ask)
+            TextField("John 3:16  or  s: phrase  or  m: words  or  v: concept", text: $ask)
                 .focused($isSearchFieldFocused)
                 .onSubmit {
                     onSubmit()
+                }
+                .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+                    // Handle Up/Down arrows when text field is focused
+                    if isSearchFieldFocused {
+                        if press.key == .downArrow {
+                            // Down arrow: move focus to verses
+                            focusedColumn = .verses
+                            return .handled
+                        } else if press.key == .upArrow {
+                            // Up arrow: move focus to chapters
+                            focusedColumn = .chapters
+                            return .handled
+                        }
+                    }
+                    return .ignored
                 }
                 .modifier(ShakeEffect(shakes: validQuery ? 2 : 0))
                 .frame(width: 500, height: 35, alignment: .center)
@@ -222,6 +320,16 @@ struct MainContentView: View {
                 .accessibilityHint("Enter verse reference like John 3:16, or search text with s: prefix")
                 .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("FocusSearchField"))) { _ in
                     isSearchFieldFocused = true
+                }
+                .overlay(alignment: .trailing) {
+                    if isLoadingSemanticSearch {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                                .controlSize(.small)
+                                .padding(.trailing, 8)
+                        }
+                    }
                 }
 
             // Show search results if available
@@ -310,6 +418,14 @@ struct MainView: View {
     // Long-lived database connections (reused across queries)
     @State private var biblePrimary: Bible
     @State private var bibleSecondary: Bible
+    @State private var embeddingsDb: EmbeddingsDb?
+
+    // OpenAI client for semantic search (lazy initialized)
+    @State private var openAIClient: OpenAIClient?
+    @KeychainStorage("OpenAIAPIKey") private var openAIAPIKey: String = ""
+    @AppStorage("EmbeddingsDbPath") private var embeddingsDbPath: String = ""
+    @AppStorage("semanticSearchMinSimilarity") private var minSimilarity = 0.35
+    @State private var isLoadingSemanticSearch = false
 
     init() {
         let bibleUrl = BibleUrl()
@@ -325,7 +441,7 @@ struct MainView: View {
                 chapterCount: $chapterCount
             )
             .focused($focusedColumn, equals: .books)
-            .navigationSplitViewColumnWidth(min: 150, ideal: 200, max: 250)
+            .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 280)
         } content: {
             // Content: Chapters (only shown when a book is selected)
             if let selectedBook = selectedBook {
@@ -356,6 +472,7 @@ struct MainView: View {
                 searchResults: $searchResults,
                 searchQuery: $currentSearchQuery,
                 focusedColumn: $focusedColumn,
+                isLoadingSemanticSearch: $isLoadingSemanticSearch,
                 primaryBibleName: primaryBibleName,
                 secondaryBibleName: secondaryBibleName,
                 showOnlyPrimary: showOnlyPrimary,
@@ -395,7 +512,7 @@ struct MainView: View {
             ForEach(history, id: \.self) { item in
                 Button {
                     ask = item
-                    processSearchQuery(updateRowView: false)
+                    processSearchQuery(updateRowView: true)
                 } label: {
                     Text(item)
                 }
@@ -412,6 +529,23 @@ struct MainView: View {
                 navigateColumnRight()
                 return .handled
             }
+        }
+        .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
+            // Only handle Left/Right arrows when text field is NOT focused
+            if focusedColumn == .detail {
+                // Text field is focused, ignore arrow keys for text editing
+                return .ignored
+            }
+
+            if press.key == .leftArrow {
+                navigateColumnLeft()
+                return .handled
+            } else if press.key == .rightArrow {
+                navigateColumnRight()
+                return .handled
+            }
+
+            return .ignored
         }
         .sheet(isPresented: $showKeyboardShortcuts) {
             KeyboardShortcutsView()
@@ -443,6 +577,25 @@ struct MainView: View {
                 }
             }
         }
+        .onChange(of: embeddingsDbPath) { oldValue, newValue in
+            // Load embeddings database when path changes
+            if !newValue.isEmpty, FileManager.default.fileExists(atPath: newValue) {
+                let url = URL(fileURLWithPath: newValue)
+                embeddingsDb = EmbeddingsDb(dbUrl: url)
+                logger.fileInfo("Loaded embeddings database: \(url.lastPathComponent)")
+            } else {
+                embeddingsDb = nil
+                logger.fileInfo("No embeddings database configured")
+            }
+        }
+        .onAppear {
+            // Initialize embeddings database on launch if path is configured
+            if !embeddingsDbPath.isEmpty, FileManager.default.fileExists(atPath: embeddingsDbPath) {
+                let url = URL(fileURLWithPath: embeddingsDbPath)
+                embeddingsDb = EmbeddingsDb(dbUrl: url)
+                logger.fileInfo("Loaded embeddings database: \(url.lastPathComponent)")
+            }
+        }
         .animation(.easeInOut(duration: 0.3), value: selectedBook)
     }
     
@@ -464,6 +617,8 @@ struct MainView: View {
             performPhraseSearch(searchText: searchText, filter: filter)
         case .multiTerm(let searchText, let filter):
             performMultiTermSearch(searchText: searchText, filter: filter)
+        case .semantic(let searchText, let filter):
+            performSemanticSearch(searchText: searchText, filter: filter)
         case .verse(let verseQuery):
             performVerseQuery(verseQuery: verseQuery, updateRowView: updateRowView, project: project)
         }
@@ -502,6 +657,118 @@ struct MainView: View {
 
         // Clear the row view data
         verseRowViewModel.verseRowData = VerseRowData(primaryChapter: [], secondaryChapter: [])
+    }
+
+    func performSemanticSearch(searchText: String, filter: SearchFilter) {
+        // Check if embeddings database is available
+        guard let embeddingsDb = embeddingsDb else {
+            logger.fileError("Embeddings database not loaded. Import embeddings.db in Settings → Bible tab.")
+            validQuery.toggle()
+            return
+        }
+
+        // Initialize OpenAI client if needed
+        if openAIClient == nil {
+            guard !openAIAPIKey.isEmpty else {
+                logger.fileError("OpenAI API key not set. Please configure in Settings.")
+                validQuery.toggle()
+                return
+            }
+            openAIClient = OpenAIClient(apiKey: openAIAPIKey)
+        }
+
+        guard let client = openAIClient else {
+            validQuery.toggle()
+            return
+        }
+
+        // Capture main-actor isolated values before detached task
+        let capturedMinSimilarity = minSimilarity
+
+        // Generate embedding for search query - use Task.detached to ensure background execution
+        Task.detached { [weak embeddingsDb, weak biblePrimary] in
+            await MainActor.run {
+                self.isLoadingSemanticSearch = true
+            }
+
+            do {
+                // API call runs on background thread
+                let queryEmbeddings = try await client.generateEmbeddings(texts: [searchText])
+                guard let queryEmbedding = queryEmbeddings.first else {
+                    await MainActor.run {
+                        self.isLoadingSemanticSearch = false
+                        self.validQuery.toggle()
+                    }
+                    return
+                }
+
+                guard let embeddingsDb = embeddingsDb else {
+                    await MainActor.run {
+                        self.isLoadingSemanticSearch = false
+                        self.validQuery.toggle()
+                    }
+                    return
+                }
+
+                // Database search runs on background queue (already thread-safe with dbQueue.sync)
+                // The nonisolated method uses internal synchronization via dbQueue.sync
+                // Wrap in withCheckedContinuation to satisfy Swift 6 concurrency checking
+                let coordinates: [(bookNumber: Int, chapterNumber: Int, verseNumber: Int, similarity: Float)] = await withCheckedContinuation { continuation in
+                    let result = embeddingsDb.searchBySemantic(
+                        queryEmbedding: queryEmbedding,
+                        filter: filter,
+                        limit: 15,
+                        minSimilarity: Float(capturedMinSimilarity)
+                    ) ?? []
+                    continuation.resume(returning: result)
+                }
+
+                guard !coordinates.isEmpty else {
+                    await MainActor.run {
+                        self.isLoadingSemanticSearch = false
+                        self.validQuery.toggle()
+                    }
+                    return
+                }
+
+                guard let biblePrimary = biblePrimary else {
+                    await MainActor.run {
+                        self.isLoadingSemanticSearch = false
+                        self.validQuery.toggle()
+                    }
+                    return
+                }
+
+                // Fetch actual verses from primary Bible using coordinates (background thread)
+                let primaryResults: [AVerse] = coordinates.compactMap { coord in
+                    biblePrimary.getVerse(
+                        bookNumber: coord.bookNumber,
+                        chapterNumber: coord.chapterNumber,
+                        verseNumber: coord.verseNumber
+                    )
+                }
+
+                // For semantic search, only search primary Bible
+                let secondaryResults: [AVerse] = []
+
+                // Update UI on main thread
+                await MainActor.run {
+                    self.searchResults = (primary: primaryResults, secondary: secondaryResults)
+                    self.currentSearchQuery = searchText
+
+                    // Clear the row view data
+                    self.verseRowViewModel.verseRowData = VerseRowData(primaryChapter: [], secondaryChapter: [])
+
+                    self.isLoadingSemanticSearch = false
+                }
+            } catch {
+                logger.fileError("Semantic search error: \(error.localizedDescription)")
+                await MainActor.run {
+                    self.isLoadingSemanticSearch = false
+                    self.validQuery.toggle()
+                }
+            }
+        }
     }
 
     func performVerseQuery(verseQuery: VerseQuery, updateRowView: Bool, project: Bool) {
@@ -728,6 +995,12 @@ struct KeyboardShortcutsView: View {
             ("m: god AND (love OR mercy)", "Grouping with parentheses"),
             ("m: nt: faith AND hope", "Multi-term in New Testament"),
             ("m: john: light AND darkness", "Multi-term in specific book")
+        ]),
+        ("Semantic Search (v:)", [
+            ("v: verses about forgiveness", "Find verses by meaning/concept"),
+            ("v: God's love for humanity", "Semantic understanding"),
+            ("v: nt: salvation through faith", "Semantic search in New Testament"),
+            ("v: john: eternal life", "Semantic search in specific book")
         ])
     ]
 

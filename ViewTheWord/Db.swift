@@ -93,7 +93,7 @@ class Bible {
     private let dbQueue = DispatchQueue(label: "com.viewtheword.database", qos: .userInitiated)
 
     // Cache for O(1) book number to name lookups
-    private static let bookNumberToName: [Int: String] = {
+    internal static let bookNumberToName: [Int: String] = {
         var cache: [Int: String] = [:]
         for (name, details) in bibleBooks {
             cache[details[0]] = name
@@ -118,6 +118,60 @@ class Bible {
             db = nil
         }
     }
+
+    /// Get a single verse by book/chapter/verse coordinates
+    func getVerse(bookNumber: Int, chapterNumber: Int, verseNumber: Int) -> AVerse? {
+        return dbQueue.sync {
+            guard let db = db else { return nil }
+
+            let query = """
+                SELECT id, bnumber, cnumber, vnumber, verse
+                FROM bible
+                WHERE bnumber = ? AND cnumber = ? AND vnumber = ?
+                LIMIT 1;
+            """
+
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else {
+                return nil
+            }
+
+            defer { sqlite3_finalize(statement) }
+
+            sqlite3_bind_int(statement, 1, Int32(bookNumber))
+            sqlite3_bind_int(statement, 2, Int32(chapterNumber))
+            sqlite3_bind_int(statement, 3, Int32(verseNumber))
+
+            guard sqlite3_step(statement) == SQLITE_ROW else {
+                return nil
+            }
+
+            let verseId = Int(sqlite3_column_int(statement, 0))
+            let bnumber = Int(sqlite3_column_int(statement, 1))
+            let cnumber = Int(sqlite3_column_int(statement, 2))
+            let vnumber = Int(sqlite3_column_int(statement, 3))
+
+            guard let verseText = sqlite3_column_text(statement, 4) else {
+                return nil
+            }
+
+            let verse = String(cString: verseText)
+            let bookName = Bible.bookNumberToName[bnumber] ?? "Unknown"
+
+            return AVerse(
+                verseId: verseId,
+                bookNumber: bnumber,
+                bookName: bookName,
+                chapterNumber: cnumber,
+                verseNumber: vnumber,
+                verse: verse
+            )
+        }
+    }
+
+    // MARK: - Embeddings Support
+    // Note: Embeddings functionality has been moved to EmbeddingsDb.swift
+    // which provides a standalone embeddings database that works with any Bible translation
 
     func openDb() -> OpaquePointer? {
         var db: OpaquePointer?
