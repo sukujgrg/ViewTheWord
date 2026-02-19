@@ -4,7 +4,6 @@ enum SearchType {
     case verse(VerseQuery)
     case phrase(String, filter: SearchFilter)  // s: - exact phrase search
     case multiTerm(String, filter: SearchFilter)  // m: - word search with AND/OR/NOT
-    case semantic(String, filter: SearchFilter)  // v: - semantic/vector search
 }
 
 enum SearchFilter: Sendable {
@@ -215,16 +214,6 @@ class SearchQuery {
             // Parse filter if present
             let (filter, query) = parseSearchFilter(searchText: searchText)
             return .multiTerm(query, filter: filter)
-        }
-
-        // Check if this is a semantic search (starts with "v:")
-        if ask.lowercased().hasPrefix("v:") {
-            let searchText = ask.dropFirst(2).trimmingCharacters(in: .whitespaces)
-            guard !searchText.isEmpty else { return nil }
-
-            // Parse filter if present
-            let (filter, query) = parseSearchFilter(searchText: searchText)
-            return .semantic(query, filter: filter)
         }
 
         // Otherwise try to parse as verse reference

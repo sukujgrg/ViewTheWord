@@ -25,6 +25,9 @@ This document is the current source of truth for this repo.
   - History UI is a collapsible section in the chapter column (below chapters).
   - History persistence is file-backed (`HistoryStore`) instead of `@AppStorage([String])`.
   - History capture is source-gated: only direct text-field submit records verse history.
+- Semantic/AI search has been removed:
+  - No embeddings/OpenAI pipeline remains in runtime, parser, or settings.
+  - Search supports verse lookup and SQLite-backed text search (`s:` phrase / `m:` multi-term) only.
 
 ### Current app structure (actual code)
 - Entry: `ViewTheWord/ViewTheWordApp.swift`
@@ -33,7 +36,6 @@ This document is the current source of truth for this repo.
 - Projected output view: `ViewTheWord/ProjectorView.swift`
 - Search parsing: `ViewTheWord/RxVerse.swift`
 - Bible DB access: `ViewTheWord/Db.swift`
-- Embeddings DB access: `ViewTheWord/EmbeddingsDb.swift`
 - Settings/import flows: `ViewTheWord/SettingsView.swift`
 
 ### Non-negotiable state ownership
@@ -47,9 +49,6 @@ This document is the current source of truth for this repo.
 - Use monotonic token (`queryValidationToken`) for deterministic invalid-query feedback.
 - Do not use “flag + async reset” hacks for sidebar sync.
 - Use explicit programmatic guard (`programmaticChapterSelection`) to prevent onChange feedback loops.
-- Keep semantic search on structured async path:
-  - `EmbeddingsDb.searchBySemanticAsync(...)`
-  - `Bible.getVersesAsync(...)`
 - Avoid `Task.detached` for UI-owned workflows unless isolation boundaries are explicit and required.
 
 ### SwiftUI safety lessons
@@ -64,7 +63,7 @@ This document is the current source of truth for this repo.
 - Use accent-aware styling (`.accentColor` / `.foregroundColor(.accentColor)`).
 
 ### Database/concurrency constraints
-- `Bible` and `EmbeddingsDb` are queue-confined classes and marked `@unchecked Sendable`.
+- `Bible` is queue-confined and marked `@unchecked Sendable`.
 - If touched, preserve queue confinement rules:
   - all SQLite access on their private queues
   - no shared mutable state read/write from outside queue boundaries
@@ -75,10 +74,9 @@ This document is the current source of truth for this repo.
 - Migrate legacy `URL`-typed stored value in `onAppear` if present.
 - Bible picker values must be tagged with `absoluteString` to match `AppStorage` string bindings.
 
-### Logging and sensitive data
-- `FileLogger` uses one `ISO8601DateFormatter` instance; avoid per-log allocations.
-- `clearLog()` should truncate current file handle, not rewrite path while handle stays open.
-- Do not log secret lengths or key material during Keychain operations.
+### Logging
+- Use native Apple logging (`Logger` / unified logging) for app events.
+- Avoid logging sensitive content (including verse API endpoints with secrets or credential material).
 
 ### Build and validation
 - Preferred build command:

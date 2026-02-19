@@ -467,7 +467,6 @@ struct MainContentView: View {
     @Binding var searchResults: (primary: [AVerse], secondary: [AVerse])?
     @Binding var searchQuery: String?
     @FocusState.Binding var focusedColumn: NavigationColumn?
-    @Binding var isLoadingSemanticSearch: Bool
 
     let showOnlyPrimary: Bool
     let onSubmit: () -> Void
@@ -486,7 +485,7 @@ struct MainContentView: View {
             TextField(
                 "",
                 text: $ask,
-                prompt: Text("John 3:16  or  s: phrase  or  m: words  or  v: concept")
+                prompt: Text("John 3:16  or  s: phrase  or  m: words")
                     .font(.body)
                     .foregroundStyle(.secondary)
             )
@@ -520,16 +519,6 @@ struct MainContentView: View {
                 .accessibilityHint("Enter verse reference like John 3:16, or search text with s: prefix")
                 .onReceive(NotificationCenter.default.publisher(for: .focusSearchField)) { _ in
                     isSearchFieldFocused = true
-                }
-                .overlay(alignment: .trailing) {
-                    if isLoadingSemanticSearch {
-                        HStack {
-                            Spacer()
-                            ProgressView()
-                                .controlSize(.small)
-                                .padding(.trailing, 8)
-                        }
-                    }
                 }
 
             // Show search results if available
@@ -631,11 +620,6 @@ struct MainView: View {
     // Long-lived database connections (reused across queries)
     @State private var biblePrimary: Bible
     @State private var bibleSecondary: Bible
-    @State private var embeddingsDb: EmbeddingsDb?
-
-    @AppStorage("EmbeddingsDbPath") private var embeddingsDbPath: String = ""
-    @AppStorage("semanticSearchMinSimilarity") private var minSimilarity = 0.35
-    @State private var isLoadingSemanticSearch = false
     @State private var searchTask: Task<Void, Never>?
     @State private var activeSearchID = UUID()
 
@@ -707,7 +691,6 @@ struct MainView: View {
                 searchResults: $searchResults,
                 searchQuery: $currentSearchQuery,
                 focusedColumn: $focusedColumn,
-                isLoadingSemanticSearch: $isLoadingSemanticSearch,
                 showOnlyPrimary: showOnlyPrimary,
                 onSubmit: {
                     processSearchQuery(updateRowView: true, recordHistory: true)
@@ -798,29 +781,9 @@ struct MainView: View {
                 }
             }
         }
-        .onChange(of: embeddingsDbPath) { _, newValue in
-            // Load embeddings database when path changes
-            if !newValue.isEmpty, FileManager.default.fileExists(atPath: newValue) {
-                let url = URL(fileURLWithPath: newValue)
-                embeddingsDb = EmbeddingsDb(dbUrl: url)
-                logger.info("Loaded embeddings database: \(url.lastPathComponent)")
-            } else {
-                embeddingsDb = nil
-                logger.info("No embeddings database configured")
-            }
-        }
-        .onAppear {
-            // Initialize embeddings database on launch if path is configured
-            if !embeddingsDbPath.isEmpty, FileManager.default.fileExists(atPath: embeddingsDbPath) {
-                let url = URL(fileURLWithPath: embeddingsDbPath)
-                embeddingsDb = EmbeddingsDb(dbUrl: url)
-                logger.info("Loaded embeddings database: \(url.lastPathComponent)")
-            }
-        }
         .onDisappear {
             searchTask?.cancel()
             searchTask = nil
-            isLoadingSemanticSearch = false
         }
         .animation(.easeInOut(duration: 0.3), value: selectedBook)
     }
@@ -850,14 +813,6 @@ struct MainView: View {
         historyStore.append(title)
     }
 
-    func resolveOpenAIAPIKey() -> String? {
-        guard let key = KeychainHelper.shared.retrieveOrMigrateFromUserDefaults(forKey: "OpenAIAPIKey") else {
-            return nil
-        }
-        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
     func setProjection(
         reference: VerseReference,
         primaryText: String,
@@ -876,7 +831,6 @@ struct MainView: View {
 
     func startSearchTask(_ operation: @escaping @MainActor (UUID) async -> Void) {
         searchTask?.cancel()
-        isLoadingSemanticSearch = false
         let searchID = UUID()
         activeSearchID = searchID
 
@@ -893,7 +847,6 @@ struct MainView: View {
         // Check if this is a text search or verse query
         guard let searchType = SearchQuery(ask: ask).searchType() else {
             searchTask?.cancel()
-            isLoadingSemanticSearch = false
             triggerInvalidQueryFeedback()
             return
         }
@@ -906,10 +859,6 @@ struct MainView: View {
         case .multiTerm(let searchText, let filter):
             startSearchTask { searchID in
                 await performMultiTermSearch(searchText: searchText, filter: filter, searchID: searchID)
-            }
-        case .semantic(let searchText, let filter):
-            startSearchTask { searchID in
-                await performSemanticSearch(searchText: searchText, filter: filter, searchID: searchID)
             }
         case .verse(let verseQuery):
             startSearchTask { searchID in
@@ -935,7 +884,6 @@ struct MainView: View {
         searchResults = (primary: primaryResults, secondary: secondaryResults)
         currentSearchQuery = searchText
         clearVerseRows()
-        isLoadingSemanticSearch = false
     }
 
     func performMultiTermSearch(searchText: String, filter: SearchFilter, searchID: UUID) async {
@@ -965,81 +913,6 @@ struct MainView: View {
 
         guard isCurrentSearch(searchID) else { return }
         clearVerseRows()
-        isLoadingSemanticSearch = false
-    }
-
-    func performSemanticSearch(searchText: String, filter: SearchFilter, searchID: UUID) async {
-        // Check if embeddings database is available
-        guard let embeddingsDb = embeddingsDb else {
-            if isCurrentSearch(searchID) {
-                logger.error("Embeddings database not loaded. Import embeddings.db in Settings → Bible tab.")
-                triggerInvalidQueryFeedback()
-            }
-            return
-        }
-
-        guard let apiKey = resolveOpenAIAPIKey() else {
-            if isCurrentSearch(searchID) {
-                logger.error("OpenAI API key not set. Please configure in Settings.")
-                triggerInvalidQueryFeedback()
-            }
-            return
-        }
-
-        guard isCurrentSearch(searchID) else { return }
-        isLoadingSemanticSearch = true
-        defer {
-            if activeSearchID == searchID {
-                isLoadingSemanticSearch = false
-            }
-        }
-
-        let client = OpenAIClient(apiKey: apiKey)
-        let capturedMinSimilarity = minSimilarity
-        let primaryBible = biblePrimary
-        do {
-            let queryEmbeddings = try await client.generateEmbeddings(texts: [searchText])
-            guard isCurrentSearch(searchID) else { return }
-
-            guard let queryEmbedding = queryEmbeddings.first else {
-                triggerInvalidQueryFeedback()
-                return
-            }
-
-            let coordinates = await embeddingsDb.searchBySemanticAsync(
-                queryEmbedding: queryEmbedding,
-                filter: filter,
-                limit: 15,
-                minSimilarity: Float(capturedMinSimilarity)
-            )
-            guard isCurrentSearch(searchID) else { return }
-
-            guard !coordinates.isEmpty else {
-                triggerInvalidQueryFeedback()
-                return
-            }
-
-            let verseCoordinates = coordinates.map {
-                (
-                    bookNumber: $0.bookNumber,
-                    chapterNumber: $0.chapterNumber,
-                    verseNumber: $0.verseNumber
-                )
-            }
-            let primaryResults = await primaryBible.getVersesAsync(for: verseCoordinates)
-            guard isCurrentSearch(searchID) else { return }
-
-            searchResults = (primary: primaryResults, secondary: [])
-            currentSearchQuery = searchText
-            clearVerseRows()
-        } catch is CancellationError {
-            return
-        } catch {
-            if isCurrentSearch(searchID) {
-                logger.error("Semantic search error: \(error.localizedDescription)")
-                triggerInvalidQueryFeedback()
-            }
-        }
     }
 
     func performVerseQuery(
@@ -1115,7 +988,6 @@ struct MainView: View {
         }
 
         guard isCurrentSearch(searchID) else { return }
-        isLoadingSemanticSearch = false
     }
 
     func projectVerseFromRow(at index: Int) {
@@ -1297,12 +1169,6 @@ struct KeyboardShortcutsView: View {
             ("m: god AND (love OR mercy)", "Grouping with parentheses"),
             ("m: nt: faith AND hope", "Multi-term in New Testament"),
             ("m: john: light AND darkness", "Multi-term in specific book")
-        ]),
-        ("Semantic Search (v:)", [
-            ("v: verses about forgiveness", "Find verses by meaning/concept"),
-            ("v: God's love for humanity", "Semantic understanding"),
-            ("v: nt: salvation through faith", "Semantic search in New Testament"),
-            ("v: john: eternal life", "Semantic search in specific book")
         ])
     ]
 

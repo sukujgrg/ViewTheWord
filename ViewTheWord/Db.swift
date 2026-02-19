@@ -186,10 +186,6 @@ final class Bible: @unchecked Sendable {
         }
     }
 
-    // MARK: - Embeddings Support
-    // Note: Embeddings functionality has been moved to EmbeddingsDb.swift
-    // which provides a standalone embeddings database that works with any Bible translation
-
     func openDb() -> OpaquePointer? {
         var db: OpaquePointer?
         if sqlite3_open_v2(dbUrl.path, &db, SQLite3.SQLITE_OPEN_READONLY, nil) != SQLITE_OK {
