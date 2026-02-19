@@ -25,6 +25,10 @@ This document is the current source of truth for this repo.
   - History UI is a collapsible section in the chapter column (below chapters).
   - History persistence is file-backed (`HistoryStore`) instead of `@AppStorage([String])`.
   - History capture is source-gated: only direct text-field submit records verse history.
+  - Bookmark/History row activation is explicit and consistent:
+    - rows use explicit `Button` activation for mouse clicks (single click always navigates)
+    - `List(selection:)` remains for keyboard navigation
+    - tap-activation dedupe state (`bookmarkTapActivatedID`, `historyTapActivatedID`) prevents double-dispatch when selection `onChange` also fires
 - Semantic/AI search has been removed:
   - No embeddings/OpenAI pipeline remains in runtime, parser, or settings.
   - Search supports verse lookup and SQLite-backed text search (`s:` phrase / `m:` multi-term) only.
@@ -57,6 +61,7 @@ This document is the current source of truth for this repo.
 - Avoid `DispatchQueue.main.async` as a generic fix for publish-during-update warnings.
 - For verse auto-scroll, defer one render pass with `Task.yield()` and scroll intentionally.
 - Break complex `body` expressions into small subviews when type-checking slows down (e.g., `SearchResultRowView`).
+- `List(selection:)` `onChange` does not fire when clicking an already selected row; for deterministic activation, use explicit row `Button` handlers and keep selection `onChange` for keyboard paths.
 
 ### Styling/HIG lessons
 - Never hardcode blue for selection/highlight.
