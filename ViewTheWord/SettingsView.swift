@@ -40,38 +40,11 @@ struct SettingsView: View {
 
 struct GeneralSettingsView: View {
     var body: some View {
-        VStack {
-            List {
-                Section(header: Text("Debug Logs")) {
-                    HStack {
-                        Text(FileLogger.shared.getLogPath())
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundColor(.secondary)
-                            .lineLimit(2)
-                        Spacer()
-                    }
-
-                    HStack {
-                        Button("Open Log File") {
-                            NSWorkspace.shared.open(URL(fileURLWithPath: FileLogger.shared.getLogPath()))
-                        }
-
-                        Button("Reveal in Finder") {
-                            NSWorkspace.shared.selectFile(
-                                FileLogger.shared.getLogPath(),
-                                inFileViewerRootedAtPath: ""
-                            )
-                        }
-
-                        Button("Clear Logs") {
-                            FileLogger.shared.clearLog()
-                        }
-                    }
-                }
-                .headerProminence(.increased)
-            }
-            .listStyle(.inset)
-        }
+        ContentUnavailableView(
+            "No General Settings",
+            systemImage: "gearshape",
+            description: Text("General app options are currently not required.")
+        )
     }
 }
 
@@ -313,7 +286,7 @@ struct SemanticSearchSettingsView: View {
 
         if FileManager.default.fileExists(atPath: destURL.path) {
             try FileManager.default.removeItem(at: destURL)
-            logger.fileInfo("Removed existing embeddings file: \(fileName)")
+            logger.info("Removed existing embeddings file: \(fileName)")
         }
 
         try FileManager.default.copyItem(at: selectedFile, to: destURL)
@@ -324,7 +297,7 @@ struct SemanticSearchSettingsView: View {
             embeddingsDbPath = destURL.path
         }
 
-        logger.fileInfo("Successfully imported embeddings: \(fileName) with \(count) verses")
+        logger.info("Successfully imported embeddings: \(fileName) with \(count) verses")
         await showStatus(.success("Successfully imported \(count) verse embeddings"))
     }
 
@@ -403,7 +376,7 @@ struct SemanticSearchSettingsView: View {
     private func clearEmbeddings() {
         if !embeddingsDbPath.isEmpty {
             embeddingsDbPath = ""
-            logger.fileInfo("Cleared embeddings database")
+            logger.info("Cleared embeddings database")
             importStatus = .success("Embeddings database removed")
             showStatusAlert = true
         }
@@ -555,7 +528,7 @@ struct BibleImportView: View {
         try FileManager.default.copyItem(at: selectedFile, to: destURL)
         try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: destURL.path)
 
-        logger.fileInfo("Successfully imported Bible: \(fileName)")
+        logger.info("Successfully imported Bible: \(fileName)")
         await MainActor.run {
             refreshAvailableBibles()
         }

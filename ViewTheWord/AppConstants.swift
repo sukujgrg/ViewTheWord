@@ -1,9 +1,12 @@
 import Foundation
 import SwiftUI
 import OrderedCollections
-import os
+import OSLog
 
-let logger = Logger()
+let logger = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "ViewTheWord",
+    category: "app"
+)
 
 enum AppWindowTitle {
     static let projector = "Projector"

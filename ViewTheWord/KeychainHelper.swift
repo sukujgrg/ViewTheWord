@@ -16,7 +16,7 @@ class KeychainHelper {
     @discardableResult
     func save(_ value: String, forKey key: String) -> Bool {
         guard let data = value.data(using: .utf8) else {
-            logger.fileError("Failed to encode string to data for key: \(key)")
+            logger.error("Failed to encode string to data for key: \(key)")
             return false
         }
 
@@ -35,10 +35,10 @@ class KeychainHelper {
         let status = SecItemAdd(query as CFDictionary, nil)
 
         if status == errSecSuccess {
-            logger.fileInfo("Successfully saved to Keychain: \(key)")
+            logger.info("Successfully saved to Keychain: \(key)")
             return true
         } else {
-            logger.fileError("Failed to save to Keychain: \(key), status: \(status)")
+            logger.error("Failed to save to Keychain: \(key), status: \(status)")
             return false
         }
     }
@@ -66,7 +66,7 @@ class KeychainHelper {
             // Not an error, just not found
             return nil
         } else {
-            logger.fileError("Failed to retrieve from Keychain: \(key), status: \(status)")
+            logger.error("Failed to retrieve from Keychain: \(key), status: \(status)")
             return nil
         }
     }
@@ -88,7 +88,7 @@ class KeychainHelper {
         if status == errSecSuccess || status == errSecItemNotFound {
             return true
         } else {
-            logger.fileError("Failed to delete from Keychain: \(key), status: \(status)")
+            logger.error("Failed to delete from Keychain: \(key), status: \(status)")
             return false
         }
     }
@@ -119,11 +119,11 @@ class KeychainHelper {
 
         if save(legacyValue, forKey: key) {
             UserDefaults.standard.removeObject(forKey: key)
-            logger.fileInfo("Successfully migrated and removed from UserDefaults: \(key)")
+            logger.info("Successfully migrated and removed from UserDefaults: \(key)")
             return legacyValue
         }
 
-        logger.fileError("Failed to migrate to Keychain: \(key)")
+        logger.error("Failed to migrate to Keychain: \(key)")
         return nil
     }
 }

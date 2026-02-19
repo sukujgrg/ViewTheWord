@@ -803,10 +803,10 @@ struct MainView: View {
             if !newValue.isEmpty, FileManager.default.fileExists(atPath: newValue) {
                 let url = URL(fileURLWithPath: newValue)
                 embeddingsDb = EmbeddingsDb(dbUrl: url)
-                logger.fileInfo("Loaded embeddings database: \(url.lastPathComponent)")
+                logger.info("Loaded embeddings database: \(url.lastPathComponent)")
             } else {
                 embeddingsDb = nil
-                logger.fileInfo("No embeddings database configured")
+                logger.info("No embeddings database configured")
             }
         }
         .onAppear {
@@ -814,7 +814,7 @@ struct MainView: View {
             if !embeddingsDbPath.isEmpty, FileManager.default.fileExists(atPath: embeddingsDbPath) {
                 let url = URL(fileURLWithPath: embeddingsDbPath)
                 embeddingsDb = EmbeddingsDb(dbUrl: url)
-                logger.fileInfo("Loaded embeddings database: \(url.lastPathComponent)")
+                logger.info("Loaded embeddings database: \(url.lastPathComponent)")
             }
         }
         .onDisappear {
@@ -972,7 +972,7 @@ struct MainView: View {
         // Check if embeddings database is available
         guard let embeddingsDb = embeddingsDb else {
             if isCurrentSearch(searchID) {
-                logger.fileError("Embeddings database not loaded. Import embeddings.db in Settings → Bible tab.")
+                logger.error("Embeddings database not loaded. Import embeddings.db in Settings → Bible tab.")
                 triggerInvalidQueryFeedback()
             }
             return
@@ -980,7 +980,7 @@ struct MainView: View {
 
         guard let apiKey = resolveOpenAIAPIKey() else {
             if isCurrentSearch(searchID) {
-                logger.fileError("OpenAI API key not set. Please configure in Settings.")
+                logger.error("OpenAI API key not set. Please configure in Settings.")
                 triggerInvalidQueryFeedback()
             }
             return
@@ -1036,7 +1036,7 @@ struct MainView: View {
             return
         } catch {
             if isCurrentSearch(searchID) {
-                logger.fileError("Semantic search error: \(error.localizedDescription)")
+                logger.error("Semantic search error: \(error.localizedDescription)")
                 triggerInvalidQueryFeedback()
             }
         }

@@ -33,24 +33,24 @@ final class NetworkManager {
 
         let payload = VersePayload(text: text, title: title)
         guard let httpBody = try? JSONEncoder().encode(payload) else {
-            logger.fileError("Failed to encode network payload")
+            logger.error("Failed to encode network payload")
             return
         }
         request.httpBody = httpBody
 
         URLSession.shared.dataTask(with: request) { _, response, error in
             if let error = error {
-                logger.fileError("Network error: \(error.localizedDescription)")
+                logger.error("Network error: \(error.localizedDescription)")
                 return
             }
 
             guard let httpResponse = response as? HTTPURLResponse else {
-                logger.fileError("Invalid response type")
+                logger.error("Invalid response type")
                 return
             }
 
             guard httpResponse.statusCode == 201 else {
-                logger.fileError("Unexpected status code: \(httpResponse.statusCode)")
+                logger.error("Unexpected status code: \(httpResponse.statusCode)")
                 return
             }
         }.resume()
