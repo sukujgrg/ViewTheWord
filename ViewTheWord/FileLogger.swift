@@ -8,6 +8,7 @@ class FileLogger {
     private let logFileURL: URL
     private let fileHandle: FileHandle?
     private let queue = DispatchQueue(label: "com.viewtheword.filelogger", qos: .utility)
+    private let dateFormatter = ISO8601DateFormatter()
 
     private init() {
         // Use standard macOS Logs directory
@@ -50,7 +51,7 @@ class FileLogger {
         queue.async { [weak self] in
             guard let self = self, let fileHandle = self.fileHandle else { return }
 
-            let timestamp = ISO8601DateFormatter().string(from: Date())
+            let timestamp = self.dateFormatter.string(from: Date())
             let fileName = URL(fileURLWithPath: file).lastPathComponent
             let logMessage = "[\(timestamp)] [\(level)] [\(fileName):\(line)] \(message)\n"
 
@@ -63,8 +64,9 @@ class FileLogger {
     /// Clear the log file
     func clearLog() {
         queue.async { [weak self] in
-            guard let self = self else { return }
-            try? "".write(to: self.logFileURL, atomically: true, encoding: .utf8)
+            guard let self = self, let fileHandle = self.fileHandle else { return }
+            fileHandle.truncateFile(atOffset: 0)
+            fileHandle.seekToEndOfFile()
         }
     }
 

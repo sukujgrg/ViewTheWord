@@ -5,6 +5,19 @@ import os
 
 let logger = Logger()
 
+enum AppWindowTitle {
+    static let projector = "Projector"
+}
+
+enum AppDefaultsKey {
+    static let apiUrlToPost = "apiUrlToPost"
+}
+
+extension Notification.Name {
+    static let focusSearchField = Notification.Name("FocusSearchField")
+    static let toggleKeyboardShortcuts = Notification.Name("ToggleKeyboardShortcuts")
+}
+
 let bundledPrimaryBibleUrl: URL? = Bundle.main.url(forResource: "MAL_BSI", withExtension: "bible")
 let bundledSecondaryBibleUrl: URL? = Bundle.main.url(forResource: "ENG_UKJV", withExtension: "bible")
 

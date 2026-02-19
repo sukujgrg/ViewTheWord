@@ -222,37 +222,13 @@ struct SearchResultsView: View {
             // Results
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(Array(primaryResults.enumerated()), id: \.element.verseId) { index, verse in
-                        VStack(alignment: .leading, spacing: 8) {
-                            // Reference
-                            Text("\(verse.bookName) \(verse.chapterNumber):\(verse.verseNumber)")
-                                .font(.caption)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(.blue)
-
-                            // Primary verse
-                            Text(verse.verse)
-                                .font(.body)
-                                .foregroundColor(.primary)
-                                .fixedSize(horizontal: false, vertical: true)
-
-                            // Secondary verse
-                            if !showOnlyPrimary, index < secondaryResults.count {
-                                Text(secondaryResults[index].verse)
-                                    .font(.body)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                        .padding(.horizontal)
-                        .padding(.vertical, 8)
-                        .background(Color(NSColor.controlBackgroundColor).opacity(0.3))
-                        .cornerRadius(8)
-                        .onTapGesture {
-                            onVerseSelected(verse)
-                        }
-                        .accessibilityLabel("\(verse.bookName) \(verse.chapterNumber):\(verse.verseNumber)")
-                        .accessibilityHint("Tap to project this verse")
+                    ForEach(primaryResults.indices, id: \.self) { index in
+                        let verse = primaryResults[index]
+                        SearchResultRowView(
+                            verse: verse,
+                            secondaryVerse: (!showOnlyPrimary && index < secondaryResults.count) ? secondaryResults[index].verse : nil,
+                            onTap: { onVerseSelected(verse) }
+                        )
                     }
                 }
                 .padding()
@@ -261,18 +237,50 @@ struct SearchResultsView: View {
     }
 }
 
+private struct SearchResultRowView: View {
+    let verse: AVerse
+    let secondaryVerse: String?
+    let onTap: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(verse.bookName) \(verse.chapterNumber):\(verse.verseNumber)")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundColor(.accentColor)
+
+            Text(verse.verse)
+                .font(.body)
+                .foregroundColor(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let secondaryVerse {
+                Text(secondaryVerse)
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(Color(NSColor.controlBackgroundColor).opacity(0.3))
+        .cornerRadius(8)
+        .onTapGesture(perform: onTap)
+        .accessibilityLabel("\(verse.bookName) \(verse.chapterNumber):\(verse.verseNumber)")
+        .accessibilityHint("Tap to project this verse")
+    }
+}
+
 // MARK: - Main Content View
 struct MainContentView: View {
     @Binding var ask: String
-    @Binding var validQuery: Bool
+    @Binding var queryValidationToken: Int
     @Binding var windowOpened: Bool
     @Binding var searchResults: (primary: [AVerse], secondary: [AVerse])?
     @Binding var searchQuery: String?
     @FocusState.Binding var focusedColumn: NavigationColumn?
     @Binding var isLoadingSemanticSearch: Bool
 
-    let primaryBibleName: String
-    let secondaryBibleName: String
     let showOnlyPrimary: Bool
     let onSubmit: () -> Void
     let closeProjector: () -> Void
@@ -283,14 +291,6 @@ struct MainContentView: View {
 
     var body: some View {
         VStack {
-            Button(action: closeProjector) {
-                Text("Clear")
-            }
-            .keyboardShortcut(.cancelAction)
-            .opacity(0)
-            .accessibilityLabel("Clear projector")
-            .accessibilityHint("Closes the projector window")
-
             TextField("John 3:16  or  s: phrase  or  m: words  or  v: concept", text: $ask)
                 .focused($isSearchFieldFocused)
                 .onSubmit {
@@ -311,14 +311,14 @@ struct MainContentView: View {
                     }
                     return .ignored
                 }
-                .modifier(ShakeEffect(shakes: validQuery ? 2 : 0))
+                .modifier(ShakeEffect(shakes: queryValidationToken))
                 .frame(width: 500, height: 35, alignment: .center)
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray, lineWidth: 1))
                 .font(.largeTitle)
                 .disableAutocorrection(true)
                 .accessibilityLabel("Verse search or text search")
                 .accessibilityHint("Enter verse reference like John 3:16, or search text with s: prefix")
-                .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("FocusSearchField"))) { _ in
+                .onReceive(NotificationCenter.default.publisher(for: .focusSearchField)) { _ in
                     isSearchFieldFocused = true
                 }
                 .overlay(alignment: .trailing) {
@@ -370,12 +370,12 @@ struct MainContentView: View {
         }
         .frame(minWidth: 600, maxWidth: .infinity, minHeight: 600, maxHeight: .infinity)
         .padding()
+        .onExitCommand(perform: closeProjector)
     }
 }
 
 struct ContentView: View {
     @StateObject var verseTargetModel: VerseTargetModel = .init()
-    @AppStorage("history") private var history: [String] = ["John 3: 16"]
 
     var body: some View {
         MainView().environmentObject(verseTargetModel)
@@ -390,6 +390,7 @@ enum NavigationColumn: Hashable {
     case verses
 }
 
+@MainActor
 struct MainView: View {
     @EnvironmentObject var verseTargetModel: VerseTargetModel
     @StateObject var verseRowViewModel: VerseRowViewModel = .init()
@@ -399,13 +400,13 @@ struct MainView: View {
     @State private var selectedBook: String?
     @State private var selectedChapter: Int?
     @State private var windowOpened = false
-    @State private var validQuery = true
+    @State private var queryValidationToken = 0
     @State private var chapterCount: Int32 = 0
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showKeyboardShortcuts = false
     @State private var searchResults: (primary: [AVerse], secondary: [AVerse])? = nil
     @State private var currentSearchQuery: String? = nil
-    @State private var isUpdatingFromTextField = false
+    @State private var programmaticChapterSelection: Int?
     @FocusState private var focusedColumn: NavigationColumn?
 
     @AppStorage("history") private var history: [String] = ["John 3: 16"]
@@ -420,9 +421,6 @@ struct MainView: View {
     @State private var bibleSecondary: Bible
     @State private var embeddingsDb: EmbeddingsDb?
 
-    // OpenAI client for semantic search (lazy initialized)
-    @State private var openAIClient: OpenAIClient?
-    @KeychainStorage("OpenAIAPIKey") private var openAIAPIKey: String = ""
     @AppStorage("EmbeddingsDbPath") private var embeddingsDbPath: String = ""
     @AppStorage("semanticSearchMinSimilarity") private var minSimilarity = 0.35
     @State private var isLoadingSemanticSearch = false
@@ -450,14 +448,14 @@ struct MainView: View {
                     selectedChapter: $selectedChapter,
                     chapterCount: chapterCount,
                     onChapterSelected: { chapter in
-                        // Only update if user clicked in sidebar (not programmatic update from text field)
-                        if !isUpdatingFromTextField {
-                            ask = "\(selectedBook) \(chapter)"
-                            // Run processSearchQuery asynchronously to avoid blocking UI
-                            Task { @MainActor in
-                                processSearchQuery(updateRowView: true, project: false)
-                            }
+                        // Ignore chapter changes that were set programmatically while syncing the sidebar.
+                        if programmaticChapterSelection == chapter {
+                            programmaticChapterSelection = nil
+                            return
                         }
+
+                        ask = "\(selectedBook) \(chapter)"
+                        processSearchQuery(updateRowView: true, project: false)
                     }
                 )
                 .focused($focusedColumn, equals: .chapters)
@@ -467,20 +465,15 @@ struct MainView: View {
             // Detail: Main content
             MainContentView(
                 ask: $ask,
-                validQuery: $validQuery,
+                queryValidationToken: $queryValidationToken,
                 windowOpened: $windowOpened,
                 searchResults: $searchResults,
                 searchQuery: $currentSearchQuery,
                 focusedColumn: $focusedColumn,
                 isLoadingSemanticSearch: $isLoadingSemanticSearch,
-                primaryBibleName: primaryBibleName,
-                secondaryBibleName: secondaryBibleName,
                 showOnlyPrimary: showOnlyPrimary,
                 onSubmit: {
                     processSearchQuery(updateRowView: true)
-                    withAnimation(.default) {
-                        validQuery = true
-                    }
                     focusedColumn = .verses
                 },
                 closeProjector: closeProjector,
@@ -550,10 +543,10 @@ struct MainView: View {
         .sheet(isPresented: $showKeyboardShortcuts) {
             KeyboardShortcutsView()
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ToggleKeyboardShortcuts"))) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .toggleKeyboardShortcuts)) { _ in
             showKeyboardShortcuts.toggle()
         }
-        .onChange(of: primaryBibleName) { oldValue, newValue in
+        .onChange(of: primaryBibleName) { _, newValue in
             // Recreate primary Bible connection when translation changes
             // Note: Old instance will be deallocated by ARC after ongoing queries complete
             if let newUrl = URL(string: newValue) {
@@ -565,7 +558,7 @@ struct MainView: View {
                 }
             }
         }
-        .onChange(of: secondaryBibleName) { oldValue, newValue in
+        .onChange(of: secondaryBibleName) { _, newValue in
             // Recreate secondary Bible connection when translation changes
             // Note: Old instance will be deallocated by ARC after ongoing queries complete
             if let newUrl = URL(string: newValue) {
@@ -577,7 +570,7 @@ struct MainView: View {
                 }
             }
         }
-        .onChange(of: embeddingsDbPath) { oldValue, newValue in
+        .onChange(of: embeddingsDbPath) { _, newValue in
             // Load embeddings database when path changes
             if !newValue.isEmpty, FileManager.default.fileExists(atPath: newValue) {
                 let url = URL(fileURLWithPath: newValue)
@@ -605,10 +598,36 @@ struct MainView: View {
         chapterCount = Int32(bibleBooks[bookName]?.last ?? 0)
     }
 
+    func triggerInvalidQueryFeedback() {
+        withAnimation(.default) {
+            queryValidationToken += 1
+        }
+    }
+
+    func clearVerseRows() {
+        verseRowViewModel.verseRowData = VerseRowData(primaryChapter: [], secondaryChapter: [])
+    }
+
+    func appendToHistory(_ title: String) {
+        history.removeAll(where: { $0 == title })
+        history.append(title)
+        if history.count > 22 {
+            history.removeFirst(history.count - 22)
+        }
+    }
+
+    func resolveOpenAIAPIKey() -> String? {
+        guard let key = KeychainHelper.shared.retrieveOrMigrateFromUserDefaults(forKey: "OpenAIAPIKey") else {
+            return nil
+        }
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     func processSearchQuery(updateRowView: Bool = true, project: Bool = true) {
         // Check if this is a text search or verse query
         guard let searchType = SearchQuery(ask: ask).searchType() else {
-            validQuery.toggle()
+            triggerInvalidQueryFeedback()
             return
         }
 
@@ -632,8 +651,7 @@ struct MainView: View {
         searchResults = (primary: primaryResults, secondary: secondaryResults)
         currentSearchQuery = searchText
 
-        // Clear the row view data
-        verseRowViewModel.verseRowData = VerseRowData(primaryChapter: [], secondaryChapter: [])
+        clearVerseRows()
     }
 
     func performMultiTermSearch(searchText: String, filter: SearchFilter) {
@@ -655,118 +673,67 @@ struct MainView: View {
             currentSearchQuery = searchText
         }
 
-        // Clear the row view data
-        verseRowViewModel.verseRowData = VerseRowData(primaryChapter: [], secondaryChapter: [])
+        clearVerseRows()
     }
 
     func performSemanticSearch(searchText: String, filter: SearchFilter) {
         // Check if embeddings database is available
         guard let embeddingsDb = embeddingsDb else {
             logger.fileError("Embeddings database not loaded. Import embeddings.db in Settings → Bible tab.")
-            validQuery.toggle()
+            triggerInvalidQueryFeedback()
             return
         }
 
-        // Initialize OpenAI client if needed
-        if openAIClient == nil {
-            guard !openAIAPIKey.isEmpty else {
-                logger.fileError("OpenAI API key not set. Please configure in Settings.")
-                validQuery.toggle()
-                return
-            }
-            openAIClient = OpenAIClient(apiKey: openAIAPIKey)
-        }
-
-        guard let client = openAIClient else {
-            validQuery.toggle()
+        guard let apiKey = resolveOpenAIAPIKey() else {
+            logger.fileError("OpenAI API key not set. Please configure in Settings.")
+            triggerInvalidQueryFeedback()
             return
         }
+        let client = OpenAIClient(apiKey: apiKey)
 
-        // Capture main-actor isolated values before detached task
         let capturedMinSimilarity = minSimilarity
+        let primaryBible = biblePrimary
+        isLoadingSemanticSearch = true
 
-        // Generate embedding for search query - use Task.detached to ensure background execution
-        Task.detached { [weak embeddingsDb, weak biblePrimary] in
-            await MainActor.run {
-                self.isLoadingSemanticSearch = true
-            }
-
+        Task {
             do {
-                // API call runs on background thread
                 let queryEmbeddings = try await client.generateEmbeddings(texts: [searchText])
                 guard let queryEmbedding = queryEmbeddings.first else {
-                    await MainActor.run {
-                        self.isLoadingSemanticSearch = false
-                        self.validQuery.toggle()
-                    }
+                    triggerInvalidQueryFeedback()
+                    isLoadingSemanticSearch = false
                     return
                 }
 
-                guard let embeddingsDb = embeddingsDb else {
-                    await MainActor.run {
-                        self.isLoadingSemanticSearch = false
-                        self.validQuery.toggle()
-                    }
-                    return
-                }
-
-                // Database search runs on background queue (already thread-safe with dbQueue.sync)
-                // The nonisolated method uses internal synchronization via dbQueue.sync
-                // Wrap in withCheckedContinuation to satisfy Swift 6 concurrency checking
-                let coordinates: [(bookNumber: Int, chapterNumber: Int, verseNumber: Int, similarity: Float)] = await withCheckedContinuation { continuation in
-                    let result = embeddingsDb.searchBySemantic(
-                        queryEmbedding: queryEmbedding,
-                        filter: filter,
-                        limit: 15,
-                        minSimilarity: Float(capturedMinSimilarity)
-                    ) ?? []
-                    continuation.resume(returning: result)
-                }
+                let coordinates = await embeddingsDb.searchBySemanticAsync(
+                    queryEmbedding: queryEmbedding,
+                    filter: filter,
+                    limit: 15,
+                    minSimilarity: Float(capturedMinSimilarity)
+                )
 
                 guard !coordinates.isEmpty else {
-                    await MainActor.run {
-                        self.isLoadingSemanticSearch = false
-                        self.validQuery.toggle()
-                    }
+                    triggerInvalidQueryFeedback()
+                    isLoadingSemanticSearch = false
                     return
                 }
 
-                guard let biblePrimary = biblePrimary else {
-                    await MainActor.run {
-                        self.isLoadingSemanticSearch = false
-                        self.validQuery.toggle()
-                    }
-                    return
-                }
-
-                // Fetch actual verses from primary Bible using coordinates (background thread)
-                let primaryResults: [AVerse] = coordinates.compactMap { coord in
-                    biblePrimary.getVerse(
-                        bookNumber: coord.bookNumber,
-                        chapterNumber: coord.chapterNumber,
-                        verseNumber: coord.verseNumber
+                let verseCoordinates = coordinates.map {
+                    (
+                        bookNumber: $0.bookNumber,
+                        chapterNumber: $0.chapterNumber,
+                        verseNumber: $0.verseNumber
                     )
                 }
+                let primaryResults = await primaryBible.getVersesAsync(for: verseCoordinates)
 
-                // For semantic search, only search primary Bible
-                let secondaryResults: [AVerse] = []
-
-                // Update UI on main thread
-                await MainActor.run {
-                    self.searchResults = (primary: primaryResults, secondary: secondaryResults)
-                    self.currentSearchQuery = searchText
-
-                    // Clear the row view data
-                    self.verseRowViewModel.verseRowData = VerseRowData(primaryChapter: [], secondaryChapter: [])
-
-                    self.isLoadingSemanticSearch = false
-                }
+                searchResults = (primary: primaryResults, secondary: [])
+                currentSearchQuery = searchText
+                clearVerseRows()
+                isLoadingSemanticSearch = false
             } catch {
                 logger.fileError("Semantic search error: \(error.localizedDescription)")
-                await MainActor.run {
-                    self.isLoadingSemanticSearch = false
-                    self.validQuery.toggle()
-                }
+                triggerInvalidQueryFeedback()
+                isLoadingSemanticSearch = false
             }
         }
     }
@@ -776,21 +743,12 @@ struct MainView: View {
         searchResults = nil
         currentSearchQuery = nil
 
-        if verseQuery.bookName != "" && verseQuery.chapterNumber != 0 {
-            // Set flag to prevent onChange handler from re-parsing when updating from text field
-            if updateRowView {
-                isUpdatingFromTextField = true
-            }
-
+        if !verseQuery.bookName.isEmpty && verseQuery.chapterNumber > 0 {
             getChapterCount(bookName: verseQuery.bookName)
-            selectedChapter = verseQuery.chapterNumber
-
-            // Reset flag after sidebar is updated
             if updateRowView {
-                DispatchQueue.main.async {
-                    isUpdatingFromTextField = false
-                }
+                programmaticChapterSelection = verseQuery.chapterNumber
             }
+            selectedChapter = verseQuery.chapterNumber
         }
 
         // Try to get verse from primary Bible using long-lived connection
@@ -801,35 +759,22 @@ struct MainView: View {
 
         // Try to get verse from secondary Bible using long-lived connection
         var secondaryText: String?
-        if !showOnlyPrimary {
-            if let verseTwo = bibleSecondary.pickAVerse(verseQuery: verseQuery) {
-                secondaryText = verseTwo.verse
-            }
+        if !showOnlyPrimary, let verseTwo = bibleSecondary.pickAVerse(verseQuery: verseQuery) {
+            secondaryText = verseTwo.verse
         }
 
         // If neither Bible has the verse, show error
         if primaryText == nil && secondaryText == nil {
-            validQuery.toggle()
+            triggerInvalidQueryFeedback()
             return
         }
 
-        // Title
-        let title: String = verseQuery.title
+        let title = verseQuery.title
+        appendToHistory(title)
 
-        // History
-        if history.count > 22 {
-            history.remove(at: 1)
-        }
-        if !history.contains(title) && (primaryText != nil || secondaryText != nil) {
-            history.append(title)
-        }
-
-        if (primaryText != nil || secondaryText != nil) && project {
-            // Set verse for projector view
+        if project {
             let displayPrimaryText = primaryText ?? secondaryText ?? "\u{200c}"
-            // Only show secondary if primary exists AND they're different
             let displaySecondaryText = primaryText != nil ? secondaryText : nil
-
             projectorViewModel.projectorViewData = ProjectorViewData(
                 title: title,
                 primaryText: displayPrimaryText,
@@ -840,17 +785,15 @@ struct MainView: View {
 
         // Row view needs to set/update only when `ask` is via TextField.
         if updateRowView {
-            verseTargetModel.verseQuery = verseQuery // Observable
-
-            // Resetting TextField content
+            verseTargetModel.verseQuery = verseQuery
             ask = title
 
-            // Set verse for row view - show whatever chapters are available
             let primaryChapter = biblePrimary.pickAChapter(verseQuery: verseQuery) ?? []
             let secondaryChapter = bibleSecondary.pickAChapter(verseQuery: verseQuery) ?? []
 
             verseRowViewModel.verseRowData = VerseRowData(
-                primaryChapter: primaryChapter, secondaryChapter: secondaryChapter
+                primaryChapter: primaryChapter,
+                secondaryChapter: secondaryChapter
             )
         }
     }
@@ -869,17 +812,17 @@ struct MainView: View {
         }
 
         var secondaryText: String?
-        if !showOnlyPrimary {
-            if let verseTwo = bibleSecondary.pickAVerse(verseQuery: verseQuery) {
-                secondaryText = verseTwo.verse
-            }
+        if !showOnlyPrimary, let verseTwo = bibleSecondary.pickAVerse(verseQuery: verseQuery) {
+            secondaryText = verseTwo.verse
         }
 
         let title = verseQuery.title
 
         // Set verse for projector view
         projectorViewModel.projectorViewData = ProjectorViewData(
-            title: title, primaryText: primaryText, secondaryText: secondaryText
+            title: title,
+            primaryText: primaryText,
+            secondaryText: secondaryText
         )
         openProjector()
     }
@@ -928,7 +871,7 @@ struct MainView: View {
 
     func openProjector() {
         // Check if window already exists
-        if NSApplication.shared.windows.contains(where: { $0.title == "Projector" }) {
+        if NSApplication.shared.windows.contains(where: { $0.title == AppWindowTitle.projector }) {
             // Window exists, just update the flag and return
             windowOpened = true
             return
@@ -940,17 +883,18 @@ struct MainView: View {
             windowOpened = true
             ProjectorView(windowOpened: $windowOpened)
                 .environmentObject(projectorViewModel)
-                .openNewWindow(with: "Projector")
+                .openNewWindow(with: AppWindowTitle.projector)
         }
     }
 
     func closeProjector() {
         // Close window first, then update flag
-        if let projectorWindow = NSApplication.shared.windows.first(where: { $0.title == "Projector" }) {
+        if let projectorWindow = NSApplication.shared.windows.first(where: { $0.title == AppWindowTitle.projector }) {
             projectorWindow.close()
         }
         windowOpened = false
     }
+
 }
 
 struct ShakeEffect: GeometryEffect {

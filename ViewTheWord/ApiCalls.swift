@@ -6,18 +6,21 @@
 //
 
 import Foundation
-import SwiftUI
 
-class NetworkManager {
+final class NetworkManager {
     static let shared = NetworkManager()
-    private var activeTasks: [URLSessionDataTask] = []
+
+    private struct VersePayload: Encodable {
+        let text: String
+        let title: String
+    }
 
     private init() {}
 
     func sendTextOverNetwork(text: String, title: String) {
         // https://github.com/sukujgrg/echoHttp/tree/main
-        guard let apiUrlString = UserDefaults.standard.string(forKey: "apiUrlToPost"),
-              let url = URL(string: apiUrlString),
+        guard let apiUrlString = UserDefaults.standard.string(forKey: AppDefaultsKey.apiUrlToPost),
+              let url = URL(string: apiUrlString.trimmingCharacters(in: .whitespacesAndNewlines)),
               url.host != nil,
               url.scheme == "http" || url.scheme == "https" else {
             return
@@ -28,40 +31,29 @@ class NetworkManager {
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 0.5
 
-        let params = ["text": text, "title": title]
-        guard let httpBody = try? JSONSerialization.data(withJSONObject: params, options: []) else {
-            logger.error("Failed to serialize JSON parameters")
+        let payload = VersePayload(text: text, title: title)
+        guard let httpBody = try? JSONEncoder().encode(payload) else {
+            logger.fileError("Failed to encode network payload")
             return
         }
         request.httpBody = httpBody
 
-        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            defer {
-                self?.removeTask(task: nil)
-            }
-
+        URLSession.shared.dataTask(with: request) { _, response, error in
             if let error = error {
-                logger.error("Network error: \(error.localizedDescription)")
+                logger.fileError("Network error: \(error.localizedDescription)")
                 return
             }
 
             guard let httpResponse = response as? HTTPURLResponse else {
-                logger.error("Invalid response type")
+                logger.fileError("Invalid response type")
                 return
             }
 
             guard httpResponse.statusCode == 201 else {
-                logger.error("Unexpected status code: \(httpResponse.statusCode)")
+                logger.fileError("Unexpected status code: \(httpResponse.statusCode)")
                 return
             }
-        }
-
-        activeTasks.append(task)
-        task.resume()
-    }
-
-    private func removeTask(task: URLSessionDataTask?) {
-        activeTasks.removeAll { $0 == task }
+        }.resume()
     }
 
     func clearApi() {

@@ -7,9 +7,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = false
-
-        // Migrate sensitive data from UserDefaults to Keychain
-        KeychainHelper.shared.migrateFromUserDefaults(key: "OpenAIAPIKey")
     }
 }
 
@@ -29,14 +26,14 @@ struct ViewTheWordApp: App {
             // Replace Help menu to avoid duplicates
             CommandGroup(replacing: .help) {
                 Button("ViewTheWord Help") {
-                    NotificationCenter.default.post(name: NSNotification.Name("ToggleKeyboardShortcuts"), object: nil)
+                    NotificationCenter.default.post(name: .toggleKeyboardShortcuts, object: nil)
                 }
                 .keyboardShortcut("/", modifiers: .command)
             }
 
             CommandGroup(replacing: .textEditing) {
                 Button("Focus Search") {
-                    NotificationCenter.default.post(name: NSNotification.Name("FocusSearchField"), object: nil)
+                    NotificationCenter.default.post(name: .focusSearchField, object: nil)
                 }
                 .keyboardShortcut("l", modifiers: .command)
             }

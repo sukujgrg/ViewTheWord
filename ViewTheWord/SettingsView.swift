@@ -1,4 +1,3 @@
-import AVFoundation
 import SwiftUI
 import UniformTypeIdentifiers
 import SQLite3
@@ -92,7 +91,8 @@ struct DisplaySettingsView: View {
     @AppStorage("fontSizeVerseRef") private var fontSizeVerseRef = 20.0
     @AppStorage("vStackPadding") private var vStackPadding = 20.0
     @AppStorage("transparentBackground") var transparentBackground = false
-    @AppStorage("apiUrlToPost") var apiUrlToPost: URL?
+    @AppStorage(AppDefaultsKey.apiUrlToPost) private var apiUrlToPost = ""
+    @State private var apiUrlDraft = ""
 
     var body: some View {
         VStack {
@@ -116,14 +116,42 @@ struct DisplaySettingsView: View {
                 .headerProminence(.increased)
 
                 Section(header: Text("API to POST verse")) {
-                    TextField("API URL", text: Binding(
-                            get: { apiUrlToPost?.absoluteString ?? "" },
-                            set: { apiUrlToPost = URL(string: $0) }
-                    )).textFieldStyle(.roundedBorder)
+                    TextField("API URL", text: $apiUrlDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: apiUrlDraft) { _, newValue in
+                            persistAPIURLIfValid(newValue)
+                        }
+
+                    if !apiUrlDraft.isEmpty && !isValidAPIURL(apiUrlDraft) {
+                        Text("Enter a valid http(s) URL.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .listStyle(.inset)
         }
+        .onAppear {
+            if apiUrlToPost.isEmpty, let legacyURL = UserDefaults.standard.url(forKey: AppDefaultsKey.apiUrlToPost) {
+                apiUrlToPost = legacyURL.absoluteString
+            }
+            apiUrlDraft = apiUrlToPost
+        }
+    }
+
+    private func persistAPIURLIfValid(_ rawValue: String) {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || isValidAPIURL(trimmed) {
+            apiUrlToPost = trimmed
+        }
+    }
+
+    private func isValidAPIURL(_ rawValue: String) -> Bool {
+        guard let url = URL(string: rawValue) else { return false }
+        guard let scheme = url.scheme?.lowercased(), (scheme == "http" || scheme == "https") else {
+            return false
+        }
+        return url.host != nil
     }
 }
 
@@ -397,6 +425,7 @@ struct BibleImportView: View {
     @State private var isImporting: Bool = false
     @State private var importStatus: ImportStatus?
     @State private var showStatusAlert = false
+    @State private var availableBibleUrls: [URL] = []
 
     @AppStorage("PrimaryBibleName") private var primaryBibleName: String = bundledPrimaryBibleUrl?.absoluteString ?? ""
     @AppStorage("SecondaryBibleName") private var secondaryBibleName: String = bundledSecondaryBibleUrl?.absoluteString ?? ""
@@ -449,23 +478,24 @@ struct BibleImportView: View {
 
             HStack {
                 Picker(selection: $primaryBibleName, label: Text("Primary")) {
-                    ForEach(BibleUrl().getAvailableBibleUrls(), id: \.absoluteString) { name in
+                    ForEach(availableBibleUrls, id: \.absoluteString) { name in
                         Text(String(name.lastPathComponent))
+                            .tag(name.absoluteString)
                     }
-                }.onChange(of: primaryBibleName) { _, name in
-                    primaryBibleName = name
                 }
                 Divider()
                 Picker(selection: $secondaryBibleName, label: Text("Secondary")) {
-                    ForEach(BibleUrl().getAvailableBibleUrls(), id: \.absoluteString) { name in
+                    ForEach(availableBibleUrls, id: \.absoluteString) { name in
                         Text(name.lastPathComponent)
+                            .tag(name.absoluteString)
                     }
-                }.onChange(of: secondaryBibleName) { _, name in
-                    secondaryBibleName = name
                 }
                 .disabled(showOnlyPrimary)
             }
             .pickerStyle(.radioGroup)
+        }
+        .onAppear {
+            refreshAvailableBibles()
         }
         .alert(isPresented: $showStatusAlert) {
             Alert(
@@ -539,6 +569,9 @@ struct BibleImportView: View {
         try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: destURL.path)
 
         logger.fileInfo("Successfully imported Bible: \(fileName)")
+        await MainActor.run {
+            refreshAvailableBibles()
+        }
         await showStatus(.success("Successfully imported \(fileName)"))
     }
 
@@ -592,5 +625,9 @@ struct BibleImportView: View {
             importStatus = status
             showStatusAlert = true
         }
+    }
+
+    private func refreshAvailableBibles() {
+        availableBibleUrls = BibleUrl().getAvailableBibleUrls()
     }
 }

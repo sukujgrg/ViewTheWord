@@ -57,10 +57,19 @@ struct VerseRowView: View {
             .replacingOccurrences(of: "_", with: " ") ?? ""
     }
 
+    private var verseCount: Int {
+        max(verseRowViewModel.verseRowData.primaryChapter.count, verseRowViewModel.verseRowData.secondaryChapter.count)
+    }
+
+    private var clampedCurrentIndex: Int {
+        guard verseCount > 0 else { return -1 }
+        return min(max(verseTargetModel.verseQuery.verseNumber - 1, 0), verseCount - 1)
+    }
+
     // MARK: - Body
 
     var body: some View {
-        if verseRowViewModel.verseRowData.primaryChapter.count > 0 {
+        if !verseRowViewModel.verseRowData.primaryChapter.isEmpty {
             let primaryChapter = verseRowViewModel.verseRowData.primaryChapter
 
             // Header with Bible names and chapter reference
@@ -81,7 +90,7 @@ struct VerseRowView: View {
         ScrollViewReader { value in
             ScrollView {
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
-                    let count = max(verseRowViewModel.verseRowData.primaryChapter.count, verseRowViewModel.verseRowData.secondaryChapter.count)
+                    let count = verseCount
                     ForEach(0 ..< count, id: \.self) { index in
                         if showOnlyPrimary {
                             // Show only primary mode: Verse with superscript number
@@ -111,28 +120,16 @@ struct VerseRowView: View {
                             )
                         }
                     }
-                    .onChange(of: verseRowViewModel.verseRowData.id) {
-                        // Update max verses whenever verse data changes
-                        maxVersesOnCurrentChapter = max(verseRowViewModel.verseRowData.primaryChapter.count, verseRowViewModel.verseRowData.secondaryChapter.count)
-                        currentIndex = verseTargetModel.verseQuery.verseNumber - 1
-                        // Scroll after data loads
-                        DispatchQueue.main.async {
-                            value.scrollTo(currentIndex, anchor: .center)
-                        }
+                    .onChange(of: verseRowViewModel.verseRowData.id) { _, _ in
+                        updateSelectionAndScroll(proxy: value)
                     }
-                    .onChange(of: verseTargetModel.verseQuery.title) {
-                        currentIndex = verseTargetModel.verseQuery.verseNumber - 1
-                        DispatchQueue.main.async {
-                            value.scrollTo(currentIndex, anchor: .center)
-                        }
+                    .onChange(of: verseTargetModel.verseQuery.title) { _, _ in
+                        currentIndex = clampedCurrentIndex
+                        scrollToCurrentVerse(proxy: value)
                     }
                     // this scroll is needed when switching between books/chapters
-                    .onChange(of: verseTargetModel.verseQuery.bookAndChapter) {
-                        maxVersesOnCurrentChapter = count
-                        currentIndex = verseTargetModel.verseQuery.verseNumber - 1
-                        DispatchQueue.main.async {
-                            value.scrollTo(currentIndex, anchor: .center)
-                        }
+                    .onChange(of: verseTargetModel.verseQuery.bookAndChapter) { _, _ in
+                        updateSelectionAndScroll(proxy: value)
                     }
                 }
             }
@@ -147,9 +144,8 @@ struct VerseRowView: View {
         .focusEffectDisabled()
         .onAppear {
             // Initialize on first appearance
-            let count = max(verseRowViewModel.verseRowData.primaryChapter.count, verseRowViewModel.verseRowData.secondaryChapter.count)
-            maxVersesOnCurrentChapter = count
-            currentIndex = verseTargetModel.verseQuery.verseNumber - 1
+            maxVersesOnCurrentChapter = verseCount
+            currentIndex = clampedCurrentIndex
         }
         .onKeyPress(keys: [.upArrow, .downArrow]) { keyPress in
             let modifiers = keyPress.modifiers
@@ -218,7 +214,7 @@ struct VerseRowView: View {
         Text(text)
             .onTapGesture { projectVerse(at: index) }
             .padding()
-            .background(Color(isActive ? .systemBlue : .clear))
+            .background(isActive ? Color.accentColor.opacity(0.2) : Color.clear)
     }
 
     @ViewBuilder
@@ -234,7 +230,7 @@ struct VerseRowView: View {
         }
         .onTapGesture { projectVerse(at: index) }
         .padding()
-        .background(Color(isActive ? .systemBlue : .clear))
+        .background(isActive ? Color.accentColor.opacity(0.2) : Color.clear)
         .accessibilityLabel("Verse \(index + 1): \(text)")
         .accessibilityHint("Tap to project this verse to the projector window")
     }
@@ -244,7 +240,7 @@ struct VerseRowView: View {
         Button(action: { projectVerse(at: index) }) {
             Text(String(index + 1))
                 .frame(width: 60, height: 60)
-                .background(Color(isActive ? .systemBlue : .gray))
+                .background(isActive ? Color.accentColor : Color.secondary.opacity(0.5))
                 .foregroundColor(.white)
         }
         .buttonStyle(PlainButtonStyle())
@@ -257,18 +253,13 @@ struct VerseRowView: View {
     private func navigateVerses(offset: Int) {
         let newIndex = currentIndex + offset
         if newIndex >= 0 && newIndex < maxVersesOnCurrentChapter {
-            // Use DispatchQueue to avoid "Publishing changes from within view updates" error
-            DispatchQueue.main.async {
-                self.projectVerse(at: newIndex)
-            }
+            projectVerse(at: newIndex)
         }
     }
 
     private func navigateToVerse(_ index: Int) {
         if index >= 0 && index < maxVersesOnCurrentChapter {
-            DispatchQueue.main.async {
-                self.projectVerse(at: index)
-            }
+            projectVerse(at: index)
         }
     }
 
@@ -304,12 +295,10 @@ struct VerseRowView: View {
     private func toggleProjector(at index: Int) {
         if windowOpened && currentIndex == index {
             // Close projector if showing same verse
-            NSApplication.shared.windows.first(where: { $0.title == "Projector" })?.close()
+            NSApplication.shared.windows.first(where: { $0.title == AppWindowTitle.projector })?.close()
         } else {
             // Project the verse
-            DispatchQueue.main.async {
-                self.projectVerse(at: index)
-            }
+            projectVerse(at: index)
         }
     }
 
@@ -342,7 +331,7 @@ struct VerseRowView: View {
         )
 
         // Check if projector window already exists
-        if NSApplication.shared.windows.contains(where: { $0.title == "Projector" }) {
+        if NSApplication.shared.windows.contains(where: { $0.title == AppWindowTitle.projector }) {
             // Window exists, just update flag
             windowOpened = true
             return
@@ -353,7 +342,23 @@ struct VerseRowView: View {
             windowOpened = true
             ProjectorView(windowOpened: $windowOpened)
                 .environmentObject(projectorViewModel)
-                .openNewWindow(with: "Projector")
+                .openNewWindow(with: AppWindowTitle.projector)
+        }
+    }
+
+    private func updateSelectionAndScroll(proxy: ScrollViewProxy) {
+        maxVersesOnCurrentChapter = verseCount
+        currentIndex = clampedCurrentIndex
+        scrollToCurrentVerse(proxy: proxy)
+    }
+
+    private func scrollToCurrentVerse(proxy: ScrollViewProxy) {
+        guard scrollTo, currentIndex >= 0, currentIndex < verseCount else { return }
+        Task { @MainActor in
+            await Task.yield()
+            withAnimation(.easeInOut(duration: 0.2)) {
+                proxy.scrollTo(currentIndex, anchor: .center)
+            }
         }
     }
 }

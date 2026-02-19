@@ -44,15 +44,10 @@ struct ProjectorView: View {
             Spacer()
         }
         .onDisappear {
-            // Only update flag if window is actually closed
-            DispatchQueue.main.async {
-                if !NSApplication.shared.windows.contains(where: { $0.title == "Projector" }) {
-                    windowOpened = false
-                }
-            }
+            windowOpened = false
             clearApi()
         }
-        .onChange(of: projectorViewModel.projectorViewData.title){
+        .onChange(of: projectorViewModel.projectorViewData.title) { _, _ in
             // Only send if we have valid data (not placeholder)
             if projectorViewModel.projectorViewData.primaryText != "?" {
                 sendTextOverNetwork(text: projectorViewModel.projectorViewData.primaryText, title: projectorViewModel.projectorViewData.title)

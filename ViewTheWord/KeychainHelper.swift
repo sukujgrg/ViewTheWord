@@ -103,34 +103,28 @@ class KeychainHelper {
     /// Migrate a value from UserDefaults to Keychain (one-time migration)
     /// - Parameter key: The key to migrate
     func migrateFromUserDefaults(key: String) {
-        logger.fileInfo("Starting migration check for key: \(key)")
+        _ = retrieveOrMigrateFromUserDefaults(forKey: key)
+    }
 
-        // Check if already in Keychain
-        if exists(forKey: key) {
-            logger.fileInfo("Key already exists in Keychain, skipping migration: \(key)")
-            if let value = retrieve(forKey: key) {
-                logger.fileInfo("Current Keychain value length: \(value.count)")
-            }
-            return
+    /// Retrieve from Keychain, or lazily migrate the same key from UserDefaults if needed.
+    /// This avoids forced Keychain access at app launch.
+    func retrieveOrMigrateFromUserDefaults(forKey key: String) -> String? {
+        if let value = retrieve(forKey: key) {
+            return value
         }
 
-        logger.fileInfo("Key not in Keychain, checking UserDefaults...")
-
-        // Try to get from UserDefaults
-        if let value = UserDefaults.standard.string(forKey: key), !value.isEmpty {
-            logger.fileInfo("Found value in UserDefaults (length: \(value.count)), migrating to Keychain")
-
-            // Save to Keychain
-            if save(value, forKey: key) {
-                // Remove from UserDefaults after successful migration
-                UserDefaults.standard.removeObject(forKey: key)
-                logger.fileInfo("Successfully migrated and removed from UserDefaults: \(key)")
-            } else {
-                logger.fileError("Failed to migrate to Keychain: \(key)")
-            }
-        } else {
-            logger.fileInfo("No value found in UserDefaults to migrate for key: \(key)")
+        guard let legacyValue = UserDefaults.standard.string(forKey: key), !legacyValue.isEmpty else {
+            return nil
         }
+
+        if save(legacyValue, forKey: key) {
+            UserDefaults.standard.removeObject(forKey: key)
+            logger.fileInfo("Successfully migrated and removed from UserDefaults: \(key)")
+            return legacyValue
+        }
+
+        logger.fileError("Failed to migrate to Keychain: \(key)")
+        return nil
     }
 }
 
@@ -146,19 +140,14 @@ struct KeychainStorage: DynamicProperty {
         self.key = key
         self.defaultValue = defaultValue
 
-        // Initialize with Keychain value or default
-        let initialValue = KeychainHelper.shared.retrieve(forKey: key) ?? defaultValue
-        logger.fileInfo("KeychainStorage init for '\(key)': value length = \(initialValue.count)")
+        // Initialize with Keychain value (or lazily migrated legacy value) or default.
+        let initialValue = KeychainHelper.shared.retrieveOrMigrateFromUserDefaults(forKey: key) ?? defaultValue
         self._value = State(initialValue: initialValue)
     }
 
     // Called by SwiftUI to refresh the property
     mutating func update() {
-        // Refresh value from Keychain on each update
-        let currentValue = KeychainHelper.shared.retrieve(forKey: key) ?? defaultValue
-        if value != currentValue {
-            value = currentValue
-        }
+        // Intentionally no-op to avoid repeated keychain reads during normal view updates.
     }
 
     var wrappedValue: String {

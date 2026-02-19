@@ -3,7 +3,7 @@ import OSLog
 import SQLite3
 
 /// Manages a standalone embeddings database that works with any Bible translation
-class EmbeddingsDb {
+final class EmbeddingsDb: @unchecked Sendable {
     private let dbUrl: URL
     private var db: OpaquePointer?
     private let dbQueue = DispatchQueue(label: "com.viewtheword.embeddings.dbQueue")
@@ -14,8 +14,11 @@ class EmbeddingsDb {
     }
 
     deinit {
-        if let db = db {
-            sqlite3_close(db)
+        dbQueue.sync {
+            if let db = db {
+                sqlite3_close(db)
+                self.db = nil
+            }
         }
     }
 
@@ -71,75 +74,112 @@ class EmbeddingsDb {
     /// Returns array of (book_number, chapter_number, verse_number, similarity)
     nonisolated func searchBySemantic(queryEmbedding: [Float], filter: SearchFilter, limit: Int = 15, minSimilarity: Float) -> [(bookNumber: Int, chapterNumber: Int, verseNumber: Int, similarity: Float)]? {
         return dbQueue.sync {
-            guard let db = db else { return [] }
-
-            // Build WHERE clause for filter
-            var whereClause = "1=1"
-            var bookNumbers: [Int]? = nil
-
-            if let numbers = filter.bookNumbers() {
-                bookNumbers = numbers
-                let placeholders = numbers.map { _ in "?" }.joined(separator: ",")
-                whereClause = "\(whereClause) AND book_number IN (\(placeholders))"
-            }
-
-            let query = """
-                SELECT book_number, chapter_number, verse_number, embedding
-                FROM embeddings
-                WHERE \(whereClause);
-            """
-
-            var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else {
-                let errmsg = String(cString: sqlite3_errmsg(db))
-                logger.error("Failed to prepare embeddings search: \(errmsg)")
-                return nil
-            }
-
-            // Bind book number filters if present
-            if let bookNumbers = bookNumbers {
-                var paramIndex: Int32 = 1
-                for bookNum in bookNumbers {
-                    sqlite3_bind_int(statement, paramIndex, Int32(bookNum))
-                    paramIndex += 1
-                }
-            }
-
-            // Calculate similarities
-            var results: [(bookNumber: Int, chapterNumber: Int, verseNumber: Int, similarity: Float)] = []
-
-            while sqlite3_step(statement) == SQLITE_ROW {
-                let bookNumber = Int(sqlite3_column_int(statement, 0))
-                let chapterNumber = Int(sqlite3_column_int(statement, 1))
-                let verseNumber = Int(sqlite3_column_int(statement, 2))
-
-                // Extract embedding blob
-                guard let embeddingBlob = sqlite3_column_blob(statement, 3) else { continue }
-                let embeddingSize = sqlite3_column_bytes(statement, 3)
-                let embeddingData = Data(bytes: embeddingBlob, count: Int(embeddingSize))
-
-                // Convert blob back to [Float]
-                let embeddingArray = embeddingData.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) -> [Float] in
-                    let floatPtr = ptr.bindMemory(to: Float.self)
-                    return Array(floatPtr)
-                }
-
-                // Calculate similarity
-                let similarity = OpenAIClient.cosineSimilarity(queryEmbedding, embeddingArray)
-
-                results.append((bookNumber: bookNumber, chapterNumber: chapterNumber, verseNumber: verseNumber, similarity: similarity))
-            }
-
-            sqlite3_finalize(statement)
-
-            // Sort by similarity (highest first), filter by minimum similarity, and take top N
-            let sortedResults = results
-                .sorted { $0.similarity > $1.similarity }
-                .filter { $0.similarity >= minSimilarity }
-                .prefix(limit)
-
-            return Array(sortedResults)
+            searchBySemanticUnlocked(
+                queryEmbedding: queryEmbedding,
+                filter: filter,
+                limit: limit,
+                minSimilarity: minSimilarity
+            )
         }
+    }
+
+    func searchBySemanticAsync(
+        queryEmbedding: [Float],
+        filter: SearchFilter,
+        limit: Int = 15,
+        minSimilarity: Float
+    ) async -> [(bookNumber: Int, chapterNumber: Int, verseNumber: Int, similarity: Float)] {
+        await withCheckedContinuation { continuation in
+            dbQueue.async { [weak self] in
+                guard let self = self else {
+                    continuation.resume(returning: [])
+                    return
+                }
+                let results = self.searchBySemanticUnlocked(
+                    queryEmbedding: queryEmbedding,
+                    filter: filter,
+                    limit: limit,
+                    minSimilarity: minSimilarity
+                ) ?? []
+                continuation.resume(returning: results)
+            }
+        }
+    }
+
+    private func searchBySemanticUnlocked(
+        queryEmbedding: [Float],
+        filter: SearchFilter,
+        limit: Int,
+        minSimilarity: Float
+    ) -> [(bookNumber: Int, chapterNumber: Int, verseNumber: Int, similarity: Float)]? {
+        guard let db = db else { return [] }
+
+        // Build WHERE clause for filter
+        var whereClause = "1=1"
+        var bookNumbers: [Int]? = nil
+
+        if let numbers = filter.bookNumbers() {
+            bookNumbers = numbers
+            let placeholders = numbers.map { _ in "?" }.joined(separator: ",")
+            whereClause = "\(whereClause) AND book_number IN (\(placeholders))"
+        }
+
+        let query = """
+            SELECT book_number, chapter_number, verse_number, embedding
+            FROM embeddings
+            WHERE \(whereClause);
+        """
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else {
+            let errmsg = String(cString: sqlite3_errmsg(db))
+            logger.error("Failed to prepare embeddings search: \(errmsg)")
+            return nil
+        }
+
+        // Bind book number filters if present
+        if let bookNumbers = bookNumbers {
+            var paramIndex: Int32 = 1
+            for bookNum in bookNumbers {
+                sqlite3_bind_int(statement, paramIndex, Int32(bookNum))
+                paramIndex += 1
+            }
+        }
+
+        // Calculate similarities
+        var results: [(bookNumber: Int, chapterNumber: Int, verseNumber: Int, similarity: Float)] = []
+
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let bookNumber = Int(sqlite3_column_int(statement, 0))
+            let chapterNumber = Int(sqlite3_column_int(statement, 1))
+            let verseNumber = Int(sqlite3_column_int(statement, 2))
+
+            // Extract embedding blob
+            guard let embeddingBlob = sqlite3_column_blob(statement, 3) else { continue }
+            let embeddingSize = sqlite3_column_bytes(statement, 3)
+            let embeddingData = Data(bytes: embeddingBlob, count: Int(embeddingSize))
+
+            // Convert blob back to [Float]
+            let embeddingArray = embeddingData.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) -> [Float] in
+                let floatPtr = ptr.bindMemory(to: Float.self)
+                return Array(floatPtr)
+            }
+
+            // Calculate similarity
+            let similarity = OpenAIClient.cosineSimilarity(queryEmbedding, embeddingArray)
+
+            results.append((bookNumber: bookNumber, chapterNumber: chapterNumber, verseNumber: verseNumber, similarity: similarity))
+        }
+
+        sqlite3_finalize(statement)
+
+        // Sort by similarity (highest first), filter by minimum similarity, and take top N
+        let sortedResults = results
+            .sorted { $0.similarity > $1.similarity }
+            .filter { $0.similarity >= minSimilarity }
+            .prefix(limit)
+
+        return Array(sortedResults)
     }
 }
 
