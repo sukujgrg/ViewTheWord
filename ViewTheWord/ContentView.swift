@@ -204,6 +204,9 @@ struct ChaptersListView: View {
     let onSelectHistoryItem: (String) -> Void
     let onClearHistory: () -> Void
 
+    @State private var selectedBookmarkID: String?
+    @State private var selectedHistoryID: String?
+
     private let minChapterHeight: CGFloat = 180
     private let minBottomPaneHeight: CGFloat = 180
     private let minBookmarkHeight: CGFloat = 120
@@ -282,21 +285,19 @@ struct ChaptersListView: View {
     }
 
     private var bookmarkList: some View {
-        List {
+        let displayedBookmarks = Array(bookmarkEntries.reversed())
+
+        return List(selection: $selectedBookmarkID) {
             Section {
-                if bookmarkEntries.isEmpty {
+                if displayedBookmarks.isEmpty {
                     Text("No bookmarks yet")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(Array(bookmarkEntries.reversed())) { entry in
-                        Button {
-                            onSelectBookmarkItem(entry)
-                        } label: {
-                            Text(entry.title)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .buttonStyle(.plain)
+                    ForEach(displayedBookmarks) { entry in
+                        Text(entry.title)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .tag(entry.id)
                         .contextMenu {
                             Button("Remove Bookmark", role: .destructive) {
                                 onRemoveBookmarkItem(entry)
@@ -311,16 +312,28 @@ struct ChaptersListView: View {
                     Button("Clear", action: onClearBookmarks)
                         .font(.caption2)
                         .buttonStyle(.borderless)
-                        .disabled(bookmarkEntries.isEmpty)
+                        .disabled(displayedBookmarks.isEmpty)
                 }
             }
         }
         .listStyle(.inset)
+        .onChange(of: selectedBookmarkID) { _, newID in
+            guard let newID,
+                  let selectedEntry = bookmarkEntries.first(where: { $0.id == newID })
+            else { return }
+            onSelectBookmarkItem(selectedEntry)
+        }
+        .onChange(of: bookmarkEntries.map(\.id)) { _, currentIDs in
+            guard let selectedBookmarkID else { return }
+            if !currentIDs.contains(selectedBookmarkID) {
+                self.selectedBookmarkID = nil
+            }
+        }
         .accessibilityLabel("Bookmarks list")
     }
 
     private var historyList: some View {
-        List {
+        List(selection: $selectedHistoryID) {
             Section {
                 if historySections.isEmpty {
                     Text("No recent verse history")
@@ -335,13 +348,9 @@ struct ChaptersListView: View {
                             .textCase(.uppercase)
 
                         ForEach(section.items) { entry in
-                            Button {
-                                onSelectHistoryItem(entry.title)
-                            } label: {
-                                Text(entry.title)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .buttonStyle(.plain)
+                            Text(entry.title)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .tag(entry.id)
                         }
                     }
                 }
@@ -357,6 +366,21 @@ struct ChaptersListView: View {
             }
         }
         .listStyle(.inset)
+        .onChange(of: selectedHistoryID) { _, newID in
+            guard let newID else { return }
+            for section in historySections {
+                if let entry = section.items.first(where: { $0.id == newID }) {
+                    onSelectHistoryItem(entry.title)
+                    return
+                }
+            }
+        }
+        .onChange(of: historySections.flatMap(\.items).map(\.id)) { _, currentIDs in
+            guard let selectedHistoryID else { return }
+            if !currentIDs.contains(selectedHistoryID) {
+                self.selectedHistoryID = nil
+            }
+        }
         .accessibilityLabel("History list")
     }
 
@@ -661,7 +685,6 @@ struct MainView: View {
                 onSelectBookmarkItem: { entry in
                     ask = entry.title
                     processSearchQuery(updateRowView: true, project: false, recordHistory: false)
-                    focusedColumn = .verses
                 },
                 onRemoveBookmarkItem: { entry in
                     guard let reference = entry.reference else { return }
@@ -674,7 +697,6 @@ struct MainView: View {
                 onSelectHistoryItem: { item in
                     ask = item
                     processSearchQuery(updateRowView: true, project: false, recordHistory: false)
-                    focusedColumn = .verses
                 },
                 onClearHistory: {
                     historyStore.clear()

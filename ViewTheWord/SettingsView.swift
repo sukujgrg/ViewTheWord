@@ -4,18 +4,12 @@ import SQLite3
 
 struct SettingsView: View {
     private enum Tabs: Hashable {
-        case general
         case font
         case bible
     }
 
     var body: some View {
         TabView {
-            GeneralSettingsView()
-                .tabItem {
-                    Label("General", systemImage: "gear")
-                }
-                .tag(Tabs.general)
             DisplaySettingsView()
                 .tabItem {
                     Label("Display", systemImage: "display")
@@ -29,16 +23,6 @@ struct SettingsView: View {
         }
         .padding(20)
         .frame(width: 500, height: 400)
-    }
-}
-
-struct GeneralSettingsView: View {
-    var body: some View {
-        ContentUnavailableView(
-            "No General Settings",
-            systemImage: "gearshape",
-            description: Text("General app options are currently not required.")
-        )
     }
 }
 
