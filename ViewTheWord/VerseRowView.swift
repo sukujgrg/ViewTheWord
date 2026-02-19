@@ -23,6 +23,7 @@ struct VerseRowView: View {
 
     @State private var currentIndex: Int = -1
     @State private var maxVersesOnCurrentChapter: Int = -1
+    @State private var availableBibleUrls: [URL] = []
 
     @Binding var windowOpened: Bool
 
@@ -51,10 +52,64 @@ struct VerseRowView: View {
     }
 
     private func formatBibleName(_ bibleUrl: String) -> String {
-        bibleUrl.components(separatedBy: "/")
-            .last?
+        let fileName = URL(string: bibleUrl)?.lastPathComponent ?? bibleUrl
+        return fileName
+            .removingPercentEncoding?
             .replacingOccurrences(of: ".bible", with: "")
-            .replacingOccurrences(of: "_", with: " ") ?? ""
+            .replacingOccurrences(of: "_", with: " ") ?? fileName
+    }
+
+    private func translationLabel(for url: URL) -> String {
+        formatBibleName(url.absoluteString)
+    }
+
+    private func refreshAvailableBibles() {
+        availableBibleUrls = BibleUrl().getAvailableBibleUrls()
+            .sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
+    }
+
+    @ViewBuilder
+    private func translationPicker(
+        selection: Binding<String>,
+        title: String
+    ) -> some View {
+        Picker(title, selection: selection) {
+            if !availableBibleUrls.contains(where: { $0.absoluteString == selection.wrappedValue }) {
+                Text(formatBibleName(selection.wrappedValue))
+                    .tag(selection.wrappedValue)
+            }
+            ForEach(availableBibleUrls, id: \.absoluteString) { url in
+                Text(translationLabel(for: url))
+                    .tag(url.absoluteString)
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .accessibilityLabel(title)
+    }
+
+    @ViewBuilder
+    private func headerView(bookName: String, chapterNumber: Int) -> some View {
+        if showOnlyPrimary {
+            HStack(spacing: 12) {
+                translationPicker(selection: $primaryBibleName, title: "Primary translation")
+                    .frame(width: 220)
+                Text("\(bookName) \(chapterNumber)")
+                    .font(.headline)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+        } else {
+            HStack(spacing: 0) {
+                translationPicker(selection: $primaryBibleName, title: "Primary translation")
+                    .frame(maxWidth: .infinity, alignment: .center)
+                Text("\(bookName) \(chapterNumber)")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                translationPicker(selection: $secondaryBibleName, title: "Secondary translation")
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
     }
 
     private var verseCount: Int {
@@ -73,17 +128,10 @@ struct VerseRowView: View {
             let primaryChapter = verseRowViewModel.verseRowData.primaryChapter
 
             // Header with Bible names and chapter reference
-            Grid {
+            VStack(spacing: 0) {
                 Divider()
-                GridRow {
-                    Text(formatBibleName(primaryBibleName))
-                        .bold()
-                    Text("\(primaryChapter[0].bookName) \(primaryChapter[0].chapterNumber)")
-                    if !showOnlyPrimary {
-                        Text(formatBibleName(secondaryBibleName))
-                            .bold()
-                    }
-                }
+                headerView(bookName: primaryChapter[0].bookName, chapterNumber: primaryChapter[0].chapterNumber)
+                    .padding(.vertical, 6)
                 Divider()
             }
         }
@@ -146,6 +194,13 @@ struct VerseRowView: View {
             // Initialize on first appearance
             maxVersesOnCurrentChapter = verseCount
             currentIndex = clampedCurrentIndex
+            refreshAvailableBibles()
+        }
+        .onChange(of: primaryBibleName) { _, _ in
+            refreshAvailableBibles()
+        }
+        .onChange(of: secondaryBibleName) { _, _ in
+            refreshAvailableBibles()
         }
         .onKeyPress(keys: [.upArrow, .downArrow]) { keyPress in
             let modifiers = keyPress.modifiers

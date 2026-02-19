@@ -128,14 +128,12 @@ struct ChaptersListView: View {
                 if chapterCount > 0 {
                     Section(selectedBook ?? "Chapters") {
                         ForEach(1...Int(chapterCount), id: \.self) { chapter in
-                            NavigationLink(value: chapter) {
-                                HStack {
-                                    Text("\(chapter)")
-                                        .font(.system(size: 13, weight: selectedChapter == chapter ? .semibold : .regular))
-                                        .frame(maxWidth: .infinity, alignment: .center)
-                                }
+                            Text(chapter.formatted())
+                                .font(.system(size: 13, weight: selectedChapter == chapter ? .semibold : .regular))
+                                .monospacedDigit()
+                                .frame(maxWidth: .infinity, alignment: .center)
                                 .padding(.vertical, 4)
-                            }
+                                .tag(chapter)
                             .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
                         }
                     }
@@ -147,7 +145,7 @@ struct ChaptersListView: View {
                     )
                 }
             }
-            .listStyle(.sidebar)
+            .listStyle(.inset)
             .onChange(of: selectedChapter) { _, newChapter in
                 if let chapter = newChapter {
                     onChapterSelected(chapter)
