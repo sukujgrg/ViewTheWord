@@ -206,6 +206,8 @@ struct ChaptersListView: View {
 
     @State private var selectedBookmarkID: String?
     @State private var selectedHistoryID: String?
+    @State private var bookmarkTapActivatedID: String?
+    @State private var historyTapActivatedID: String?
 
     private let minChapterHeight: CGFloat = 180
     private let minBottomPaneHeight: CGFloat = 180
@@ -295,9 +297,16 @@ struct ChaptersListView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(displayedBookmarks) { entry in
-                        Text(entry.title)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .tag(entry.id)
+                        Button {
+                            bookmarkTapActivatedID = entry.id
+                            selectedBookmarkID = entry.id
+                            onSelectBookmarkItem(entry)
+                        } label: {
+                            Text(entry.title)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        .tag(entry.id)
                         .contextMenu {
                             Button("Remove Bookmark", role: .destructive) {
                                 onRemoveBookmarkItem(entry)
@@ -318,6 +327,10 @@ struct ChaptersListView: View {
         }
         .listStyle(.inset)
         .onChange(of: selectedBookmarkID) { _, newID in
+            if bookmarkTapActivatedID == newID {
+                bookmarkTapActivatedID = nil
+                return
+            }
             guard let newID,
                   let selectedEntry = bookmarkEntries.first(where: { $0.id == newID })
             else { return }
@@ -348,9 +361,16 @@ struct ChaptersListView: View {
                             .textCase(.uppercase)
 
                         ForEach(section.items) { entry in
-                            Text(entry.title)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .tag(entry.id)
+                            Button {
+                                historyTapActivatedID = entry.id
+                                selectedHistoryID = entry.id
+                                onSelectHistoryItem(entry.title)
+                            } label: {
+                                Text(entry.title)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .buttonStyle(.plain)
+                            .tag(entry.id)
                         }
                     }
                 }
@@ -367,6 +387,10 @@ struct ChaptersListView: View {
         }
         .listStyle(.inset)
         .onChange(of: selectedHistoryID) { _, newID in
+            if historyTapActivatedID == newID {
+                historyTapActivatedID = nil
+                return
+            }
             guard let newID else { return }
             for section in historySections {
                 if let entry = section.items.first(where: { $0.id == newID }) {
@@ -736,6 +760,15 @@ struct MainView: View {
                 },
                 bookmarkEntries: bookmarkStore.entries,
                 onSelectBookmarkItem: { entry in
+                    if let reference = entry.reference {
+                        navigateToReference(
+                            reference,
+                            updateRowView: true,
+                            project: false,
+                            recordHistory: false
+                        )
+                        return
+                    }
                     ask = entry.title
                     processSearchQuery(updateRowView: true, project: false, recordHistory: false)
                 },
@@ -945,6 +978,25 @@ struct MainView: View {
                     recordHistory: recordHistory
                 )
             }
+        }
+    }
+
+    func navigateToReference(
+        _ reference: VerseReference,
+        updateRowView: Bool = true,
+        project: Bool = false,
+        recordHistory: Bool = false
+    ) {
+        let verseQuery = reference.verseQuery
+        ask = verseQuery.title
+        startSearchTask { searchID in
+            await performVerseQuery(
+                verseQuery: verseQuery,
+                updateRowView: updateRowView,
+                project: project,
+                searchID: searchID,
+                recordHistory: recordHistory
+            )
         }
     }
 
