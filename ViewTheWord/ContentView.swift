@@ -507,64 +507,10 @@ struct MainContentView: View {
 
     var body: some View {
         VStack {
-            HStack(alignment: .center, spacing: 12) {
-                Toggle("Transparent BG", isOn: $transparentBackground)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .help("Use transparent background for projector window")
-                    .fixedSize()
-
-                Spacer(minLength: 0)
-
-                TextField(
-                    "",
-                    text: $ask,
-                    prompt: Text("John 3:16  or  s: phrase  or  m: words")
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                )
-                    .textFieldStyle(.plain)
-                    .focusEffectDisabled()
-                    .focused($isSearchFieldFocused)
-                    .onSubmit {
-                        onSubmit()
-                    }
-                    .onKeyPress(keys: [.upArrow, .downArrow]) { press in
-                        // Handle Up/Down arrows when text field is focused
-                        if isSearchFieldFocused {
-                            if press.key == .downArrow {
-                                // Down arrow: move focus to verses
-                                focusedColumn = .verses
-                                return .handled
-                            } else if press.key == .upArrow {
-                                // Up arrow: move focus to chapters
-                                focusedColumn = .chapters
-                                return .handled
-                            }
-                        }
-                        return .ignored
-                    }
-                    .modifier(ShakeEffect(shakes: queryValidationToken))
-                    .frame(width: 560, height: 35, alignment: .center)
-                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray, lineWidth: 1))
-                    .font(.largeTitle)
-                    .disableAutocorrection(true)
-                    .accessibilityLabel("Verse search or text search")
-                    .accessibilityHint("Enter verse reference like John 3:16, or search text with s: prefix")
-                    .onReceive(NotificationCenter.default.publisher(for: .focusSearchField)) { _ in
-                        isSearchFieldFocused = true
-                    }
-                    .layoutPriority(1)
-
-                Spacer(minLength: 0)
-
-                Toggle("Primary Only", isOn: $showOnlyPrimary)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .help("Show only the primary translation in verse and search results")
-                    .fixedSize()
+            ViewThatFits(in: .horizontal) {
+                regularSearchControls
+                compactSearchControls
             }
-            .frame(maxWidth: .infinity, alignment: .center)
 
             // Show search results if available
             if let results = searchResults, let query = searchQuery {
@@ -616,6 +562,92 @@ struct MainContentView: View {
         .frame(minWidth: 600, maxWidth: .infinity, minHeight: 600, maxHeight: .infinity)
         .padding()
         .onExitCommand(perform: closeProjector)
+    }
+
+    private var regularSearchControls: some View {
+        HStack(alignment: .center, spacing: 12) {
+            transparentBackgroundToggle
+            Spacer(minLength: 0)
+            searchField
+                .frame(width: 275, height: 35, alignment: .center)
+            Spacer(minLength: 0)
+            primaryOnlyToggle
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private var compactSearchControls: some View {
+        HStack(alignment: .center, spacing: 12) {
+            searchField
+                .frame(minWidth: 160, maxWidth: .infinity, minHeight: 35, maxHeight: 35)
+
+            Menu {
+                Toggle("Transparent BG", isOn: $transparentBackground)
+                Toggle("Primary Only", isOn: $showOnlyPrimary)
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .accessibilityLabel("View options")
+            }
+            .controlSize(.small)
+            .help("View options")
+            .fixedSize()
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private var transparentBackgroundToggle: some View {
+        Toggle("Transparent BG", isOn: $transparentBackground)
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .help("Use transparent background for projector window")
+            .fixedSize()
+    }
+
+    private var primaryOnlyToggle: some View {
+        Toggle("Primary Only", isOn: $showOnlyPrimary)
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .help("Show only the primary translation in verse and search results")
+            .fixedSize()
+    }
+
+    private var searchField: some View {
+        TextField(
+            "",
+            text: $ask,
+            prompt: Text("John 3:16  or  s: phrase  or  m: words")
+                .font(.body)
+                .foregroundStyle(.secondary)
+        )
+        .textFieldStyle(.plain)
+        .focusEffectDisabled()
+        .focused($isSearchFieldFocused)
+        .onSubmit {
+            onSubmit()
+        }
+        .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+            // Handle Up/Down arrows when text field is focused.
+            if isSearchFieldFocused {
+                if press.key == .downArrow {
+                    focusedColumn = .verses
+                    return .handled
+                } else if press.key == .upArrow {
+                    focusedColumn = .chapters
+                    return .handled
+                }
+            }
+            return .ignored
+        }
+        .modifier(ShakeEffect(shakes: queryValidationToken))
+        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray, lineWidth: 1))
+        .font(.largeTitle)
+        .disableAutocorrection(true)
+        .accessibilityLabel("Verse search or text search")
+        .accessibilityHint("Enter verse reference like John 3:16, or search text with s: prefix")
+        .onReceive(NotificationCenter.default.publisher(for: .focusSearchField)) { _ in
+            isSearchFieldFocused = true
+        }
+        .layoutPriority(1)
     }
 }
 

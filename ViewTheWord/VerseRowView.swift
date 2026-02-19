@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 class VerseRowViewModel: ObservableObject {
     @Published var verseRowData: VerseRowData = .init(primaryChapter: [], secondaryChapter: [])
@@ -13,6 +14,12 @@ struct VerseRowData: Identifiable {
 private struct VisibleVerseKey: Hashable {
     let dataID: UUID
     let index: Int
+}
+
+private enum VerseCopySource {
+    case primary
+    case secondary
+    case verseNumber
 }
 
 struct VerseRowView: View {
@@ -190,7 +197,8 @@ struct VerseRowView: View {
                                     ? verseRowViewModel.verseRowData.primaryChapter[index].verse
                                     : "\u{200c}",
                                 index: index,
-                                isActive: isCurrentVerse(index)
+                                isActive: isCurrentVerse(index),
+                                copySource: .primary
                             )
                             .id(index)
                             .onAppear {
@@ -205,7 +213,8 @@ struct VerseRowView: View {
                                     ? verseRowViewModel.verseRowData.secondaryChapter[index].verse
                                     : "\u{200c}",
                                 index: index,
-                                isActive: isCurrentVerse(index)
+                                isActive: isCurrentVerse(index),
+                                copySource: .secondary
                             )
                         }
                     }
@@ -314,11 +323,11 @@ struct VerseRowView: View {
     // MARK: - View Components
 
     @ViewBuilder
-    private func verseCell(text: String, index: Int, isActive: Bool) -> some View {
+    private func verseCell(text: String, index: Int, isActive: Bool, copySource: VerseCopySource) -> some View {
         Text(text)
             .onTapGesture { requestProjection(at: index) }
             .contextMenu {
-                bookmarkMenuItems(for: index)
+                verseContextMenuItems(for: index, source: copySource)
             }
             .padding()
             .background(isActive ? Color.accentColor.opacity(0.2) : Color.clear)
@@ -337,7 +346,7 @@ struct VerseRowView: View {
         }
         .onTapGesture { requestProjection(at: index) }
         .contextMenu {
-            bookmarkMenuItems(for: index)
+            verseContextMenuItems(for: index, source: .primary)
         }
         .padding()
         .background(isActive ? Color.accentColor.opacity(0.2) : Color.clear)
@@ -354,7 +363,7 @@ struct VerseRowView: View {
                 .foregroundColor(.white)
         }
         .contextMenu {
-            bookmarkMenuItems(for: index)
+            verseContextMenuItems(for: index, source: .verseNumber)
         }
         .buttonStyle(PlainButtonStyle())
         .accessibilityLabel("Verse \(index + 1)")
@@ -465,6 +474,76 @@ struct VerseRowView: View {
             chapter: verseTargetModel.verseQuery.chapterNumber,
             verse: index + 1
         )
+    }
+
+    private func primaryVerseForIndex(_ index: Int) -> AVerse? {
+        guard verseRowViewModel.verseRowData.primaryChapter.indices.contains(index) else {
+            return nil
+        }
+        return verseRowViewModel.verseRowData.primaryChapter[index]
+    }
+
+    private func secondaryVerseForIndex(_ index: Int) -> AVerse? {
+        guard verseRowViewModel.verseRowData.secondaryChapter.indices.contains(index) else {
+            return nil
+        }
+        return verseRowViewModel.verseRowData.secondaryChapter[index]
+    }
+
+    private func copyVerseToPasteboard(_ verse: AVerse, translationName: String) {
+        let output = "\(verse.bookName) \(verse.chapterNumber):\(verse.verseNumber) \(verse.verse) (\(translationName))"
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(output, forType: .string)
+    }
+
+    @ViewBuilder
+    private func copyMenuItems(for index: Int, source: VerseCopySource) -> some View {
+        switch source {
+        case .primary:
+            if let verse = primaryVerseForIndex(index) {
+                Button("Copy Verse") {
+                    copyVerseToPasteboard(verse, translationName: formatBibleName(primaryBibleName))
+                }
+            }
+        case .secondary:
+            if let verse = secondaryVerseForIndex(index) {
+                Button("Copy Verse") {
+                    copyVerseToPasteboard(verse, translationName: formatBibleName(secondaryBibleName))
+                }
+            }
+        case .verseNumber:
+            if let verse = primaryVerseForIndex(index) {
+                Button("Copy Verse (Primary)") {
+                    copyVerseToPasteboard(verse, translationName: formatBibleName(primaryBibleName))
+                }
+            }
+            if let verse = secondaryVerseForIndex(index) {
+                Button("Copy Verse (Secondary)") {
+                    copyVerseToPasteboard(verse, translationName: formatBibleName(secondaryBibleName))
+                }
+            }
+        }
+    }
+
+    private func hasCopyMenuItems(for index: Int, source: VerseCopySource) -> Bool {
+        switch source {
+        case .primary:
+            return primaryVerseForIndex(index) != nil
+        case .secondary:
+            return secondaryVerseForIndex(index) != nil
+        case .verseNumber:
+            return primaryVerseForIndex(index) != nil || secondaryVerseForIndex(index) != nil
+        }
+    }
+
+    @ViewBuilder
+    private func verseContextMenuItems(for index: Int, source: VerseCopySource) -> some View {
+        copyMenuItems(for: index, source: source)
+        if hasCopyMenuItems(for: index, source: source) {
+            Divider()
+        }
+        bookmarkMenuItems(for: index)
     }
 
     @ViewBuilder
