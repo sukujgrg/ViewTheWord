@@ -206,125 +206,216 @@ final class Bible: @unchecked Sendable {
     }
 
     func getChapterCount(bookName: String) -> Int32? {
-        return dbQueue.sync {
-            guard let bookNumber = bookNumber(bookName: bookName) else {
-                return nil
+        dbQueue.sync {
+            getChapterCountUnlocked(bookName: bookName)
+        }
+    }
+
+    func getChapterCountAsync(bookName: String) async -> Int32? {
+        await withCheckedContinuation { continuation in
+            dbQueue.async { [weak self] in
+                continuation.resume(returning: self?.getChapterCountUnlocked(bookName: bookName))
             }
-            let q = "SELECT COUNT(DISTINCT cnumber) FROM bible WHERE bnumber = ?;"
-            return runChapterCountQuery(queryStatementString: q, bookNumber: bookNumber)
         }
     }
 
     func pickAVerse(verseQuery: VerseQuery) -> AVerse? {
-        return dbQueue.sync {
-            guard let bookNumber = bookNumber(bookName: verseQuery.bookName) else {
-                return nil
-            }
-            let queryStatementString = """
-                SELECT * FROM bible
-                    WHERE
-                        bnumber = ? AND
-                        cnumber = ? AND
-                        vnumber = ?;
-            """
-            if let result = runVerseQuery(
-                queryStatementString: queryStatementString,
-                verseQuery: verseQuery,
-                parameters: [bookNumber, verseQuery.chapterNumber, verseQuery.verseNumber]
-            ) {
-                return result.first
-            } else {
-                return nil
+        dbQueue.sync {
+            pickAVerseUnlocked(verseQuery: verseQuery)
+        }
+    }
+
+    func pickAVerseAsync(verseQuery: VerseQuery) async -> AVerse? {
+        await withCheckedContinuation { continuation in
+            dbQueue.async { [weak self] in
+                continuation.resume(returning: self?.pickAVerseUnlocked(verseQuery: verseQuery))
             }
         }
     }
 
     func pickAChapter(verseQuery: VerseQuery) -> [AVerse]? {
-        return dbQueue.sync {
-            guard let bookNumber = bookNumber(bookName: verseQuery.bookName) else {
-                return nil
+        dbQueue.sync {
+            pickAChapterUnlocked(verseQuery: verseQuery)
+        }
+    }
+
+    func pickAChapterAsync(verseQuery: VerseQuery) async -> [AVerse]? {
+        await withCheckedContinuation { continuation in
+            dbQueue.async { [weak self] in
+                continuation.resume(returning: self?.pickAChapterUnlocked(verseQuery: verseQuery))
             }
-            let queryStatementString = """
-                SELECT * FROM bible
-                    WHERE
-                        bnumber = ? AND
-                        cnumber = ?;
-            """
-            return runVerseQuery(
-                queryStatementString: queryStatementString,
-                verseQuery: verseQuery,
-                parameters: [bookNumber, verseQuery.chapterNumber]
-            )
         }
     }
 
     func searchText(searchQuery: String, limit: Int = 100) -> [AVerse]? {
-        return dbQueue.sync {
-            // Use LIKE for case-insensitive search
-            let queryStatementString = """
-                SELECT * FROM bible
-                    WHERE verse LIKE ?
-                    ORDER BY bnumber, cnumber, vnumber
-                    LIMIT ?;
-            """
-            return runSearchQuery(queryStatementString: queryStatementString, searchPattern: "%\(searchQuery)%", limit: limit)
+        dbQueue.sync {
+            searchTextUnlocked(searchQuery: searchQuery, limit: limit)
+        }
+    }
+
+    func searchTextAsync(searchQuery: String, limit: Int = 100) async -> [AVerse]? {
+        await withCheckedContinuation { continuation in
+            dbQueue.async { [weak self] in
+                continuation.resume(returning: self?.searchTextUnlocked(searchQuery: searchQuery, limit: limit))
+            }
         }
     }
 
     func searchTextWithFilter(searchQuery: String, filter: SearchFilter, limit: Int = 100) -> [AVerse]? {
-        return dbQueue.sync {
-            var whereClause = "verse LIKE ?"
-            var bookNumbers: [Int]? = nil
+        dbQueue.sync {
+            searchTextWithFilterUnlocked(searchQuery: searchQuery, filter: filter, limit: limit)
+        }
+    }
 
-            // Add book filter if specified
-            if let numbers = filter.bookNumbers() {
-                bookNumbers = numbers
-                let placeholders = numbers.map { _ in "?" }.joined(separator: ",")
-                whereClause = "(\(whereClause)) AND bnumber IN (\(placeholders))"
+    func searchTextWithFilterAsync(searchQuery: String, filter: SearchFilter, limit: Int = 100) async -> [AVerse]? {
+        await withCheckedContinuation { continuation in
+            dbQueue.async { [weak self] in
+                continuation.resume(returning: self?.searchTextWithFilterUnlocked(searchQuery: searchQuery, filter: filter, limit: limit))
             }
-
-            let queryStatementString = """
-                SELECT * FROM bible
-                    WHERE \(whereClause)
-                    ORDER BY bnumber, cnumber, vnumber
-                    LIMIT ?;
-            """
-            return runSearchQueryWithFilter(
-                queryStatementString: queryStatementString,
-                searchPattern: "%\(searchQuery)%",
-                bookNumbers: bookNumbers,
-                limit: limit
-            )
         }
     }
 
     func searchWithExpression(expression: SearchExpression, filter: SearchFilter, limit: Int = 100) -> [AVerse]? {
-        return dbQueue.sync {
-            let sql = expression.toSQL()
-            var whereClause = sql.whereClause
-            var bookNumbers: [Int]? = nil
-
-            // Add book filter if specified
-            if let numbers = filter.bookNumbers() {
-                bookNumbers = numbers
-                let placeholders = numbers.map { _ in "?" }.joined(separator: ",")
-                whereClause = "(\(whereClause)) AND bnumber IN (\(placeholders))"
-            }
-
-            let queryStatementString = """
-                SELECT * FROM bible
-                    WHERE \(whereClause)
-                    ORDER BY bnumber, cnumber, vnumber
-                    LIMIT ?;
-            """
-
-            return runSearchQueryWithExpressionAndFilter(
-                queryStatementString: queryStatementString,
-                searchTerms: sql.terms,
-                bookNumbers: bookNumbers,
-                limit: limit
-            )
+        dbQueue.sync {
+            searchWithExpressionUnlocked(expression: expression, filter: filter, limit: limit)
         }
+    }
+
+    func searchWithExpressionAsync(expression: SearchExpression, filter: SearchFilter, limit: Int = 100) async -> [AVerse]? {
+        let sql = expression.toSQL()
+        let baseWhereClause = sql.whereClause
+        let searchTerms = sql.terms
+        let bookNumbers = filter.bookNumbers()
+
+        return await withCheckedContinuation { continuation in
+            dbQueue.async { [weak self] in
+                continuation.resume(returning: self?.searchWithExpressionComponentsUnlocked(
+                    baseWhereClause: baseWhereClause,
+                    searchTerms: searchTerms,
+                    bookNumbers: bookNumbers,
+                    limit: limit
+                ))
+            }
+        }
+    }
+
+    private func getChapterCountUnlocked(bookName: String) -> Int32? {
+        guard let bookNumber = bookNumber(bookName: bookName) else {
+            return nil
+        }
+        let q = "SELECT COUNT(DISTINCT cnumber) FROM bible WHERE bnumber = ?;"
+        return runChapterCountQuery(queryStatementString: q, bookNumber: bookNumber)
+    }
+
+    private func pickAVerseUnlocked(verseQuery: VerseQuery) -> AVerse? {
+        guard let bookNumber = bookNumber(bookName: verseQuery.bookName) else {
+            return nil
+        }
+        let queryStatementString = """
+            SELECT * FROM bible
+                WHERE
+                    bnumber = ? AND
+                    cnumber = ? AND
+                    vnumber = ?;
+        """
+        if let result = runVerseQuery(
+            queryStatementString: queryStatementString,
+            verseQuery: verseQuery,
+            parameters: [bookNumber, verseQuery.chapterNumber, verseQuery.verseNumber]
+        ) {
+            return result.first
+        } else {
+            return nil
+        }
+    }
+
+    private func pickAChapterUnlocked(verseQuery: VerseQuery) -> [AVerse]? {
+        guard let bookNumber = bookNumber(bookName: verseQuery.bookName) else {
+            return nil
+        }
+        let queryStatementString = """
+            SELECT * FROM bible
+                WHERE
+                    bnumber = ? AND
+                    cnumber = ?;
+        """
+        return runVerseQuery(
+            queryStatementString: queryStatementString,
+            verseQuery: verseQuery,
+            parameters: [bookNumber, verseQuery.chapterNumber]
+        )
+    }
+
+    private func searchTextUnlocked(searchQuery: String, limit: Int) -> [AVerse]? {
+        let queryStatementString = """
+            SELECT * FROM bible
+                WHERE verse LIKE ?
+                ORDER BY bnumber, cnumber, vnumber
+                LIMIT ?;
+        """
+        return runSearchQuery(queryStatementString: queryStatementString, searchPattern: "%\(searchQuery)%", limit: limit)
+    }
+
+    private func searchTextWithFilterUnlocked(searchQuery: String, filter: SearchFilter, limit: Int) -> [AVerse]? {
+        var whereClause = "verse LIKE ?"
+        var bookNumbers: [Int]? = nil
+
+        if let numbers = filter.bookNumbers() {
+            bookNumbers = numbers
+            let placeholders = numbers.map { _ in "?" }.joined(separator: ",")
+            whereClause = "(\(whereClause)) AND bnumber IN (\(placeholders))"
+        }
+
+        let queryStatementString = """
+            SELECT * FROM bible
+                WHERE \(whereClause)
+                ORDER BY bnumber, cnumber, vnumber
+                LIMIT ?;
+        """
+        return runSearchQueryWithFilter(
+            queryStatementString: queryStatementString,
+            searchPattern: "%\(searchQuery)%",
+            bookNumbers: bookNumbers,
+            limit: limit
+        )
+    }
+
+    private func searchWithExpressionUnlocked(expression: SearchExpression, filter: SearchFilter, limit: Int) -> [AVerse]? {
+        let sql = expression.toSQL()
+        return searchWithExpressionComponentsUnlocked(
+            baseWhereClause: sql.whereClause,
+            searchTerms: sql.terms,
+            bookNumbers: filter.bookNumbers(),
+            limit: limit
+        )
+    }
+
+    private func searchWithExpressionComponentsUnlocked(
+        baseWhereClause: String,
+        searchTerms: [String],
+        bookNumbers: [Int]?,
+        limit: Int
+    ) -> [AVerse]? {
+        var whereClause = baseWhereClause
+
+        if let numbers = bookNumbers {
+            let placeholders = numbers.map { _ in "?" }.joined(separator: ",")
+            whereClause = "(\(whereClause)) AND bnumber IN (\(placeholders))"
+        }
+
+        let queryStatementString = """
+            SELECT * FROM bible
+                WHERE \(whereClause)
+                ORDER BY bnumber, cnumber, vnumber
+                LIMIT ?;
+        """
+
+        return runSearchQueryWithExpressionAndFilter(
+            queryStatementString: queryStatementString,
+            searchTerms: searchTerms,
+            bookNumbers: bookNumbers,
+            limit: limit
+        )
     }
 
     private func runVerseQuery(

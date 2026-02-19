@@ -39,20 +39,9 @@ struct SettingsView: View {
 }
 
 struct GeneralSettingsView: View {
-    @AppStorage("history") private var history: [String] = ["John 3 16"]
-
     var body: some View {
         VStack {
             List {
-                Section(header: Text("History")) {
-                    Button("Clear History") {
-                        history.removeAll()
-                    }
-                    .accessibilityLabel("Clear verse search history")
-                    .accessibilityHint("Removes all previously searched verses from history")
-                }
-                .headerProminence(.increased)
-
                 Section(header: Text("Debug Logs")) {
                     HStack {
                         Text(FileLogger.shared.getLogPath())
@@ -430,7 +419,6 @@ struct BibleImportView: View {
     @AppStorage("PrimaryBibleName") private var primaryBibleName: String = bundledPrimaryBibleUrl?.absoluteString ?? ""
     @AppStorage("SecondaryBibleName") private var secondaryBibleName: String = bundledSecondaryBibleUrl?.absoluteString ?? ""
     @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
-    @AppStorage("scrollTo") var scrollTo = true
 
     let bibleType = UTType(exportedAs: "com.viewtheword.sqlite3.database", conformingTo: .database)
 
@@ -471,7 +459,6 @@ struct BibleImportView: View {
                 .padding(.vertical, 8)
 
             Toggle("Show only Primary Verse", isOn: $showOnlyPrimary)
-            Toggle("Scroll to the current verse automatically", isOn: $scrollTo)
 
             Divider()
                 .padding(.vertical, 8)

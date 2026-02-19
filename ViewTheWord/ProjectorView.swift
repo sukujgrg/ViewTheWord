@@ -1,7 +1,39 @@
 import SwiftUI
 
+enum ProjectionOwner {
+    case textInputTarget(VerseReference)
+    case verseRowSelection(VerseReference)
+    case searchResult(VerseReference)
+}
+
+extension ProjectionOwner: Equatable {
+    static func == (lhs: ProjectionOwner, rhs: ProjectionOwner) -> Bool {
+        switch (lhs, rhs) {
+        case (.textInputTarget(let left), .textInputTarget(let right)):
+            return left == right
+        case (.verseRowSelection(let left), .verseRowSelection(let right)):
+            return left == right
+        case (.searchResult(let left), .searchResult(let right)):
+            return left == right
+        default:
+            return false
+        }
+    }
+}
+
 class ProjectorViewModel: ObservableObject {
-    @Published var projectorViewData: ProjectorViewData = .init(title: "?", primaryText: "?", secondaryText: "?")
+    @Published private(set) var projectorViewData: ProjectorViewData = .init(title: "?", primaryText: "?", secondaryText: "?")
+    @Published private(set) var projectionOwner: ProjectionOwner?
+
+    func project(_ data: ProjectorViewData, owner: ProjectionOwner) {
+        projectorViewData = data
+        projectionOwner = owner
+    }
+
+    func clearProjection() {
+        projectorViewData = .init(title: "?", primaryText: "?", secondaryText: "?")
+        projectionOwner = nil
+    }
 }
 
 struct ProjectorViewData {
@@ -46,6 +78,7 @@ struct ProjectorView: View {
         .onDisappear {
             windowOpened = false
             clearApi()
+            projectorViewModel.clearProjection()
         }
         .onChange(of: projectorViewModel.projectorViewData.title) { _, _ in
             // Only send if we have valid data (not placeholder)

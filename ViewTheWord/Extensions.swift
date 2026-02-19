@@ -1,6 +1,24 @@
 import Foundation
 import SwiftUI
 
+private final class ProjectorWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+
+    override func cancelOperation(_ sender: Any?) {
+        close()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        // ESC should always close projection when this window is active.
+        if event.keyCode == 53 {
+            cancelOperation(nil)
+            return
+        }
+        super.keyDown(with: event)
+    }
+}
+
 extension Array: @retroactive RawRepresentable where Element: Codable {
     public init?(rawValue: String) {
         guard let data = rawValue.data(using: .utf8),
@@ -25,7 +43,7 @@ extension View {
     private func newWindowInternal(with title: String) -> NSWindow? {
         let transparentBackground = UserDefaults.standard.bool(forKey: "transparentBackground")
 
-        let window = NSWindow(
+        let window = ProjectorWindow(
             contentRect: NSRect(x: 0, y: 0, width: 0, height: 0),
             styleMask: [.closable, .borderless],
             backing: .buffered,
@@ -46,7 +64,6 @@ extension View {
 
         window.setFrame(targetScreen.frame, display: true)
         window.level = NSWindow.Level.screenSaver
-        window.orderFrontRegardless()  // useful when showing over a fullscreen background video.
         window.isReleasedWhenClosed = false
         window.title = title
         window.canHide = false
@@ -67,6 +84,14 @@ extension View {
             logger.error("Failed to create projector window")
             return
         }
+        let priorKeyWindow = NSApplication.shared.keyWindow
         window.contentView = NSHostingView(rootView: self)
+        window.orderFrontRegardless()  // useful when showing over a fullscreen background video.
+
+        // Keep keyboard focus on the main app window so verse navigation shortcuts
+        // continue working while projection is visible.
+        if let priorKeyWindow, priorKeyWindow != window {
+            priorKeyWindow.makeKey()
+        }
     }
 }

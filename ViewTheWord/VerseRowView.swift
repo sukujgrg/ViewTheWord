@@ -10,13 +10,17 @@ struct VerseRowData: Identifiable {
     let secondaryChapter: [AVerse]
 }
 
+private struct VisibleVerseKey: Hashable {
+    let dataID: UUID
+    let index: Int
+}
+
 struct VerseRowView: View {
     @EnvironmentObject var verseTargetModel: VerseTargetModel
     @EnvironmentObject var verseRowViewModel: VerseRowViewModel
     @EnvironmentObject var projectorViewModel: ProjectorViewModel
 
     @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
-    @AppStorage("scrollTo") var scrollTo = true
 
     @AppStorage("PrimaryBibleName") private var primaryBibleName: String = bundledPrimaryBibleUrl?.absoluteString ?? ""
     @AppStorage("SecondaryBibleName") private var secondaryBibleName: String = bundledSecondaryBibleUrl?.absoluteString ?? ""
@@ -24,8 +28,14 @@ struct VerseRowView: View {
     @State private var currentIndex: Int = -1
     @State private var maxVersesOnCurrentChapter: Int = -1
     @State private var availableBibleUrls: [URL] = []
+    @State private var visibleVerseKeys: Set<VisibleVerseKey> = []
 
     @Binding var windowOpened: Bool
+    let onProjectVerse: (Int) -> Void
+    let onStopProjection: () -> Void
+    let onAddBookmark: (VerseReference) -> Void
+    let onRemoveBookmark: (VerseReference) -> Void
+    let isBookmarked: (VerseReference) -> Bool
 
     // MARK: - Computed Properties
 
@@ -44,11 +54,28 @@ struct VerseRowView: View {
     }
 
     private var isVerseProjected: Bool {
-        projectorViewModel.projectorViewData.title == verseTargetModel.verseQuery.title && windowOpened
+        windowOpened && projectedReference != nil
     }
 
     private func isCurrentVerse(_ index: Int) -> Bool {
-        isVerseProjected && currentIndex == index
+        guard isVerseProjected, let projectedReference else {
+            return false
+        }
+
+        return projectedReference.book == verseTargetModel.verseQuery.bookName
+            && projectedReference.chapter == verseTargetModel.verseQuery.chapterNumber
+            && projectedReference.verse == index + 1
+    }
+
+    private var projectedReference: VerseReference? {
+        switch projectorViewModel.projectionOwner {
+        case .textInputTarget(let reference),
+             .verseRowSelection(let reference),
+             .searchResult(let reference):
+            return reference
+        case .none:
+            return nil
+        }
     }
 
     private func formatBibleName(_ bibleUrl: String) -> String {
@@ -149,6 +176,13 @@ struct VerseRowView: View {
                                 index: index,
                                 isActive: isCurrentVerse(index)
                             )
+                            .id(index)
+                            .onAppear {
+                                visibleVerseKeys.insert(currentVisibleKey(index: index))
+                            }
+                            .onDisappear {
+                                visibleVerseKeys.remove(currentVisibleKey(index: index))
+                            }
                         } else {
                             // Full mode: Primary verse, verse number, secondary verse
                             verseCell(
@@ -158,6 +192,13 @@ struct VerseRowView: View {
                                 index: index,
                                 isActive: isCurrentVerse(index)
                             )
+                            .id(index)
+                            .onAppear {
+                                visibleVerseKeys.insert(currentVisibleKey(index: index))
+                            }
+                            .onDisappear {
+                                visibleVerseKeys.remove(currentVisibleKey(index: index))
+                            }
                             verseNumberButton(index: index, isActive: isCurrentVerse(index))
                             verseCell(
                                 text: verseRowViewModel.verseRowData.secondaryChapter.indices.contains(index)
@@ -169,6 +210,7 @@ struct VerseRowView: View {
                         }
                     }
                     .onChange(of: verseRowViewModel.verseRowData.id) { _, _ in
+                        visibleVerseKeys.removeAll()
                         updateSelectionAndScroll(proxy: value)
                     }
                     .onChange(of: verseTargetModel.verseQuery.title) { _, _ in
@@ -177,12 +219,19 @@ struct VerseRowView: View {
                     }
                     // this scroll is needed when switching between books/chapters
                     .onChange(of: verseTargetModel.verseQuery.bookAndChapter) { _, _ in
+                        visibleVerseKeys.removeAll()
                         updateSelectionAndScroll(proxy: value)
                     }
                 }
             }
             .padding(.horizontal)
             .contentShape(Rectangle())
+            .onAppear {
+                // First load path: ensure initial query selection gets the same
+                // scroll behavior as subsequent query changes.
+                visibleVerseKeys.removeAll()
+                updateSelectionAndScroll(proxy: value)
+            }
             .onTapGesture {
                 // Make sure the view can receive keyboard events
             }
@@ -267,7 +316,10 @@ struct VerseRowView: View {
     @ViewBuilder
     private func verseCell(text: String, index: Int, isActive: Bool) -> some View {
         Text(text)
-            .onTapGesture { projectVerse(at: index) }
+            .onTapGesture { requestProjection(at: index) }
+            .contextMenu {
+                bookmarkMenuItems(for: index)
+            }
             .padding()
             .background(isActive ? Color.accentColor.opacity(0.2) : Color.clear)
     }
@@ -283,7 +335,10 @@ struct VerseRowView: View {
             Text(text)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .onTapGesture { projectVerse(at: index) }
+        .onTapGesture { requestProjection(at: index) }
+        .contextMenu {
+            bookmarkMenuItems(for: index)
+        }
         .padding()
         .background(isActive ? Color.accentColor.opacity(0.2) : Color.clear)
         .accessibilityLabel("Verse \(index + 1): \(text)")
@@ -292,11 +347,14 @@ struct VerseRowView: View {
 
     @ViewBuilder
     private func verseNumberButton(index: Int, isActive: Bool) -> some View {
-        Button(action: { projectVerse(at: index) }) {
+        Button(action: { requestProjection(at: index) }) {
             Text(String(index + 1))
                 .frame(width: 60, height: 60)
                 .background(isActive ? Color.accentColor : Color.secondary.opacity(0.5))
                 .foregroundColor(.white)
+        }
+        .contextMenu {
+            bookmarkMenuItems(for: index)
         }
         .buttonStyle(PlainButtonStyle())
         .accessibilityLabel("Verse \(index + 1)")
@@ -308,25 +366,27 @@ struct VerseRowView: View {
     private func navigateVerses(offset: Int) {
         let newIndex = currentIndex + offset
         if newIndex >= 0 && newIndex < maxVersesOnCurrentChapter {
-            projectVerse(at: newIndex)
+            requestProjection(at: newIndex)
         }
     }
 
     private func navigateToVerse(_ index: Int) {
         if index >= 0 && index < maxVersesOnCurrentChapter {
-            projectVerse(at: index)
+            requestProjection(at: index)
         }
     }
 
     private func navigateToNextChapter() {
-        let nextChapter = verseTargetModel.verseQuery.chapterNumber + 1
-        guard let maxChapter = bibleBooks[verseTargetModel.verseQuery.bookName]?.last,
-              nextChapter <= maxChapter else {
+        guard let currentReference = VerseReference(verseTargetModel.verseQuery) else {
+            return
+        }
+        let nextChapter = currentReference.chapter + 1
+        guard VerseBoundary.isValidChapter(nextChapter, in: currentReference.book) else {
             return
         }
 
         let newQuery = VerseQuery(
-            bookName: verseTargetModel.verseQuery.bookName,
+            bookName: currentReference.book,
             chapterNumber: nextChapter,
             verseNumber: 1
         )
@@ -334,13 +394,16 @@ struct VerseRowView: View {
     }
 
     private func navigateToPreviousChapter() {
-        let prevChapter = verseTargetModel.verseQuery.chapterNumber - 1
-        guard prevChapter >= 1 else {
+        guard let currentReference = VerseReference(verseTargetModel.verseQuery) else {
+            return
+        }
+        let prevChapter = currentReference.chapter - 1
+        guard VerseBoundary.isValidChapter(prevChapter, in: currentReference.book) else {
             return
         }
 
         let newQuery = VerseQuery(
-            bookName: verseTargetModel.verseQuery.bookName,
+            bookName: currentReference.book,
             chapterNumber: prevChapter,
             verseNumber: 1
         )
@@ -348,56 +411,17 @@ struct VerseRowView: View {
     }
 
     private func toggleProjector(at index: Int) {
-        if windowOpened && currentIndex == index {
-            // Close projector if showing same verse
-            NSApplication.shared.windows.first(where: { $0.title == AppWindowTitle.projector })?.close()
+        if isCurrentVerse(index) {
+            onStopProjection()
         } else {
-            // Project the verse
-            projectVerse(at: index)
+            requestProjection(at: index)
         }
     }
 
-    private func updateVerseTarget(at index: Int) {
-        verseTargetModel.verseQuery = VerseQuery(
-            bookName: verseTargetModel.verseQuery.bookName,
-            chapterNumber: verseTargetModel.verseQuery.chapterNumber,
-            verseNumber: index + 1
-        )
-    }
-
-    private func projectVerse(at index: Int) {
-        updateVerseTarget(at: index)
-        let title = verseTargetModel.verseQuery.title
-
-        var primaryText: String?
-        if index < verseRowViewModel.verseRowData.primaryChapter.count {
-            primaryText = verseRowViewModel.verseRowData.primaryChapter[index].verse
-        }
-
-        var secondaryText: String?
-        if !showOnlyPrimary {
-            if index < verseRowViewModel.verseRowData.secondaryChapter.count {
-                secondaryText = verseRowViewModel.verseRowData.secondaryChapter[index].verse
-            }
-        }
-
-        projectorViewModel.projectorViewData = ProjectorViewData(
-            title: title, primaryText: primaryText ?? "\u{200c}", secondaryText: secondaryText ?? "\u{200c}"
-        )
-
-        // Check if projector window already exists
-        if NSApplication.shared.windows.contains(where: { $0.title == AppWindowTitle.projector }) {
-            // Window exists, just update flag
-            windowOpened = true
-            return
-        }
-
-        // Create new window only if it doesn't exist
-        if !windowOpened {
-            windowOpened = true
-            ProjectorView(windowOpened: $windowOpened)
-                .environmentObject(projectorViewModel)
-                .openNewWindow(with: AppWindowTitle.projector)
+    private func requestProjection(at index: Int) {
+        Task { @MainActor in
+            await Task.yield()
+            onProjectVerse(index)
         }
     }
 
@@ -408,11 +432,52 @@ struct VerseRowView: View {
     }
 
     private func scrollToCurrentVerse(proxy: ScrollViewProxy) {
-        guard scrollTo, currentIndex >= 0, currentIndex < verseCount else { return }
+        guard currentIndex >= 0, currentIndex < verseCount else { return }
         Task { @MainActor in
+            let targetKey = currentVisibleKey(index: currentIndex)
             await Task.yield()
+            await Task.yield()
+            if visibleVerseKeys.contains(targetKey) {
+                return
+            }
             withAnimation(.easeInOut(duration: 0.2)) {
                 proxy.scrollTo(currentIndex, anchor: .center)
+            }
+            // Lazy grids can settle in two phases for distant targets.
+            await Task.yield()
+            await Task.yield()
+            if !visibleVerseKeys.contains(targetKey) {
+                proxy.scrollTo(currentIndex, anchor: .center)
+            }
+        }
+    }
+
+    private func currentVisibleKey(index: Int) -> VisibleVerseKey {
+        VisibleVerseKey(dataID: verseRowViewModel.verseRowData.id, index: index)
+    }
+
+    private func referenceForIndex(_ index: Int) -> VerseReference? {
+        guard index >= 0, index < verseCount else {
+            return nil
+        }
+        return VerseReference(
+            book: verseTargetModel.verseQuery.bookName,
+            chapter: verseTargetModel.verseQuery.chapterNumber,
+            verse: index + 1
+        )
+    }
+
+    @ViewBuilder
+    private func bookmarkMenuItems(for index: Int) -> some View {
+        if let reference = referenceForIndex(index) {
+            if isBookmarked(reference) {
+                Button("Remove Bookmark") {
+                    onRemoveBookmark(reference)
+                }
+            } else {
+                Button("Add Bookmark") {
+                    onAddBookmark(reference)
+                }
             }
         }
     }
