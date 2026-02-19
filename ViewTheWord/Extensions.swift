@@ -41,7 +41,7 @@ extension Array: @retroactive RawRepresentable where Element: Codable {
 
 extension View {
     private func newWindowInternal(with title: String) -> NSWindow? {
-        let transparentBackground = UserDefaults.standard.bool(forKey: "transparentBackground")
+        let transparentBackground = UserDefaults.standard.bool(forKey: AppDefaultsKey.transparentBackground)
 
         let window = ProjectorWindow(
             contentRect: NSRect(x: 0, y: 0, width: 0, height: 0),

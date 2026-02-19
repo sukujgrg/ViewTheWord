@@ -73,6 +73,13 @@ This document is the current source of truth for this repo.
 - Keep URL validation explicit (only `http`/`https` with host).
 - Migrate legacy `URL`-typed stored value in `onAppear` if present.
 - Bible picker values must be tagged with `absoluteString` to match `AppStorage` string bindings.
+- Bible defaults keys are centralized in `AppDefaultsKey` (`primaryBibleName`, `secondaryBibleName`, `showOnlyPrimary`); avoid raw string keys.
+- Bible filename validation is centralized in `BibleFileRule` and must stay consistent between import flow and discovery (`BibleUrl.getAvailableBibleUrls()`).
+- Bible import is actor-backed (`BibleImportService`) and performs strict checks before copy:
+  - canonical filename
+  - SQLite header
+  - required `bible` table columns (`bnumber`, `cnumber`, `vnumber`, `text`)
+- Import copy is atomic (temp file + move). Permission hardening (`0444`) is best-effort and should not fail an otherwise valid import.
 
 ### Logging
 - Use native Apple logging (`Logger` / unified logging) for app events.

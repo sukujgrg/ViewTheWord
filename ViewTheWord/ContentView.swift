@@ -490,9 +490,9 @@ struct MainContentView: View {
     @Binding var windowOpened: Bool
     @Binding var searchResults: (primary: [AVerse], secondary: [AVerse])?
     @Binding var searchQuery: String?
+    @Binding var showOnlyPrimary: Bool
     @FocusState.Binding var focusedColumn: NavigationColumn?
 
-    let showOnlyPrimary: Bool
     let onSubmit: () -> Void
     let closeProjector: () -> Void
     let onSearchVerseSelected: (AVerse) -> Void
@@ -503,47 +503,68 @@ struct MainContentView: View {
 
     @FocusState private var isSearchFieldFocused: Bool
     @EnvironmentObject var verseRowViewModel: VerseRowViewModel
+    @AppStorage(AppDefaultsKey.transparentBackground) private var transparentBackground = false
 
     var body: some View {
         VStack {
-            TextField(
-                "",
-                text: $ask,
-                prompt: Text("John 3:16  or  s: phrase  or  m: words")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-            )
-                .textFieldStyle(.plain)
-                .focusEffectDisabled()
-                .focused($isSearchFieldFocused)
-                .onSubmit {
-                    onSubmit()
-                }
-                .onKeyPress(keys: [.upArrow, .downArrow]) { press in
-                    // Handle Up/Down arrows when text field is focused
-                    if isSearchFieldFocused {
-                        if press.key == .downArrow {
-                            // Down arrow: move focus to verses
-                            focusedColumn = .verses
-                            return .handled
-                        } else if press.key == .upArrow {
-                            // Up arrow: move focus to chapters
-                            focusedColumn = .chapters
-                            return .handled
-                        }
+            HStack(alignment: .center, spacing: 12) {
+                Toggle("Transparent BG", isOn: $transparentBackground)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .help("Use transparent background for projector window")
+                    .fixedSize()
+
+                Spacer(minLength: 0)
+
+                TextField(
+                    "",
+                    text: $ask,
+                    prompt: Text("John 3:16  or  s: phrase  or  m: words")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                )
+                    .textFieldStyle(.plain)
+                    .focusEffectDisabled()
+                    .focused($isSearchFieldFocused)
+                    .onSubmit {
+                        onSubmit()
                     }
-                    return .ignored
-                }
-                .modifier(ShakeEffect(shakes: queryValidationToken))
-                .frame(width: 500, height: 35, alignment: .center)
-                .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray, lineWidth: 1))
-                .font(.largeTitle)
-                .disableAutocorrection(true)
-                .accessibilityLabel("Verse search or text search")
-                .accessibilityHint("Enter verse reference like John 3:16, or search text with s: prefix")
-                .onReceive(NotificationCenter.default.publisher(for: .focusSearchField)) { _ in
-                    isSearchFieldFocused = true
-                }
+                    .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+                        // Handle Up/Down arrows when text field is focused
+                        if isSearchFieldFocused {
+                            if press.key == .downArrow {
+                                // Down arrow: move focus to verses
+                                focusedColumn = .verses
+                                return .handled
+                            } else if press.key == .upArrow {
+                                // Up arrow: move focus to chapters
+                                focusedColumn = .chapters
+                                return .handled
+                            }
+                        }
+                        return .ignored
+                    }
+                    .modifier(ShakeEffect(shakes: queryValidationToken))
+                    .frame(width: 560, height: 35, alignment: .center)
+                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray, lineWidth: 1))
+                    .font(.largeTitle)
+                    .disableAutocorrection(true)
+                    .accessibilityLabel("Verse search or text search")
+                    .accessibilityHint("Enter verse reference like John 3:16, or search text with s: prefix")
+                    .onReceive(NotificationCenter.default.publisher(for: .focusSearchField)) { _ in
+                        isSearchFieldFocused = true
+                    }
+                    .layoutPriority(1)
+
+                Spacer(minLength: 0)
+
+                Toggle("Primary Only", isOn: $showOnlyPrimary)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .help("Show only the primary translation in verse and search results")
+                    .fixedSize()
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
 
             // Show search results if available
             if let results = searchResults, let query = searchQuery {
@@ -635,11 +656,11 @@ struct MainView: View {
 
     @StateObject private var historyStore = HistoryStore.shared
     @StateObject private var bookmarkStore = BookmarkStore.shared
-    @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
+    @AppStorage(AppDefaultsKey.showOnlyPrimary) var showOnlyPrimary = false
 
     // To reload the VerseRowView and ProjectorView if the bible changes in Settings.
-    @AppStorage("PrimaryBibleName") private var primaryBibleName: String = bundledPrimaryBibleUrl?.absoluteString ?? ""
-    @AppStorage("SecondaryBibleName") private var secondaryBibleName: String = bundledSecondaryBibleUrl?.absoluteString ?? ""
+    @AppStorage(AppDefaultsKey.primaryBibleName) private var primaryBibleName: String = bundledPrimaryBibleUrl?.absoluteString ?? ""
+    @AppStorage(AppDefaultsKey.secondaryBibleName) private var secondaryBibleName: String = bundledSecondaryBibleUrl?.absoluteString ?? ""
 
     // Long-lived database connections (reused across queries)
     @State private var biblePrimary: Bible
@@ -712,8 +733,8 @@ struct MainView: View {
                 windowOpened: $windowOpened,
                 searchResults: $searchResults,
                 searchQuery: $currentSearchQuery,
+                showOnlyPrimary: $showOnlyPrimary,
                 focusedColumn: $focusedColumn,
-                showOnlyPrimary: showOnlyPrimary,
                 onSubmit: {
                     processSearchQuery(updateRowView: true, recordHistory: true)
                     focusedColumn = .verses

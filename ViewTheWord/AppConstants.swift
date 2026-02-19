@@ -14,8 +14,27 @@ enum AppWindowTitle {
 
 enum AppDefaultsKey {
     static let apiUrlToPost = "apiUrlToPost"
+    static let transparentBackground = "transparentBackground"
+    static let primaryBibleName = "PrimaryBibleName"
+    static let secondaryBibleName = "SecondaryBibleName"
+    static let showOnlyPrimary = "showOnlyPrimary"
     static let chapterHistorySplitAutosaveName = "chapterHistorySplit"
     static let bookmarkHistorySplitAutosaveName = "bookmarkHistorySplit"
+}
+
+enum BibleFileRule {
+    static let fileExtension = "bible"
+    static let fileNamePattern = #"^[A-Z]{3}_[A-Z]{3,6}\.bible$"#
+    static let requiredBibleColumns: Set<String> = [
+        "bnumber",
+        "cnumber",
+        "vnumber",
+        "verse"
+    ]
+
+    static func isValidFileName(_ fileName: String) -> Bool {
+        fileName.range(of: fileNamePattern, options: .regularExpression) != nil
+    }
 }
 
 extension Notification.Name {

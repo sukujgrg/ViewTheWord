@@ -20,10 +20,10 @@ struct VerseRowView: View {
     @EnvironmentObject var verseRowViewModel: VerseRowViewModel
     @EnvironmentObject var projectorViewModel: ProjectorViewModel
 
-    @AppStorage("showOnlyPrimary") var showOnlyPrimary = false
+    @AppStorage(AppDefaultsKey.showOnlyPrimary) var showOnlyPrimary = false
 
-    @AppStorage("PrimaryBibleName") private var primaryBibleName: String = bundledPrimaryBibleUrl?.absoluteString ?? ""
-    @AppStorage("SecondaryBibleName") private var secondaryBibleName: String = bundledSecondaryBibleUrl?.absoluteString ?? ""
+    @AppStorage(AppDefaultsKey.primaryBibleName) private var primaryBibleName: String = bundledPrimaryBibleUrl?.absoluteString ?? ""
+    @AppStorage(AppDefaultsKey.secondaryBibleName) private var secondaryBibleName: String = bundledSecondaryBibleUrl?.absoluteString ?? ""
 
     @State private var currentIndex: Int = -1
     @State private var maxVersesOnCurrentChapter: Int = -1

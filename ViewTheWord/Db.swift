@@ -20,7 +20,7 @@ class BibleUrl {
         secondaryBibleUrl = bundledSecondaryBibleUrl ?? URL(fileURLWithPath: "/")
 
         // Now we can safely call instance methods
-        if let primary = self.getBibleUrl(defaultsKey: "PrimaryBibleName") {
+        if let primary = self.getBibleUrl(defaultsKey: AppDefaultsKey.primaryBibleName) {
             primaryBibleUrl = primary
         } else if let bundledPrimary = bundledPrimaryBibleUrl {
             primaryBibleUrl = bundledPrimary
@@ -28,7 +28,7 @@ class BibleUrl {
             fatalError("Primary Bible resource not found in bundle. Ensure MAL_BSI.bible exists.")
         }
 
-        if let secondary = self.getBibleUrl(defaultsKey: "SecondaryBibleName") {
+        if let secondary = self.getBibleUrl(defaultsKey: AppDefaultsKey.secondaryBibleName) {
             secondaryBibleUrl = secondary
         } else if let bundledSecondary = bundledSecondaryBibleUrl {
             secondaryBibleUrl = bundledSecondary
@@ -72,17 +72,14 @@ class BibleUrl {
         do {
             let fileURLs = try fileManager.contentsOfDirectory(at: documentsURL, includingPropertiesForKeys: nil)
             let bibleDbUrls = fileURLs.filter {
-                $0.pathExtension == "bible" && isValidBibleFileName(selectedFileName: $0.lastPathComponent)
+                $0.pathExtension.lowercased() == BibleFileRule.fileExtension
+                    && BibleFileRule.isValidFileName($0.lastPathComponent)
             }
             availableBibleUrls += bibleDbUrls
         } catch {
             logger.error("\(documentsURL.path): \(error.localizedDescription)")
         }
         return availableBibleUrls
-    }
-
-    private func isValidBibleFileName(selectedFileName: String) -> Bool {
-        return selectedFileName.range(of: #"\b[A-Z]{3}_[A-Z]{3,6}\.bible\b"#, options: .regularExpression) != nil
     }
 }
 
