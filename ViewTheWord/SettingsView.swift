@@ -93,6 +93,7 @@ private enum BibleImportError: LocalizedError {
     case invalidFileName
     case invalidSQLiteDatabase(String)
     case invalidBibleSchema(String)
+    case incompatibleBible(String)
     case bundledBibleImportBlocked(String)
     case bibleAlreadyExists(String)
 
@@ -104,6 +105,8 @@ private enum BibleImportError: LocalizedError {
             return "\(fileName) is not a valid SQLite database."
         case .invalidBibleSchema(let fileName):
             return "\(fileName) does not contain the required Bible schema."
+        case .incompatibleBible(let message):
+            return message
         case .bundledBibleImportBlocked(let fileName):
             return "Cannot import bundled Bible: \(fileName)."
         case .bibleAlreadyExists(let fileName):
@@ -126,6 +129,10 @@ private actor BibleImportService {
 
         guard hasBibleSchema(url: selectedFile) else {
             throw BibleImportError.invalidBibleSchema(fileName)
+        }
+
+        if let compatibilityError = canonicalCompatibilityError(url: selectedFile, fileName: fileName) {
+            throw compatibilityError
         }
 
         guard !bundledBibleNames.contains(fileName) else {
@@ -220,6 +227,90 @@ private actor BibleImportService {
 
         return BibleFileRule.requiredBibleColumns.isSubset(of: columns)
     }
+
+    private func canonicalCompatibilityError(url: URL, fileName: String) -> BibleImportError? {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            return .incompatibleBible("\(fileName) cannot be validated for canonical book compatibility.")
+        }
+        defer { sqlite3_close(db) }
+
+        let expectedByBookNumber = Dictionary(
+            uniqueKeysWithValues: bibleBooks.values.compactMap { value -> (Int, Int)? in
+                guard value.count >= 2 else { return nil }
+                return (value[0], value[1])
+            }
+        )
+        let expectedBookCount = expectedByBookNumber.count
+        let expectedBookNumbers = Set(expectedByBookNumber.keys)
+
+        guard let bnamesCount = querySingleInt(db: db, sql: "SELECT COUNT(*) FROM bnames;") else {
+            return .incompatibleBible("\(fileName) must include table `bnames` with \(expectedBookCount) entries.")
+        }
+        guard bnamesCount == expectedBookCount else {
+            return .incompatibleBible("\(fileName) has \(bnamesCount) `bnames` entries; expected \(expectedBookCount).")
+        }
+
+        guard let chapterStats = loadChapterStatsByBook(db: db) else {
+            return .incompatibleBible("\(fileName) cannot be validated for canonical chapter coverage.")
+        }
+        let actualBookNumbers = Set(chapterStats.keys)
+        guard actualBookNumbers == expectedBookNumbers else {
+            return .incompatibleBible("\(fileName) must have canonical book numbers 1...\(expectedBookCount) in table `bible`.")
+        }
+
+        for (bookNumber, expectedChapters) in expectedByBookNumber.sorted(by: { $0.key < $1.key }) {
+            guard let stats = chapterStats[bookNumber] else {
+                return .incompatibleBible("\(fileName) is missing verses for book number \(bookNumber).")
+            }
+            if stats.minChapter != 1 || stats.maxChapter != expectedChapters || stats.distinctChapterCount != expectedChapters {
+                return .incompatibleBible(
+                    "\(fileName) chapter coverage mismatch for book \(bookNumber): expected 1...\(expectedChapters)."
+                )
+            }
+        }
+
+        return nil
+    }
+
+    private func querySingleInt(db: OpaquePointer?, sql: String) -> Int? {
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+        return Int(sqlite3_column_int(statement, 0))
+    }
+
+    private func loadChapterStatsByBook(db: OpaquePointer?) -> [Int: (minChapter: Int, maxChapter: Int, distinctChapterCount: Int)]? {
+        let sql = """
+            SELECT bnumber, MIN(cnumber), MAX(cnumber), COUNT(DISTINCT cnumber)
+            FROM bible
+            GROUP BY bnumber
+            ORDER BY bnumber;
+            """
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return nil
+        }
+
+        var result: [Int: (minChapter: Int, maxChapter: Int, distinctChapterCount: Int)] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let bookNumber = Int(sqlite3_column_int(statement, 0))
+            let minChapter = Int(sqlite3_column_int(statement, 1))
+            let maxChapter = Int(sqlite3_column_int(statement, 2))
+            let distinctChapterCount = Int(sqlite3_column_int(statement, 3))
+            result[bookNumber] = (minChapter: minChapter, maxChapter: maxChapter, distinctChapterCount: distinctChapterCount)
+        }
+
+        return result
+    }
 }
 
 struct BibleImportView: View {
@@ -277,7 +368,10 @@ struct BibleImportView: View {
                     Text("`\(BibleFileRule.requiredBibleColumns.sorted().joined(separator: ", "))`")
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
-                    Text("Book name column is not required; app maps `bnumber` to canonical book names.")
+                    Text("Database must include table `bnames` with 66 entries.")
+                    Text("`bnumber` must cover canonical books 1...66.")
+                    Text("Chapter coverage must match canonical boundaries for each `bnumber`.")
+                    Text("Book name column in `bible` table is not required; app maps by `bnumber`.")
                     Text("Bundled Bible files cannot be imported again.")
                 }
 

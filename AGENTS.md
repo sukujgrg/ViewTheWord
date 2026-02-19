@@ -78,7 +78,9 @@ This document is the current source of truth for this repo.
 - Bible import is actor-backed (`BibleImportService`) and performs strict checks before copy:
   - canonical filename
   - SQLite header
-  - required `bible` table columns (`bnumber`, `cnumber`, `vnumber`, `text`)
+  - required `bible` table columns (`bnumber`, `cnumber`, `vnumber`, `verse`)
+  - `bnames` table presence with canonical book-count row cardinality
+  - canonical `bnumber` coverage (`1...66`) and canonical chapter coverage per book
 - Import copy is atomic (temp file + move). Permission hardening (`0444`) is best-effort and should not fail an otherwise valid import.
 
 ### Logging
