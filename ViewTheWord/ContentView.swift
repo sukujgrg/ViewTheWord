@@ -574,9 +574,17 @@ struct MainContentView: View {
     @EnvironmentObject var verseRowViewModel: VerseRowViewModel
     @AppStorage(AppDefaultsKey.transparentBackground) private var transparentBackground = false
     @AppStorage(AppDefaultsKey.preferDarkMode) private var preferDarkMode = false
+    @AppStorage(AppDefaultsKey.projectorTextAlignment) private var projectorTextAlignmentRaw = ProjectorTextAlignmentMode.center.rawValue
+    @AppStorage(AppDefaultsKey.projectorReadingDirection) private var projectorReadingDirectionRaw = ProjectorReadingDirectionMode.auto.rawValue
 
     var body: some View {
         VStack {
+            ProjectionControlsRowView(
+                transparentBackground: $transparentBackground,
+                projectorTextAlignmentRaw: $projectorTextAlignmentRaw,
+                projectorReadingDirectionRaw: $projectorReadingDirectionRaw
+            )
+
             ViewThatFits(in: .horizontal) {
                 regularSearchControls
                 compactSearchControls
@@ -636,7 +644,6 @@ struct MainContentView: View {
 
     private var regularSearchControls: some View {
         HStack(alignment: .center, spacing: 12) {
-            transparentBackgroundToggle
             appearanceToggle
             Spacer(minLength: 0)
             searchField
@@ -663,7 +670,6 @@ struct MainContentView: View {
                 .frame(minWidth: 160, maxWidth: .infinity, minHeight: 35, maxHeight: 35)
 
             Menu {
-                Toggle("Transparent BG", isOn: $transparentBackground)
                 Toggle("Dark Mode", isOn: $preferDarkMode)
                 Toggle("Primary Only", isOn: $showOnlyPrimary)
             } label: {
@@ -685,14 +691,6 @@ struct MainContentView: View {
                 .stroke(.quaternary, lineWidth: 1)
         )
         .frame(maxWidth: .infinity, alignment: .center)
-    }
-
-    private var transparentBackgroundToggle: some View {
-        Toggle("Transparent BG", isOn: $transparentBackground)
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .help("Use transparent background for projector window")
-            .fixedSize()
     }
 
     private var appearanceToggle: some View {

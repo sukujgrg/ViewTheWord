@@ -21,6 +21,7 @@
 		03EFCF7928703DC500A69AD2 /* ProjectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03EFCF7828703DC500A69AD2 /* ProjectorView.swift */; };
 		03EFCF7B28703E1A00A69AD2 /* VerseRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03EFCF7A28703E1A00A69AD2 /* VerseRowView.swift */; };
 		B20522252C13983700585F6D /* ApiCalls.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20522242C13983700585F6D /* ApiCalls.swift */; };
+		B229A7A22F48F46100EF8FAD /* ProjectionControlsRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B229A7A12F48F46100EF8FAD /* ProjectionControlsRowView.swift */; };
 		B26FEF50287B94F000DAD012 /* Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26FEF4F287B94F000DAD012 /* Extensions.swift */; };
 /* End PBXBuildFile section */
 
@@ -41,6 +42,7 @@
 		03EFCF7828703DC500A69AD2 /* ProjectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectorView.swift; sourceTree = "<group>"; };
 		03EFCF7A28703E1A00A69AD2 /* VerseRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerseRowView.swift; sourceTree = "<group>"; };
 		B20522242C13983700585F6D /* ApiCalls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApiCalls.swift; sourceTree = "<group>"; };
+		B229A7A12F48F46100EF8FAD /* ProjectionControlsRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectionControlsRowView.swift; sourceTree = "<group>"; };
 		B26FEF4F287B94F000DAD012 /* Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Extensions.swift; sourceTree = "<group>"; };
 		B26FEF51287B9F6900DAD012 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		B2B7BDE52BE4A13B00A1CB41 /* ViewTheWordRelease.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ViewTheWordRelease.entitlements; sourceTree = "<group>"; };
@@ -95,6 +97,7 @@
 				03A1D26528672D1700511E73 /* ContentView.swift */,
 				03EFCF7828703DC500A69AD2 /* ProjectorView.swift */,
 				03A1D26C28672D1800511E73 /* ViewTheWord.entitlements */,
+				B229A7A12F48F46100EF8FAD /* ProjectionControlsRowView.swift */,
 				03A1D26928672D1800511E73 /* Preview Content */,
 				03A1D27C2867FBC800511E73 /* Db.swift */,
 				03A1D27E28685D5400511E73 /* RxVerse.swift */,
@@ -196,6 +199,7 @@
 				039A40972872325E00A672BD /* SettingsView.swift in Sources */,
 				B26FEF50287B94F000DAD012 /* Extensions.swift in Sources */,
 				B20522252C13983700585F6D /* ApiCalls.swift in Sources */,
+				B229A7A22F48F46100EF8FAD /* ProjectionControlsRowView.swift in Sources */,
 				03EFCF7928703DC500A69AD2 /* ProjectorView.swift in Sources */,
 				03A1D26628672D1700511E73 /* ContentView.swift in Sources */,
 				03EEAE4F28793D69008EC35C /* AppConstants.swift in Sources */,

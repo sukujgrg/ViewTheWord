@@ -16,11 +16,25 @@ enum AppDefaultsKey {
     static let apiUrlToPost = "apiUrlToPost"
     static let transparentBackground = "transparentBackground"
     static let preferDarkMode = "preferDarkMode"
+    static let projectorTextAlignment = "projectorTextAlignment"
+    static let projectorReadingDirection = "projectorReadingDirection"
     static let primaryBibleName = "PrimaryBibleName"
     static let secondaryBibleName = "SecondaryBibleName"
     static let showOnlyPrimary = "showOnlyPrimary"
     static let chapterHistorySplitAutosaveName = "chapterHistorySplit"
     static let bookmarkHistorySplitAutosaveName = "bookmarkHistorySplit"
+}
+
+enum ProjectorTextAlignmentMode: String, CaseIterable {
+    case left
+    case center
+    case right
+}
+
+enum ProjectorReadingDirectionMode: String, CaseIterable {
+    case auto
+    case leftToRight
+    case rightToLeft
 }
 
 enum BibleFileRule {
