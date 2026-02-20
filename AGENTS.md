@@ -32,6 +32,11 @@ This document is the current source of truth for this repo.
 - Semantic/AI search has been removed:
   - No embeddings/OpenAI pipeline remains in runtime, parser, or settings.
   - Search supports verse lookup and SQLite-backed text search (`s:` phrase / `m:` multi-term) only.
+- Known translation verse-number divergence (important for row/projection boundaries):
+  - `ENG_NIV.bible` vs `ENG_NLT.bible` differ in New Testament chapter verse numbering.
+  - `3 John 1`: NIV has 14 verses; NLT has 15 (NLT-only verse number `15`).
+  - `Revelation 12`: NIV has 17 verses; NLT has 18 (NLT-only verse number `18`).
+  - Do not assume `row index + 1 == verse number` in dual-translation mode.
 
 ### Current app structure (actual code)
 - Entry: `ViewTheWord/ViewTheWordApp.swift`

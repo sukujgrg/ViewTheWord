@@ -810,8 +810,8 @@ struct MainView: View {
                 onSearchVerseSelected: { verse in
                     projectSearchResult(verse: verse)
                 },
-                onRowVerseProject: { index in
-                    projectVerseFromRow(at: index)
+                onRowVerseProject: { verseNumber in
+                    projectVerseFromRow(verseNumber: verseNumber)
                 },
                 onAddBookmark: { reference in
                     bookmarkStore.add(reference)
@@ -891,11 +891,10 @@ struct MainView: View {
                 }
             }
         }
-        .onChange(of: showOnlyPrimary) { oldValue, newValue in
-            // When switching from primary-only back to dual mode, refresh
-            // current query/results so secondary content is populated.
-            guard oldValue, !newValue else { return }
+        .onChange(of: showOnlyPrimary) { _, _ in
             guard searchResults != nil || !verseRowViewModel.verseRowData.primaryChapter.isEmpty else { return }
+            // Keep primary/secondary boundaries consistent when display mode changes.
+            // This prevents stale row counts/text when switching modes.
             processSearchQuery(updateRowView: true, project: windowOpened, recordHistory: false)
         }
         .onChange(of: transparentBackground) { _, _ in
@@ -1182,31 +1181,39 @@ struct MainView: View {
         guard isCurrentSearch(searchID) else { return }
     }
 
-    func projectVerseFromRow(at index: Int) {
-        let verseCount = max(
-            verseRowViewModel.verseRowData.primaryChapter.count,
-            verseRowViewModel.verseRowData.secondaryChapter.count
-        )
-        guard index >= 0, index < verseCount else { return }
+    private var primaryChapterForDisplay: [AVerse] {
+        verseRowViewModel.verseRowData.primaryChapter
+    }
+
+    private var secondaryChapterForDisplay: [AVerse] {
+        showOnlyPrimary ? [] : verseRowViewModel.verseRowData.secondaryChapter
+    }
+
+    private func primaryVerseForNumber(_ verseNumber: Int) -> AVerse? {
+        primaryChapterForDisplay.first(where: { $0.verseNumber == verseNumber })
+    }
+
+    private func secondaryVerseForNumber(_ verseNumber: Int) -> AVerse? {
+        secondaryChapterForDisplay.first(where: { $0.verseNumber == verseNumber })
+    }
+
+    func projectVerseFromRow(verseNumber: Int) {
+        guard verseNumber > 0 else { return }
         guard let reference = VerseReference(
             book: verseTargetModel.verseQuery.bookName,
             chapter: verseTargetModel.verseQuery.chapterNumber,
-            verse: index + 1
+            verse: verseNumber
         ) else {
             triggerInvalidQueryFeedback()
             return
         }
 
-        let primaryText = verseRowViewModel.verseRowData.primaryChapter.indices.contains(index)
-            ? verseRowViewModel.verseRowData.primaryChapter[index].verse
-            : "\u{200c}"
+        let primaryVerse = primaryVerseForNumber(verseNumber)
+        let secondaryVerse = secondaryVerseForNumber(verseNumber)
+        guard primaryVerse != nil || secondaryVerse != nil else { return }
 
-        let secondaryText: String?
-        if !showOnlyPrimary, verseRowViewModel.verseRowData.secondaryChapter.indices.contains(index) {
-            secondaryText = verseRowViewModel.verseRowData.secondaryChapter[index].verse
-        } else {
-            secondaryText = nil
-        }
+        let primaryText = primaryVerse?.verse ?? secondaryVerse?.verse ?? "\u{200c}"
+        let secondaryText = primaryVerse != nil ? secondaryVerse?.verse : nil
 
         verseTargetModel.verseQuery = reference.verseQuery
         ask = reference.verseQuery.title

@@ -14,12 +14,19 @@ struct VerseRowData: Identifiable {
 private struct VisibleVerseKey: Hashable {
     let dataID: UUID
     let index: Int
+    let showOnlyPrimary: Bool
 }
 
 private enum VerseCopySource {
     case primary
     case secondary
     case verseNumber
+}
+
+private struct ChapterVerseRow {
+    let verseNumber: Int
+    let primary: AVerse?
+    let secondary: AVerse?
 }
 
 struct VerseRowView: View {
@@ -65,13 +72,15 @@ struct VerseRowView: View {
     }
 
     private func isCurrentVerse(_ index: Int) -> Bool {
-        guard isVerseProjected, let projectedReference else {
+        guard isVerseProjected, let projectedReference, chapterRows.indices.contains(index) else {
             return false
         }
 
+        let verseNumber = chapterRows[index].verseNumber
+
         return projectedReference.book == verseTargetModel.verseQuery.bookName
             && projectedReference.chapter == verseTargetModel.verseQuery.chapterNumber
-            && projectedReference.verse == index + 1
+            && projectedReference.verse == verseNumber
     }
 
     private var projectedReference: VerseReference? {
@@ -146,25 +155,67 @@ struct VerseRowView: View {
         }
     }
 
-    private var verseCount: Int {
-        max(verseRowViewModel.verseRowData.primaryChapter.count, verseRowViewModel.verseRowData.secondaryChapter.count)
+    private var chapterRows: [ChapterVerseRow] {
+        let primaryVersesByNumber = Dictionary(
+            uniqueKeysWithValues: verseRowViewModel.verseRowData.primaryChapter.map { ($0.verseNumber, $0) }
+        )
+        let secondaryVersesByNumber = Dictionary(
+            uniqueKeysWithValues: verseRowViewModel.verseRowData.secondaryChapter.map { ($0.verseNumber, $0) }
+        )
+
+        let verseNumbers: [Int]
+        if showOnlyPrimary {
+            verseNumbers = primaryVersesByNumber.keys.sorted()
+        } else {
+            verseNumbers = Set(primaryVersesByNumber.keys)
+                .union(secondaryVersesByNumber.keys)
+                .sorted()
+        }
+
+        return verseNumbers.map { verseNumber in
+            ChapterVerseRow(
+                verseNumber: verseNumber,
+                primary: primaryVersesByNumber[verseNumber],
+                secondary: showOnlyPrimary ? nil : secondaryVersesByNumber[verseNumber]
+            )
+        }
+    }
+
+    private var displayVerseCount: Int {
+        chapterRows.count
+    }
+
+    private var headerVerse: AVerse? {
+        verseRowViewModel.verseRowData.primaryChapter.first
+            ?? verseRowViewModel.verseRowData.secondaryChapter.first
+    }
+
+    private func indexForVerseNumber(_ verseNumber: Int) -> Int? {
+        chapterRows.firstIndex(where: { $0.verseNumber == verseNumber })
     }
 
     private var clampedCurrentIndex: Int {
-        guard verseCount > 0 else { return -1 }
-        return min(max(verseTargetModel.verseQuery.verseNumber - 1, 0), verseCount - 1)
+        guard !chapterRows.isEmpty else { return -1 }
+
+        if let exactIndex = indexForVerseNumber(verseTargetModel.verseQuery.verseNumber) {
+            return exactIndex
+        }
+
+        let targetVerseNumber = verseTargetModel.verseQuery.verseNumber
+        if let precedingIndex = chapterRows.lastIndex(where: { $0.verseNumber < targetVerseNumber }) {
+            return precedingIndex
+        }
+
+        return 0
     }
 
     // MARK: - Body
 
     var body: some View {
-        if !verseRowViewModel.verseRowData.primaryChapter.isEmpty {
-            let primaryChapter = verseRowViewModel.verseRowData.primaryChapter
-
-            // Header with Bible names and chapter reference
+        if let headerVerse {
             VStack(spacing: 0) {
                 Divider()
-                headerView(bookName: primaryChapter[0].bookName, chapterNumber: primaryChapter[0].chapterNumber)
+                headerView(bookName: headerVerse.bookName, chapterNumber: headerVerse.chapterNumber)
                     .padding(.vertical, 6)
                 Divider()
             }
@@ -172,15 +223,15 @@ struct VerseRowView: View {
         ScrollViewReader { value in
             ScrollView {
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
-                    let count = verseCount
+                    let count = displayVerseCount
                     ForEach(0 ..< count, id: \.self) { index in
+                        let row = chapterRows[index]
                         if showOnlyPrimary {
                             // Show only primary mode: Verse with superscript number
                             verseCellWithSuperscript(
-                                text: verseRowViewModel.verseRowData.primaryChapter.indices.contains(index)
-                                    ? verseRowViewModel.verseRowData.primaryChapter[index].verse
-                                    : "\u{200c}",
+                                text: row.primary?.verse ?? "\u{200c}",
                                 index: index,
+                                verseNumber: row.verseNumber,
                                 isActive: isCurrentVerse(index)
                             )
                             .id(index)
@@ -193,9 +244,7 @@ struct VerseRowView: View {
                         } else {
                             // Full mode: Primary verse, verse number, secondary verse
                             verseCell(
-                                text: verseRowViewModel.verseRowData.primaryChapter.indices.contains(index)
-                                    ? verseRowViewModel.verseRowData.primaryChapter[index].verse
-                                    : "\u{200c}",
+                                text: row.primary?.verse ?? "\u{200c}",
                                 index: index,
                                 isActive: isCurrentVerse(index),
                                 copySource: .primary
@@ -207,11 +256,13 @@ struct VerseRowView: View {
                             .onDisappear {
                                 visibleVerseKeys.remove(currentVisibleKey(index: index))
                             }
-                            verseNumberButton(index: index, isActive: isCurrentVerse(index))
+                            verseNumberButton(
+                                index: index,
+                                verseNumber: row.verseNumber,
+                                isActive: isCurrentVerse(index)
+                            )
                             verseCell(
-                                text: verseRowViewModel.verseRowData.secondaryChapter.indices.contains(index)
-                                    ? verseRowViewModel.verseRowData.secondaryChapter[index].verse
-                                    : "\u{200c}",
+                                text: row.secondary?.verse ?? "\u{200c}",
                                 index: index,
                                 isActive: isCurrentVerse(index),
                                 copySource: .secondary
@@ -231,7 +282,12 @@ struct VerseRowView: View {
                         visibleVerseKeys.removeAll()
                         updateSelectionAndScroll(proxy: value)
                     }
+                    .onChange(of: showOnlyPrimary) { _, _ in
+                        visibleVerseKeys.removeAll()
+                        updateSelectionAndScroll(proxy: value)
+                    }
                 }
+                .id(showOnlyPrimary)
             }
             .padding(.horizontal)
             .contentShape(Rectangle())
@@ -250,7 +306,7 @@ struct VerseRowView: View {
         .focusEffectDisabled()
         .onAppear {
             // Initialize on first appearance
-            maxVersesOnCurrentChapter = verseCount
+            maxVersesOnCurrentChapter = displayVerseCount
             currentIndex = clampedCurrentIndex
             refreshAvailableBibles()
         }
@@ -334,9 +390,14 @@ struct VerseRowView: View {
     }
 
     @ViewBuilder
-    private func verseCellWithSuperscript(text: String, index: Int, isActive: Bool) -> some View {
+    private func verseCellWithSuperscript(
+        text: String,
+        index: Int,
+        verseNumber: Int,
+        isActive: Bool
+    ) -> some View {
         HStack(alignment: .top, spacing: 4) {
-            Text(String(index + 1))
+            Text(String(verseNumber))
                 .font(.system(size: 12))
                 .baselineOffset(8)
                 .foregroundColor(.secondary)
@@ -350,14 +411,14 @@ struct VerseRowView: View {
         }
         .padding()
         .background(isActive ? Color.accentColor.opacity(0.2) : Color.clear)
-        .accessibilityLabel("Verse \(index + 1): \(text)")
+        .accessibilityLabel("Verse \(verseNumber): \(text)")
         .accessibilityHint("Tap to project this verse to the projector window")
     }
 
     @ViewBuilder
-    private func verseNumberButton(index: Int, isActive: Bool) -> some View {
+    private func verseNumberButton(index: Int, verseNumber: Int, isActive: Bool) -> some View {
         Button(action: { requestProjection(at: index) }) {
-            Text(String(index + 1))
+            Text(String(verseNumber))
                 .frame(width: 60, height: 60)
                 .background(isActive ? Color.accentColor : Color.secondary.opacity(0.5))
                 .foregroundColor(.white)
@@ -366,7 +427,7 @@ struct VerseRowView: View {
             verseContextMenuItems(for: index, source: .verseNumber)
         }
         .buttonStyle(PlainButtonStyle())
-        .accessibilityLabel("Verse \(index + 1)")
+        .accessibilityLabel("Verse \(verseNumber)")
         .accessibilityHint("Project this verse to the projector window")
     }
 
@@ -428,20 +489,25 @@ struct VerseRowView: View {
     }
 
     private func requestProjection(at index: Int) {
+        guard chapterRows.indices.contains(index) else {
+            return
+        }
+        let verseNumber = chapterRows[index].verseNumber
+
         Task { @MainActor in
             await Task.yield()
-            onProjectVerse(index)
+            onProjectVerse(verseNumber)
         }
     }
 
     private func updateSelectionAndScroll(proxy: ScrollViewProxy) {
-        maxVersesOnCurrentChapter = verseCount
+        maxVersesOnCurrentChapter = displayVerseCount
         currentIndex = clampedCurrentIndex
         scrollToCurrentVerse(proxy: proxy)
     }
 
     private func scrollToCurrentVerse(proxy: ScrollViewProxy) {
-        guard currentIndex >= 0, currentIndex < verseCount else { return }
+        guard currentIndex >= 0, currentIndex < displayVerseCount else { return }
         Task { @MainActor in
             let targetKey = currentVisibleKey(index: currentIndex)
             await Task.yield()
@@ -462,32 +528,37 @@ struct VerseRowView: View {
     }
 
     private func currentVisibleKey(index: Int) -> VisibleVerseKey {
-        VisibleVerseKey(dataID: verseRowViewModel.verseRowData.id, index: index)
+        VisibleVerseKey(
+            dataID: verseRowViewModel.verseRowData.id,
+            index: index,
+            showOnlyPrimary: showOnlyPrimary
+        )
     }
 
     private func referenceForIndex(_ index: Int) -> VerseReference? {
-        guard index >= 0, index < verseCount else {
+        guard chapterRows.indices.contains(index) else {
             return nil
         }
+        let verseNumber = chapterRows[index].verseNumber
         return VerseReference(
             book: verseTargetModel.verseQuery.bookName,
             chapter: verseTargetModel.verseQuery.chapterNumber,
-            verse: index + 1
+            verse: verseNumber
         )
     }
 
     private func primaryVerseForIndex(_ index: Int) -> AVerse? {
-        guard verseRowViewModel.verseRowData.primaryChapter.indices.contains(index) else {
+        guard chapterRows.indices.contains(index) else {
             return nil
         }
-        return verseRowViewModel.verseRowData.primaryChapter[index]
+        return chapterRows[index].primary
     }
 
     private func secondaryVerseForIndex(_ index: Int) -> AVerse? {
-        guard verseRowViewModel.verseRowData.secondaryChapter.indices.contains(index) else {
+        guard chapterRows.indices.contains(index) else {
             return nil
         }
-        return verseRowViewModel.verseRowData.secondaryChapter[index]
+        return chapterRows[index].secondary
     }
 
     private func copyVerseToPasteboard(_ verse: AVerse, translationName: String) {
