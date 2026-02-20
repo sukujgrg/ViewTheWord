@@ -1001,11 +1001,28 @@ struct MainView: View {
     }
 
     func performPhraseSearch(searchText: String, filter: SearchFilter, searchID: UUID) async {
-        async let primaryResultsTask = biblePrimary.searchTextWithFilterAsync(searchQuery: searchText, filter: filter)
-        async let secondaryResultsTask = bibleSecondary.searchTextWithFilterAsync(searchQuery: searchText, filter: filter)
+        let primaryResults: [AVerse]
+        let secondaryResults: [AVerse]
 
-        let primaryResults = await primaryResultsTask ?? []
-        let secondaryResults = await secondaryResultsTask ?? []
+        if showOnlyPrimary {
+            primaryResults = await biblePrimary.searchTextWithFilterAsync(
+                searchQuery: searchText,
+                filter: filter
+            ) ?? []
+            secondaryResults = []
+        } else {
+            async let primaryResultsTask = biblePrimary.searchTextWithFilterAsync(
+                searchQuery: searchText,
+                filter: filter
+            )
+            async let secondaryResultsTask = bibleSecondary.searchTextWithFilterAsync(
+                searchQuery: searchText,
+                filter: filter
+            )
+
+            primaryResults = await primaryResultsTask ?? []
+            secondaryResults = await secondaryResultsTask ?? []
+        }
 
         guard isCurrentSearch(searchID) else { return }
         searchResults = (primary: primaryResults, secondary: secondaryResults)
@@ -1017,21 +1034,46 @@ struct MainView: View {
         // Parse as expression-based search (with AND/OR/NOT) using long-lived connections
         let parser = SearchParser(query: searchText)
         if let expression = parser.parse() {
-            async let primaryResultsTask = biblePrimary.searchWithExpressionAsync(expression: expression, filter: filter)
-            async let secondaryResultsTask = bibleSecondary.searchWithExpressionAsync(expression: expression, filter: filter)
+            let primaryResults: [AVerse]
+            let secondaryResults: [AVerse]
 
-            let primaryResults = await primaryResultsTask ?? []
-            let secondaryResults = await secondaryResultsTask ?? []
+            if showOnlyPrimary {
+                primaryResults = await biblePrimary.searchWithExpressionAsync(
+                    expression: expression,
+                    filter: filter
+                ) ?? []
+                secondaryResults = []
+            } else {
+                async let primaryResultsTask = biblePrimary.searchWithExpressionAsync(
+                    expression: expression,
+                    filter: filter
+                )
+                async let secondaryResultsTask = bibleSecondary.searchWithExpressionAsync(
+                    expression: expression,
+                    filter: filter
+                )
+
+                primaryResults = await primaryResultsTask ?? []
+                secondaryResults = await secondaryResultsTask ?? []
+            }
 
             guard isCurrentSearch(searchID) else { return }
             searchResults = (primary: primaryResults, secondary: secondaryResults)
             currentSearchQuery = searchText
         } else {
-            async let primaryResultsTask = biblePrimary.searchTextAsync(searchQuery: searchText)
-            async let secondaryResultsTask = bibleSecondary.searchTextAsync(searchQuery: searchText)
+            let primaryResults: [AVerse]
+            let secondaryResults: [AVerse]
 
-            let primaryResults = await primaryResultsTask ?? []
-            let secondaryResults = await secondaryResultsTask ?? []
+            if showOnlyPrimary {
+                primaryResults = await biblePrimary.searchTextAsync(searchQuery: searchText) ?? []
+                secondaryResults = []
+            } else {
+                async let primaryResultsTask = biblePrimary.searchTextAsync(searchQuery: searchText)
+                async let secondaryResultsTask = bibleSecondary.searchTextAsync(searchQuery: searchText)
+
+                primaryResults = await primaryResultsTask ?? []
+                secondaryResults = await secondaryResultsTask ?? []
+            }
 
             guard isCurrentSearch(searchID) else { return }
             searchResults = (primary: primaryResults, secondary: secondaryResults)
@@ -1101,11 +1143,19 @@ struct MainView: View {
             verseTargetModel.verseQuery = normalizedQuery
             ask = title
 
-            async let primaryChapterTask = biblePrimary.pickAChapterAsync(verseQuery: normalizedQuery)
-            async let secondaryChapterTask = bibleSecondary.pickAChapterAsync(verseQuery: normalizedQuery)
+            let primaryChapter: [AVerse]
+            let secondaryChapter: [AVerse]
 
-            let primaryChapter = await primaryChapterTask ?? []
-            let secondaryChapter = await secondaryChapterTask ?? []
+            if showOnlyPrimary {
+                primaryChapter = await biblePrimary.pickAChapterAsync(verseQuery: normalizedQuery) ?? []
+                secondaryChapter = []
+            } else {
+                async let primaryChapterTask = biblePrimary.pickAChapterAsync(verseQuery: normalizedQuery)
+                async let secondaryChapterTask = bibleSecondary.pickAChapterAsync(verseQuery: normalizedQuery)
+
+                primaryChapter = await primaryChapterTask ?? []
+                secondaryChapter = await secondaryChapterTask ?? []
+            }
             guard isCurrentSearch(searchID) else { return }
 
             verseRowViewModel.verseRowData = VerseRowData(
