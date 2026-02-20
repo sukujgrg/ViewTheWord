@@ -74,6 +74,7 @@ extension View {
             window.backgroundColor = NSColor.clear
         } else {
             window.isOpaque = true
+            window.backgroundColor = NSColor.black
         }
 
         return window

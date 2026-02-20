@@ -714,6 +714,8 @@ struct MainView: View {
     @StateObject private var bookmarkStore = BookmarkStore.shared
     @AppStorage(AppDefaultsKey.showOnlyPrimary) var showOnlyPrimary = false
 
+    @AppStorage(AppDefaultsKey.transparentBackground) private var transparentBackground = false
+
     // To reload the VerseRowView and ProjectorView if the bible changes in Settings.
     @AppStorage(AppDefaultsKey.primaryBibleName) private var primaryBibleName: String = bundledPrimaryBibleUrl?.absoluteString ?? ""
     @AppStorage(AppDefaultsKey.secondaryBibleName) private var secondaryBibleName: String = bundledSecondaryBibleUrl?.absoluteString ?? ""
@@ -888,6 +890,19 @@ struct MainView: View {
                     processSearchQuery(updateRowView: true, project: windowOpened, recordHistory: false)
                 }
             }
+        }
+        .onChange(of: showOnlyPrimary) { oldValue, newValue in
+            // When switching from primary-only back to dual mode, refresh
+            // current query/results so secondary content is populated.
+            guard oldValue, !newValue else { return }
+            guard searchResults != nil || !verseRowViewModel.verseRowData.primaryChapter.isEmpty else { return }
+            processSearchQuery(updateRowView: true, project: windowOpened, recordHistory: false)
+        }
+        .onChange(of: transparentBackground) { _, _ in
+            guard let projectorWindow else {
+                return
+            }
+            applyProjectorWindowAppearance(projectorWindow)
         }
         .onDisappear {
             searchTask?.cancel()
@@ -1275,10 +1290,28 @@ struct MainView: View {
         }
     }
 
+    private var projectorWindow: NSWindow? {
+        NSApplication.shared.windows.first(where: { $0.title == AppWindowTitle.projector })
+    }
+
+    func applyProjectorWindowAppearance(_ window: NSWindow) {
+        if transparentBackground {
+            window.isOpaque = false
+            window.backgroundColor = .clear
+        } else {
+            window.isOpaque = true
+            window.backgroundColor = .black
+        }
+    }
+
     func openProjector() {
-        // Check if window already exists
-        if NSApplication.shared.windows.contains(where: { $0.title == AppWindowTitle.projector }) {
-            // Window exists, just update the flag and return
+        if let existingProjectorWindow = projectorWindow {
+            applyProjectorWindowAppearance(existingProjectorWindow)
+            let priorKeyWindow = NSApplication.shared.keyWindow
+            existingProjectorWindow.orderFrontRegardless()
+            if let priorKeyWindow, priorKeyWindow != existingProjectorWindow {
+                priorKeyWindow.makeKey()
+            }
             windowOpened = true
             return
         }
@@ -1290,12 +1323,15 @@ struct MainView: View {
             ProjectorView(windowOpened: $windowOpened)
                 .environmentObject(projectorViewModel)
                 .openNewWindow(with: AppWindowTitle.projector)
+            if let projectorWindow {
+                applyProjectorWindowAppearance(projectorWindow)
+            }
         }
     }
 
     func closeProjector() {
         // Close window first, then update flag
-        if let projectorWindow = NSApplication.shared.windows.first(where: { $0.title == AppWindowTitle.projector }) {
+        if let projectorWindow {
             projectorWindow.close()
         }
         projectorViewModel.clearProjection()
