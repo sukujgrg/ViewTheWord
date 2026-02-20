@@ -15,6 +15,7 @@ enum AppWindowTitle {
 enum AppDefaultsKey {
     static let apiUrlToPost = "apiUrlToPost"
     static let transparentBackground = "transparentBackground"
+    static let preferDarkMode = "preferDarkMode"
     static let primaryBibleName = "PrimaryBibleName"
     static let secondaryBibleName = "SecondaryBibleName"
     static let showOnlyPrimary = "showOnlyPrimary"

@@ -13,11 +13,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct ViewTheWordApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    @AppStorage(AppDefaultsKey.preferDarkMode) private var preferDarkMode = false
 
     var body: some Scene {
         Window("", id: "main") {
             ContentView()
                 .navigationTitle("")
+                .preferredColorScheme(preferDarkMode ? .dark : .light)
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 1200, height: 800)
@@ -41,6 +43,7 @@ struct ViewTheWordApp: App {
 
         Settings {
             SettingsView()
+                .preferredColorScheme(preferDarkMode ? .dark : .light)
         }
     }
 }

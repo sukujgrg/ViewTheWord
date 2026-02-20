@@ -30,6 +30,7 @@ private struct ChapterVerseRow {
 }
 
 struct VerseRowView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject var verseTargetModel: VerseTargetModel
     @EnvironmentObject var verseRowViewModel: VerseRowViewModel
     @EnvironmentObject var projectorViewModel: ProjectorViewModel
@@ -69,6 +70,12 @@ struct VerseRowView: View {
 
     private var isVerseProjected: Bool {
         windowOpened && projectedReference != nil
+    }
+
+    private var verseColumnBookHeaderColor: Color {
+        colorScheme == .dark
+            ? Color.cyan.opacity(0.72)
+            : Color.indigo.opacity(0.78)
     }
 
     private func isCurrentVerse(_ index: Int) -> Bool {
@@ -139,6 +146,7 @@ struct VerseRowView: View {
                     .frame(width: 220)
                 Text("\(bookName) \(chapterNumber)")
                     .font(.headline)
+                    .foregroundStyle(verseColumnBookHeaderColor)
             }
             .frame(maxWidth: .infinity, alignment: .center)
         } else {
@@ -147,12 +155,30 @@ struct VerseRowView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                 Text("\(bookName) \(chapterNumber)")
                     .font(.headline)
+                    .foregroundStyle(verseColumnBookHeaderColor)
                     .frame(maxWidth: .infinity, alignment: .center)
                 translationPicker(selection: $secondaryBibleName, title: "Secondary translation")
                     .frame(maxWidth: .infinity, alignment: .center)
             }
             .frame(maxWidth: .infinity, alignment: .center)
         }
+    }
+
+    private func verseCardFill() -> AnyShapeStyle {
+        // Favor readability: mostly opaque semantic surface with just a subtle blend.
+        AnyShapeStyle(Color(nsColor: .controlBackgroundColor).opacity(0.94))
+    }
+
+    private func verseCardActiveTint(isActive: Bool) -> Color {
+        isActive
+            ? Color.accentColor.opacity(0.10)
+            : .clear
+    }
+
+    private func verseCardBorder(isActive: Bool) -> Color {
+        isActive
+            ? Color.accentColor.opacity(0.36)
+            : Color.primary.opacity(0.12)
     }
 
     private var chapterRows: [ChapterVerseRow] {
@@ -214,10 +240,19 @@ struct VerseRowView: View {
     var body: some View {
         if let headerVerse {
             VStack(spacing: 0) {
-                Divider()
                 headerView(bookName: headerVerse.bookName, chapterNumber: headerVerse.chapterNumber)
-                    .padding(.vertical, 6)
-                Divider()
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(.regularMaterial)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(.quaternary, lineWidth: 1)
+                    )
+                    .padding(.horizontal, 8)
+                    .padding(.top, 4)
             }
         }
         ScrollViewReader { value in
@@ -381,12 +416,24 @@ struct VerseRowView: View {
     @ViewBuilder
     private func verseCell(text: String, index: Int, isActive: Bool, copySource: VerseCopySource) -> some View {
         Text(text)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .onTapGesture { requestProjection(at: index) }
             .contextMenu {
                 verseContextMenuItems(for: index, source: copySource)
             }
             .padding()
-            .background(isActive ? Color.accentColor.opacity(0.2) : Color.clear)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(verseCardFill())
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(verseCardActiveTint(isActive: isActive))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(verseCardBorder(isActive: isActive), lineWidth: 1)
+            )
     }
 
     @ViewBuilder
@@ -410,7 +457,18 @@ struct VerseRowView: View {
             verseContextMenuItems(for: index, source: .primary)
         }
         .padding()
-        .background(isActive ? Color.accentColor.opacity(0.2) : Color.clear)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(verseCardFill())
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(verseCardActiveTint(isActive: isActive))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(verseCardBorder(isActive: isActive), lineWidth: 1)
+        )
         .accessibilityLabel("Verse \(verseNumber): \(text)")
         .accessibilityHint("Tap to project this verse to the projector window")
     }
@@ -420,8 +478,19 @@ struct VerseRowView: View {
         Button(action: { requestProjection(at: index) }) {
             Text(String(verseNumber))
                 .frame(width: 60, height: 60)
-                .background(isActive ? Color.accentColor : Color.secondary.opacity(0.5))
-                .foregroundColor(.white)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(
+                            isActive
+                                ? Color.accentColor
+                                : Color(nsColor: .controlBackgroundColor)
+                        )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(verseCardBorder(isActive: isActive), lineWidth: 1)
+                )
+                .foregroundColor(isActive ? .white : .primary)
         }
         .contextMenu {
             verseContextMenuItems(for: index, source: .verseNumber)

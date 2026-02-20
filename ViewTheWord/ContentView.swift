@@ -2,6 +2,17 @@ import Foundation
 import SwiftUI
 import AppKit
 
+private extension View {
+    @ViewBuilder
+    func applyWindowSurfaceBackground() -> some View {
+        if #available(macOS 15.0, *) {
+            containerBackground(.thinMaterial, for: .window)
+        } else {
+            background(.thinMaterial)
+        }
+    }
+}
+
 private struct NativePersistentVSplitView<Top: View, Bottom: View>: NSViewControllerRepresentable {
     let autosaveName: String
     let topMinHeight: CGFloat
@@ -100,11 +111,13 @@ struct BooksListView: View {
     @Binding var chapterCount: Int32
 
     private let allBooks = Array(bibleBooks.keys)
+    private let oldTestamentHeaderColor: Color = .brown
+    private let newTestamentHeaderColor: Color = .mint
 
     var body: some View {
         ScrollViewReader { proxy in
             List(selection: $selectedBook) {
-                Section("Old Testament") {
+                Section {
                     ForEach(Array(bibleBooks.keys.prefix(39)), id: \.self) { bookName in
                         NavigationLink(value: bookName) {
                             HStack {
@@ -116,9 +129,12 @@ struct BooksListView: View {
                         }
                         .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
                     }
+                } header: {
+                    Text("Old Testament")
+                        .foregroundStyle(oldTestamentHeaderColor)
                 }
 
-                Section("New Testament") {
+                Section {
                     ForEach(Array(bibleBooks.keys.suffix(27)), id: \.self) { bookName in
                         NavigationLink(value: bookName) {
                             HStack {
@@ -130,9 +146,14 @@ struct BooksListView: View {
                         }
                         .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
                     }
+                } header: {
+                    Text("New Testament")
+                        .foregroundStyle(newTestamentHeaderColor)
                 }
             }
             .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .background(.regularMaterial)
             .onChange(of: selectedBook) { _, newBook in
                 if let book = newBook {
                     chapterCount = Int32(bibleBooks[book]?.last ?? 0)
@@ -213,6 +234,8 @@ struct ChaptersListView: View {
     private let minBottomPaneHeight: CGFloat = 180
     private let minBookmarkHeight: CGFloat = 120
     private let minHistoryHeight: CGFloat = 120
+    private let chapterColumnBookHeaderColor: Color = .orange
+    private let secondColumnCornerRadius: CGFloat = 12
 
     var body: some View {
         NativePersistentVSplitView(
@@ -224,6 +247,13 @@ struct ChaptersListView: View {
         } bottom: {
             bookmarkAndHistorySplit
         }
+        .clipShape(RoundedRectangle(cornerRadius: secondColumnCornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: secondColumnCornerRadius, style: .continuous)
+                .stroke(.quaternary, lineWidth: 1)
+        )
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
     }
 
     private var bookmarkAndHistorySplit: some View {
@@ -242,7 +272,7 @@ struct ChaptersListView: View {
         ScrollViewReader { proxy in
             List(selection: $selectedChapter) {
                 if chapterCount > 0 {
-                    Section(selectedBook ?? "Chapters") {
+                    Section {
                         ForEach(1...Int(chapterCount), id: \.self) { chapter in
                             Text("Chapter \(chapter)")
                                 .font(.system(size: 13, weight: selectedChapter == chapter ? .semibold : .regular))
@@ -252,6 +282,9 @@ struct ChaptersListView: View {
                                 .tag(chapter)
                             .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
                         }
+                    } header: {
+                        Text(selectedBook ?? "Chapters")
+                            .foregroundStyle(chapterColumnBookHeaderColor)
                     }
                 } else {
                     ContentUnavailableView(
@@ -262,6 +295,8 @@ struct ChaptersListView: View {
                 }
             }
             .listStyle(.inset)
+            .scrollContentBackground(.hidden)
+            .background(.regularMaterial)
             .onChange(of: selectedChapter) { _, newChapter in
                 if let chapter = newChapter {
                     onChapterSelected(chapter)
@@ -326,6 +361,8 @@ struct ChaptersListView: View {
             }
         }
         .listStyle(.inset)
+        .scrollContentBackground(.hidden)
+        .background(.regularMaterial)
         .onChange(of: selectedBookmarkID) { _, newID in
             if bookmarkTapActivatedID == newID {
                 bookmarkTapActivatedID = nil
@@ -386,6 +423,8 @@ struct ChaptersListView: View {
             }
         }
         .listStyle(.inset)
+        .scrollContentBackground(.hidden)
+        .background(.regularMaterial)
         .onChange(of: selectedHistoryID) { _, newID in
             if historyTapActivatedID == newID {
                 historyTapActivatedID = nil
@@ -451,7 +490,7 @@ struct SearchResultsView: View {
                     .foregroundStyle(.secondary)
             }
             .padding()
-            .background(Color(NSColor.controlBackgroundColor))
+            .background(.thinMaterial)
 
             Divider()
 
@@ -499,8 +538,14 @@ private struct SearchResultRowView: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
-        .background(Color(NSColor.controlBackgroundColor).opacity(0.3))
-        .cornerRadius(8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(.thinMaterial)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(.quaternary, lineWidth: 1)
+        )
         .onTapGesture(perform: onTap)
         .accessibilityLabel("\(verse.bookName) \(verse.chapterNumber):\(verse.verseNumber)")
         .accessibilityHint("Tap to project this verse")
@@ -528,6 +573,7 @@ struct MainContentView: View {
     @FocusState private var isSearchFieldFocused: Bool
     @EnvironmentObject var verseRowViewModel: VerseRowViewModel
     @AppStorage(AppDefaultsKey.transparentBackground) private var transparentBackground = false
+    @AppStorage(AppDefaultsKey.preferDarkMode) private var preferDarkMode = false
 
     var body: some View {
         VStack {
@@ -591,12 +637,23 @@ struct MainContentView: View {
     private var regularSearchControls: some View {
         HStack(alignment: .center, spacing: 12) {
             transparentBackgroundToggle
+            appearanceToggle
             Spacer(minLength: 0)
             searchField
                 .frame(width: 275, height: 35, alignment: .center)
             Spacer(minLength: 0)
             primaryOnlyToggle
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(.thinMaterial)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(.quaternary, lineWidth: 1)
+        )
         .frame(maxWidth: .infinity, alignment: .center)
     }
 
@@ -607,6 +664,7 @@ struct MainContentView: View {
 
             Menu {
                 Toggle("Transparent BG", isOn: $transparentBackground)
+                Toggle("Dark Mode", isOn: $preferDarkMode)
                 Toggle("Primary Only", isOn: $showOnlyPrimary)
             } label: {
                 Image(systemName: "slider.horizontal.3")
@@ -616,6 +674,16 @@ struct MainContentView: View {
             .help("View options")
             .fixedSize()
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(.thinMaterial)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(.quaternary, lineWidth: 1)
+        )
         .frame(maxWidth: .infinity, alignment: .center)
     }
 
@@ -624,6 +692,14 @@ struct MainContentView: View {
             .toggleStyle(.switch)
             .controlSize(.small)
             .help("Use transparent background for projector window")
+            .fixedSize()
+    }
+
+    private var appearanceToggle: some View {
+        Toggle("Dark Mode", isOn: $preferDarkMode)
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .help("Use dark appearance for the app")
             .fixedSize()
     }
 
@@ -663,7 +739,21 @@ struct MainContentView: View {
             return .ignored
         }
         .modifier(ShakeEffect(shakes: queryValidationToken))
-        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.gray, lineWidth: 1))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(nsColor: .textBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(
+                    isSearchFieldFocused
+                        ? Color.accentColor.opacity(0.9)
+                        : Color.secondary.opacity(0.45),
+                    lineWidth: isSearchFieldFocused ? 1.4 : 1
+                )
+        )
         .font(.largeTitle)
         .disableAutocorrection(true)
         .accessibilityLabel("Verse search or text search")
@@ -908,6 +998,7 @@ struct MainView: View {
             searchTask = nil
         }
         .animation(.easeInOut(duration: 0.3), value: selectedBook)
+        .applyWindowSurfaceBackground()
     }
     
 
@@ -1428,7 +1519,7 @@ struct KeyboardShortcutsView: View {
                 .buttonStyle(.plain)
             }
             .padding()
-            .background(Color(NSColor.windowBackgroundColor))
+            .background(.regularMaterial)
 
             Divider()
 
@@ -1455,8 +1546,14 @@ struct KeyboardShortcutsView: View {
                                                 .font(.system(.body, design: .monospaced))
                                                 .padding(.horizontal, 8)
                                                 .padding(.vertical, 4)
-                                                .background(Color(NSColor.controlBackgroundColor))
-                                                .cornerRadius(4)
+                                                .background(
+                                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                                        .fill(.thinMaterial)
+                                                )
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                                        .stroke(.quaternary, lineWidth: 1)
+                                                )
                                                 .frame(maxWidth: .infinity, alignment: .leading)
 
                                             Text(item.description)
@@ -1496,8 +1593,14 @@ struct KeyboardShortcutsView: View {
                                                 .font(.system(.body, design: .monospaced))
                                                 .padding(.horizontal, 8)
                                                 .padding(.vertical, 4)
-                                                .background(Color(NSColor.controlBackgroundColor))
-                                                .cornerRadius(4)
+                                                .background(
+                                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                                        .fill(.thinMaterial)
+                                                )
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                                        .stroke(.quaternary, lineWidth: 1)
+                                                )
                                                 .frame(width: 100, alignment: .leading)
 
                                             Text(shortcut.description)
@@ -1527,7 +1630,7 @@ struct KeyboardShortcutsView: View {
                 .keyboardShortcut(.cancelAction)
             }
             .padding()
-            .background(Color(NSColor.windowBackgroundColor))
+            .background(.regularMaterial)
         }
         .frame(width: 900, height: 600)
     }
