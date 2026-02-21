@@ -17,6 +17,28 @@ private struct VisibleVerseKey: Hashable {
     let showOnlyPrimary: Bool
 }
 
+@MainActor
+private final class VisibleVerseTracker {
+
+    private var keys: Set<VisibleVerseKey> = []
+
+    func insert(_ key: VisibleVerseKey) {
+        keys.insert(key)
+    }
+
+    func remove(_ key: VisibleVerseKey) {
+        keys.remove(key)
+    }
+
+    func removeAll() {
+        keys.removeAll()
+    }
+
+    func contains(_ key: VisibleVerseKey) -> Bool {
+        keys.contains(key)
+    }
+}
+
 private enum VerseCopySource {
     case primary
     case secondary
@@ -44,7 +66,9 @@ struct VerseRowView: View {
     @State private var currentIndex: Int = -1
     @State private var maxVersesOnCurrentChapter: Int = -1
     @State private var availableBibleUrls: [URL] = []
-    @State private var visibleVerseKeys: Set<VisibleVerseKey> = []
+    @State private var chapterRows: [ChapterVerseRow] = []
+    @State private var chapterRowIndexByVerseNumber: [Int: Int] = [:]
+    @State private var visibleVerseTracker = VisibleVerseTracker()
 
     @Binding var windowOpened: Bool
     let onProjectVerse: (Int) -> Void
@@ -170,10 +194,8 @@ struct VerseRowView: View {
         AnyShapeStyle(Color(nsColor: .controlBackgroundColor).opacity(0.94))
     }
 
-    private func verseCardActiveTint(isActive: Bool) -> Color {
-        isActive
-            ? Color.accentColor.opacity(0.10)
-            : .clear
+    private var verseCardActiveTint: Color {
+        Color.accentColor.opacity(0.10)
     }
 
     private func verseCardBorder(isActive: Bool) -> Color {
@@ -182,30 +204,12 @@ struct VerseRowView: View {
             : Color.primary.opacity(0.12)
     }
 
-    private var chapterRows: [ChapterVerseRow] {
-        let primaryVersesByNumber = Dictionary(
-            uniqueKeysWithValues: verseRowViewModel.verseRowData.primaryChapter.map { ($0.verseNumber, $0) }
-        )
-        let secondaryVersesByNumber = Dictionary(
-            uniqueKeysWithValues: verseRowViewModel.verseRowData.secondaryChapter.map { ($0.verseNumber, $0) }
-        )
+    private var shouldAnimateVerseSelection: Bool {
+        !reduceMotion && displayVerseCount <= 120
+    }
 
-        let verseNumbers: [Int]
-        if showOnlyPrimary {
-            verseNumbers = primaryVersesByNumber.keys.sorted()
-        } else {
-            verseNumbers = Set(primaryVersesByNumber.keys)
-                .union(secondaryVersesByNumber.keys)
-                .sorted()
-        }
-
-        return verseNumbers.map { verseNumber in
-            ChapterVerseRow(
-                verseNumber: verseNumber,
-                primary: primaryVersesByNumber[verseNumber],
-                secondary: showOnlyPrimary ? nil : secondaryVersesByNumber[verseNumber]
-            )
-        }
+    private var shouldAnimateVerseScroll: Bool {
+        !reduceMotion && displayVerseCount <= 120
     }
 
     private var displayVerseCount: Int {
@@ -218,7 +222,7 @@ struct VerseRowView: View {
     }
 
     private func indexForVerseNumber(_ verseNumber: Int) -> Int? {
-        chapterRows.firstIndex(where: { $0.verseNumber == verseNumber })
+        chapterRowIndexByVerseNumber[verseNumber]
     }
 
     private var clampedCurrentIndex: Int {
@@ -234,6 +238,49 @@ struct VerseRowView: View {
         }
 
         return 0
+    }
+
+    private func rebuildChapterRows() {
+        var primaryVersesByNumber: [Int: AVerse] = [:]
+        primaryVersesByNumber.reserveCapacity(verseRowViewModel.verseRowData.primaryChapter.count)
+        for verse in verseRowViewModel.verseRowData.primaryChapter {
+            primaryVersesByNumber[verse.verseNumber] = verse
+        }
+
+        var secondaryVersesByNumber: [Int: AVerse] = [:]
+        secondaryVersesByNumber.reserveCapacity(verseRowViewModel.verseRowData.secondaryChapter.count)
+        for verse in verseRowViewModel.verseRowData.secondaryChapter {
+            secondaryVersesByNumber[verse.verseNumber] = verse
+        }
+
+        let verseNumbers: [Int]
+        if showOnlyPrimary {
+            verseNumbers = primaryVersesByNumber.keys.sorted()
+        } else {
+            verseNumbers = Set(primaryVersesByNumber.keys)
+                .union(secondaryVersesByNumber.keys)
+                .sorted()
+        }
+
+        var rebuiltRows: [ChapterVerseRow] = []
+        rebuiltRows.reserveCapacity(verseNumbers.count)
+
+        var rebuiltIndexByVerseNumber: [Int: Int] = [:]
+        rebuiltIndexByVerseNumber.reserveCapacity(verseNumbers.count)
+
+        for (index, verseNumber) in verseNumbers.enumerated() {
+            rebuiltRows.append(
+                ChapterVerseRow(
+                    verseNumber: verseNumber,
+                    primary: primaryVersesByNumber[verseNumber],
+                    secondary: showOnlyPrimary ? nil : secondaryVersesByNumber[verseNumber]
+                )
+            )
+            rebuiltIndexByVerseNumber[verseNumber] = index
+        }
+
+        chapterRows = rebuiltRows
+        chapterRowIndexByVerseNumber = rebuiltIndexByVerseNumber
     }
 
     // MARK: - Body
@@ -272,10 +319,10 @@ struct VerseRowView: View {
                                 )
                                 .id(index)
                                 .onAppear {
-                                    visibleVerseKeys.insert(currentVisibleKey(index: index))
+                                    visibleVerseTracker.insert(currentVisibleKey(index: index))
                                 }
                                 .onDisappear {
-                                    visibleVerseKeys.remove(currentVisibleKey(index: index))
+                                    visibleVerseTracker.remove(currentVisibleKey(index: index))
                                 }
                             } else {
                                 // Full mode: Primary verse, verse number, secondary verse
@@ -287,10 +334,10 @@ struct VerseRowView: View {
                                 )
                                 .id(index)
                                 .onAppear {
-                                    visibleVerseKeys.insert(currentVisibleKey(index: index))
+                                    visibleVerseTracker.insert(currentVisibleKey(index: index))
                                 }
                                 .onDisappear {
-                                    visibleVerseKeys.remove(currentVisibleKey(index: index))
+                                    visibleVerseTracker.remove(currentVisibleKey(index: index))
                                 }
                                 verseNumberButton(
                                     index: index,
@@ -306,7 +353,8 @@ struct VerseRowView: View {
                             }
                         }
                         .onChange(of: verseRowViewModel.verseRowData.id) { _, _ in
-                            visibleVerseKeys.removeAll()
+                            rebuildChapterRows()
+                            visibleVerseTracker.removeAll()
                             updateSelectionAndScroll(proxy: value)
                         }
                         .onChange(of: verseTargetModel.verseQuery.title) { _, _ in
@@ -315,11 +363,12 @@ struct VerseRowView: View {
                         }
                         // this scroll is needed when switching between books/chapters
                         .onChange(of: verseTargetModel.verseQuery.bookAndChapter) { _, _ in
-                            visibleVerseKeys.removeAll()
+                            visibleVerseTracker.removeAll()
                             updateSelectionAndScroll(proxy: value)
                         }
                         .onChange(of: showOnlyPrimary) { _, _ in
-                            visibleVerseKeys.removeAll()
+                            rebuildChapterRows()
+                            visibleVerseTracker.removeAll()
                             updateSelectionAndScroll(proxy: value)
                         }
                     }
@@ -330,7 +379,8 @@ struct VerseRowView: View {
                 .onAppear {
                     // First load path: ensure initial query selection gets the same
                     // scroll behavior as subsequent query changes.
-                    visibleVerseKeys.removeAll()
+                    rebuildChapterRows()
+                    visibleVerseTracker.removeAll()
                     updateSelectionAndScroll(proxy: value)
                 }
                 .onTapGesture {
@@ -343,6 +393,7 @@ struct VerseRowView: View {
         .focusEffectDisabled()
         .onAppear {
             // Initialize on first appearance
+            rebuildChapterRows()
             maxVersesOnCurrentChapter = displayVerseCount
             currentIndex = clampedCurrentIndex
             refreshAvailableBibles()
@@ -428,16 +479,18 @@ struct VerseRowView: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(verseCardFill())
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(verseCardActiveTint(isActive: isActive))
-            )
+            .overlay {
+                if isActive {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(verseCardActiveTint)
+                }
+            }
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .stroke(verseCardBorder(isActive: isActive), lineWidth: 1)
             )
             .animation(
-                reduceMotion ? nil : .easeInOut(duration: 0.14),
+                shouldAnimateVerseSelection ? .easeInOut(duration: 0.14) : nil,
                 value: isActive
             )
     }
@@ -467,16 +520,18 @@ struct VerseRowView: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(verseCardFill())
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(verseCardActiveTint(isActive: isActive))
-        )
+        .overlay {
+            if isActive {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(verseCardActiveTint)
+            }
+        }
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(verseCardBorder(isActive: isActive), lineWidth: 1)
         )
         .animation(
-            reduceMotion ? nil : .easeInOut(duration: 0.14),
+            shouldAnimateVerseSelection ? .easeInOut(duration: 0.14) : nil,
             value: isActive
         )
         .accessibilityLabel("Verse \(verseNumber): \(text)")
@@ -507,7 +562,7 @@ struct VerseRowView: View {
         }
         .buttonStyle(PlainButtonStyle())
         .animation(
-            reduceMotion ? nil : .easeInOut(duration: 0.14),
+            shouldAnimateVerseSelection ? .easeInOut(duration: 0.14) : nil,
             value: isActive
         )
         .accessibilityLabel("Verse \(verseNumber)")
@@ -595,10 +650,10 @@ struct VerseRowView: View {
             let targetKey = currentVisibleKey(index: currentIndex)
             await Task.yield()
             await Task.yield()
-            if visibleVerseKeys.contains(targetKey) {
+            if visibleVerseTracker.contains(targetKey) {
                 return
             }
-            if reduceMotion {
+            if !shouldAnimateVerseScroll {
                 proxy.scrollTo(currentIndex, anchor: .center)
             } else {
                 withAnimation(.easeInOut(duration: 0.2)) {
@@ -608,7 +663,7 @@ struct VerseRowView: View {
             // Lazy grids can settle in two phases for distant targets.
             await Task.yield()
             await Task.yield()
-            if !visibleVerseKeys.contains(targetKey) {
+            if !visibleVerseTracker.contains(targetKey) {
                 proxy.scrollTo(currentIndex, anchor: .center)
             }
         }

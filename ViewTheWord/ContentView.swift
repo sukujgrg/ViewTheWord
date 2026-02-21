@@ -540,7 +540,7 @@ private struct SearchResultRowView: View {
         .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(.thinMaterial)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.94))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
