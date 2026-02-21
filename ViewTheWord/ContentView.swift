@@ -110,7 +110,7 @@ struct BooksListView: View {
     @Binding var selectedBook: String?
     @Binding var chapterCount: Int32
 
-    private let allBooks = Array(bibleBooks.keys)
+    private let allBooks = bibleBookNames
     private let oldTestamentHeaderColor: Color = .brown
     private let newTestamentHeaderColor: Color = .mint
 
@@ -118,7 +118,7 @@ struct BooksListView: View {
         ScrollViewReader { proxy in
             List(selection: $selectedBook) {
                 Section {
-                    ForEach(Array(bibleBooks.keys.prefix(39)), id: \.self) { bookName in
+                    ForEach(Array(bibleBookNames.prefix(39)), id: \.self) { bookName in
                         NavigationLink(value: bookName) {
                             HStack {
                                 Text(bookName)
@@ -135,7 +135,7 @@ struct BooksListView: View {
                 }
 
                 Section {
-                    ForEach(Array(bibleBooks.keys.suffix(27)), id: \.self) { bookName in
+                    ForEach(Array(bibleBookNames.suffix(27)), id: \.self) { bookName in
                         NavigationLink(value: bookName) {
                             HStack {
                                 Text(bookName)
@@ -571,6 +571,7 @@ struct MainContentView: View {
     let isBookmarked: (VerseReference) -> Bool
 
     @FocusState private var isSearchFieldFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject var verseRowViewModel: VerseRowViewModel
     @AppStorage(AppDefaultsKey.transparentBackground) private var transparentBackground = false
     @AppStorage(AppDefaultsKey.preferDarkMode) private var preferDarkMode = false
@@ -578,7 +579,7 @@ struct MainContentView: View {
     @AppStorage(AppDefaultsKey.projectorReadingDirection) private var projectorReadingDirectionRaw = ProjectorReadingDirectionMode.auto.rawValue
 
     var body: some View {
-        VStack {
+        VStack(spacing: 8) {
             ProjectionControlsRowView(
                 transparentBackground: $transparentBackground,
                 projectorTextAlignmentRaw: $projectorTextAlignmentRaw,
@@ -590,56 +591,74 @@ struct MainContentView: View {
                 compactSearchControls
             }
 
-            // Show search results if available
-            if let results = searchResults, let query = searchQuery {
-                SearchResultsView(
-                    searchQuery: query,
-                    primaryResults: results.primary,
-                    secondaryResults: results.secondary,
-                    showOnlyPrimary: showOnlyPrimary,
-                    onVerseSelected: onSearchVerseSelected
-                )
-            } else if verseRowViewModel.verseRowData.primaryChapter.isEmpty {
-                // Show welcome message when no verse is loaded
-                VStack(spacing: 16) {
-                    Spacer()
-                    Image(systemName: "book.pages")
-                        .font(.system(size: 60))
-                        .foregroundStyle(.secondary)
-                    Text("View The Word")
-                        .font(.title)
-                        .fontWeight(.semibold)
-                    Text("Select a book and chapter from the sidebar,\nor type a verse reference above")
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                    Text("Example: John 3:16  or  s: his only begotten son")
-                        .font(.callout)
-                        .foregroundStyle(.tertiary)
-                    Spacer()
+            ZStack(alignment: .top) {
+                // Show search results if available
+                if let results = searchResults, let query = searchQuery {
+                    SearchResultsView(
+                        searchQuery: query,
+                        primaryResults: results.primary,
+                        secondaryResults: results.secondary,
+                        showOnlyPrimary: showOnlyPrimary,
+                        onVerseSelected: onSearchVerseSelected
+                    )
+                    .transition(.opacity)
+                } else if verseRowViewModel.verseRowData.primaryChapter.isEmpty {
+                    // Show welcome message when no verse is loaded
+                    VStack(spacing: 16) {
+                        Spacer()
+                        Image(systemName: "book.pages")
+                            .font(.system(size: 60))
+                            .foregroundStyle(.secondary)
+                        Text("View The Word")
+                            .font(.title)
+                            .fontWeight(.semibold)
+                        Text("Select a book and chapter from the sidebar,\nor type a verse reference above")
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        Text("Example: John 3:16  or  s: his only begotten son")
+                            .font(.callout)
+                            .foregroundStyle(.tertiary)
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity)
+                    .transition(.opacity)
+                } else {
+                    VerseRowView(
+                        windowOpened: $windowOpened,
+                        onProjectVerse: { index in
+                            onRowVerseProject(index)
+                        },
+                        onStopProjection: {
+                            closeProjector()
+                        },
+                        onAddBookmark: onAddBookmark,
+                        onRemoveBookmark: onRemoveBookmark,
+                        isBookmarked: isBookmarked
+                    )
+                    .focused($focusedColumn, equals: .verses)
+                    .transition(.opacity)
                 }
-                .frame(maxWidth: .infinity)
-            } else {
-                VerseRowView(
-                    windowOpened: $windowOpened,
-                    onProjectVerse: { index in
-                        onRowVerseProject(index)
-                    },
-                    onStopProjection: {
-                        closeProjector()
-                    },
-                    onAddBookmark: onAddBookmark,
-                    onRemoveBookmark: onRemoveBookmark,
-                    isBookmarked: isBookmarked
-                )
-                .focused($focusedColumn, equals: .verses)
             }
-
-            Spacer()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .animation(
+                reduceMotion ? nil : .easeInOut(duration: 0.16),
+                value: contentStateKey
+            )
         }
         .frame(minWidth: 600, maxWidth: .infinity, minHeight: 600, maxHeight: .infinity)
         .padding()
         .onExitCommand(perform: closeProjector)
+    }
+
+    private var contentStateKey: Int {
+        if searchResults != nil && searchQuery != nil {
+            return 1
+        }
+        if verseRowViewModel.verseRowData.primaryChapter.isEmpty {
+            return 2
+        }
+        return 3
     }
 
     private var regularSearchControls: some View {
@@ -782,6 +801,7 @@ enum NavigationColumn: Hashable {
 @MainActor
 struct MainView: View {
     @EnvironmentObject var verseTargetModel: VerseTargetModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject var verseRowViewModel: VerseRowViewModel = .init()
     @StateObject var projectorViewModel: ProjectorViewModel = .init()
 
@@ -845,8 +865,19 @@ struct MainView: View {
                     guard let selectedBook else {
                         return
                     }
-                    ask = "\(selectedBook) \(chapter)"
-                    processSearchQuery(updateRowView: true, project: false, recordHistory: false)
+
+                    guard let reference = VerseReference(book: selectedBook, chapter: chapter, verse: 1) else {
+                        ask = "\(selectedBook) \(chapter)"
+                        processSearchQuery(updateRowView: true, project: false, recordHistory: false)
+                        return
+                    }
+
+                    navigateToReference(
+                        reference,
+                        updateRowView: true,
+                        project: false,
+                        recordHistory: false
+                    )
                 },
                 bookmarkEntries: bookmarkStore.entries,
                 onSelectBookmarkItem: { entry in
@@ -995,7 +1026,10 @@ struct MainView: View {
             searchTask?.cancel()
             searchTask = nil
         }
-        .animation(.easeInOut(duration: 0.3), value: selectedBook)
+        .animation(
+            reduceMotion ? nil : .easeInOut(duration: 0.2),
+            value: selectedBook
+        )
         .applyWindowSurfaceBackground()
     }
     

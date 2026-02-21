@@ -31,6 +31,7 @@ private struct ChapterVerseRow {
 
 struct VerseRowView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject var verseTargetModel: VerseTargetModel
     @EnvironmentObject var verseRowViewModel: VerseRowViewModel
     @EnvironmentObject var projectorViewModel: ProjectorViewModel
@@ -238,8 +239,8 @@ struct VerseRowView: View {
     // MARK: - Body
 
     var body: some View {
-        if let headerVerse {
-            VStack(spacing: 0) {
+        VStack(spacing: 4) {
+            if let headerVerse {
                 headerView(bookName: headerVerse.bookName, chapterNumber: headerVerse.chapterNumber)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
@@ -252,88 +253,89 @@ struct VerseRowView: View {
                             .stroke(.quaternary, lineWidth: 1)
                     )
                     .padding(.horizontal, 8)
-                    .padding(.top, 4)
+                    .zIndex(1)
             }
-        }
-        ScrollViewReader { value in
-            ScrollView {
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
-                    let count = displayVerseCount
-                    ForEach(0 ..< count, id: \.self) { index in
-                        let row = chapterRows[index]
-                        if showOnlyPrimary {
-                            // Show only primary mode: Verse with superscript number
-                            verseCellWithSuperscript(
-                                text: row.primary?.verse ?? "\u{200c}",
-                                index: index,
-                                verseNumber: row.verseNumber,
-                                isActive: isCurrentVerse(index)
-                            )
-                            .id(index)
-                            .onAppear {
-                                visibleVerseKeys.insert(currentVisibleKey(index: index))
+
+            ScrollViewReader { value in
+                ScrollView {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
+                        let count = displayVerseCount
+                        ForEach(0 ..< count, id: \.self) { index in
+                            let row = chapterRows[index]
+                            if showOnlyPrimary {
+                                // Show only primary mode: Verse with superscript number
+                                verseCellWithSuperscript(
+                                    text: row.primary?.verse ?? "\u{200c}",
+                                    index: index,
+                                    verseNumber: row.verseNumber,
+                                    isActive: isCurrentVerse(index)
+                                )
+                                .id(index)
+                                .onAppear {
+                                    visibleVerseKeys.insert(currentVisibleKey(index: index))
+                                }
+                                .onDisappear {
+                                    visibleVerseKeys.remove(currentVisibleKey(index: index))
+                                }
+                            } else {
+                                // Full mode: Primary verse, verse number, secondary verse
+                                verseCell(
+                                    text: row.primary?.verse ?? "\u{200c}",
+                                    index: index,
+                                    isActive: isCurrentVerse(index),
+                                    copySource: .primary
+                                )
+                                .id(index)
+                                .onAppear {
+                                    visibleVerseKeys.insert(currentVisibleKey(index: index))
+                                }
+                                .onDisappear {
+                                    visibleVerseKeys.remove(currentVisibleKey(index: index))
+                                }
+                                verseNumberButton(
+                                    index: index,
+                                    verseNumber: row.verseNumber,
+                                    isActive: isCurrentVerse(index)
+                                )
+                                verseCell(
+                                    text: row.secondary?.verse ?? "\u{200c}",
+                                    index: index,
+                                    isActive: isCurrentVerse(index),
+                                    copySource: .secondary
+                                )
                             }
-                            .onDisappear {
-                                visibleVerseKeys.remove(currentVisibleKey(index: index))
-                            }
-                        } else {
-                            // Full mode: Primary verse, verse number, secondary verse
-                            verseCell(
-                                text: row.primary?.verse ?? "\u{200c}",
-                                index: index,
-                                isActive: isCurrentVerse(index),
-                                copySource: .primary
-                            )
-                            .id(index)
-                            .onAppear {
-                                visibleVerseKeys.insert(currentVisibleKey(index: index))
-                            }
-                            .onDisappear {
-                                visibleVerseKeys.remove(currentVisibleKey(index: index))
-                            }
-                            verseNumberButton(
-                                index: index,
-                                verseNumber: row.verseNumber,
-                                isActive: isCurrentVerse(index)
-                            )
-                            verseCell(
-                                text: row.secondary?.verse ?? "\u{200c}",
-                                index: index,
-                                isActive: isCurrentVerse(index),
-                                copySource: .secondary
-                            )
+                        }
+                        .onChange(of: verseRowViewModel.verseRowData.id) { _, _ in
+                            visibleVerseKeys.removeAll()
+                            updateSelectionAndScroll(proxy: value)
+                        }
+                        .onChange(of: verseTargetModel.verseQuery.title) { _, _ in
+                            currentIndex = clampedCurrentIndex
+                            scrollToCurrentVerse(proxy: value)
+                        }
+                        // this scroll is needed when switching between books/chapters
+                        .onChange(of: verseTargetModel.verseQuery.bookAndChapter) { _, _ in
+                            visibleVerseKeys.removeAll()
+                            updateSelectionAndScroll(proxy: value)
+                        }
+                        .onChange(of: showOnlyPrimary) { _, _ in
+                            visibleVerseKeys.removeAll()
+                            updateSelectionAndScroll(proxy: value)
                         }
                     }
-                    .onChange(of: verseRowViewModel.verseRowData.id) { _, _ in
-                        visibleVerseKeys.removeAll()
-                        updateSelectionAndScroll(proxy: value)
-                    }
-                    .onChange(of: verseTargetModel.verseQuery.title) { _, _ in
-                        currentIndex = clampedCurrentIndex
-                        scrollToCurrentVerse(proxy: value)
-                    }
-                    // this scroll is needed when switching between books/chapters
-                    .onChange(of: verseTargetModel.verseQuery.bookAndChapter) { _, _ in
-                        visibleVerseKeys.removeAll()
-                        updateSelectionAndScroll(proxy: value)
-                    }
-                    .onChange(of: showOnlyPrimary) { _, _ in
-                        visibleVerseKeys.removeAll()
-                        updateSelectionAndScroll(proxy: value)
-                    }
+                    .id(showOnlyPrimary)
                 }
-                .id(showOnlyPrimary)
-            }
-            .padding(.horizontal)
-            .contentShape(Rectangle())
-            .onAppear {
-                // First load path: ensure initial query selection gets the same
-                // scroll behavior as subsequent query changes.
-                visibleVerseKeys.removeAll()
-                updateSelectionAndScroll(proxy: value)
-            }
-            .onTapGesture {
-                // Make sure the view can receive keyboard events
+                .padding(.horizontal)
+                .contentShape(Rectangle())
+                .onAppear {
+                    // First load path: ensure initial query selection gets the same
+                    // scroll behavior as subsequent query changes.
+                    visibleVerseKeys.removeAll()
+                    updateSelectionAndScroll(proxy: value)
+                }
+                .onTapGesture {
+                    // Make sure the view can receive keyboard events
+                }
             }
         }
         .frame(maxHeight: .infinity)
@@ -434,6 +436,10 @@ struct VerseRowView: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .stroke(verseCardBorder(isActive: isActive), lineWidth: 1)
             )
+            .animation(
+                reduceMotion ? nil : .easeInOut(duration: 0.14),
+                value: isActive
+            )
     }
 
     @ViewBuilder
@@ -469,6 +475,10 @@ struct VerseRowView: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(verseCardBorder(isActive: isActive), lineWidth: 1)
         )
+        .animation(
+            reduceMotion ? nil : .easeInOut(duration: 0.14),
+            value: isActive
+        )
         .accessibilityLabel("Verse \(verseNumber): \(text)")
         .accessibilityHint("Tap to project this verse to the projector window")
     }
@@ -496,6 +506,10 @@ struct VerseRowView: View {
             verseContextMenuItems(for: index, source: .verseNumber)
         }
         .buttonStyle(PlainButtonStyle())
+        .animation(
+            reduceMotion ? nil : .easeInOut(duration: 0.14),
+            value: isActive
+        )
         .accessibilityLabel("Verse \(verseNumber)")
         .accessibilityHint("Project this verse to the projector window")
     }
@@ -584,8 +598,12 @@ struct VerseRowView: View {
             if visibleVerseKeys.contains(targetKey) {
                 return
             }
-            withAnimation(.easeInOut(duration: 0.2)) {
+            if reduceMotion {
                 proxy.scrollTo(currentIndex, anchor: .center)
+            } else {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    proxy.scrollTo(currentIndex, anchor: .center)
+                }
             }
             // Lazy grids can settle in two phases for distant targets.
             await Task.yield()

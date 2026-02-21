@@ -258,7 +258,7 @@ class SearchQuery {
     }
 
     func matchAsk(bookName: String) -> String? {
-        for book in bibleBooks.keys {
+        for book in bibleBookNames {
             if book.range(of: bookName, options: [.anchored, .caseInsensitive]) != nil {
                 return book
             }
