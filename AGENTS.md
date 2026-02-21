@@ -58,6 +58,9 @@ This document is the current source of truth for this repo.
 - Use monotonic token (`queryValidationToken`) for deterministic invalid-query feedback.
 - Do not use “flag + async reset” hacks for sidebar sync.
 - Use explicit programmatic guard (`programmaticChapterSelection`) to prevent onChange feedback loops.
+- Chapter selection must not round-trip through text parsing:
+  - chapter click should navigate directly via `VerseReference(book, chapter, verse: 1)`
+  - avoid parser involvement in this flow to prevent stale/ambiguous selection state
 - Avoid `Task.detached` for UI-owned workflows unless isolation boundaries are explicit and required.
 
 ### SwiftUI safety lessons
