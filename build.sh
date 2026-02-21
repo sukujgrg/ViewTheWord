@@ -2,12 +2,52 @@
 
 set -euo pipefail
 
+BUILD_CURRENT_ARCH_ONLY=false
+
+usage() {
+  cat <<'EOF'
+Usage: ./build.sh [--current-arch] [--help]
+
+Options:
+  --current-arch  Build only for the current machine architecture.
+  --help          Show this help text.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --current-arch)
+      BUILD_CURRENT_ARCH_ONLY=true
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
 TMP="$(mktemp -d "${TMPDIR%/}/ViewTheWord.XXXXXX")"
 ARCHIVE_PATH="$TMP/ViewTheWord.xcarchive"
 EXPORT_PLIST="$TMP/ViewTheWord-export.plist"
 EXPORT_PATH="$HOME/Applications"
 
 mkdir -p "$EXPORT_PATH"
+
+CURRENT_ARCH="$(uname -m)"
+BUILD_ARGS=()
+
+if [[ "$BUILD_CURRENT_ARCH_ONLY" == true ]]; then
+  BUILD_ARGS+=(
+    ARCHS="$CURRENT_ARCH"
+    ONLY_ACTIVE_ARCH=YES
+  )
+fi
 
 xcodebuild \
   -project ViewTheWord.xcodeproj \
@@ -16,7 +56,8 @@ xcodebuild \
   -archivePath "$ARCHIVE_PATH" \
   archive \
   STRIP_INSTALLED_PRODUCT=YES \
-  COPY_PHASE_STRIP=YES
+  COPY_PHASE_STRIP=YES \
+  "${BUILD_ARGS[@]}"
 
 
 cat > "$EXPORT_PLIST" <<'PLIST'
