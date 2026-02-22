@@ -14,6 +14,7 @@ enum AppWindowTitle {
 enum AppDefaultsKey {
     static let transparentBackground = "transparentBackground"
     static let preferDarkMode = "preferDarkMode"
+    static let verseRowFontSize = "verseRowFontSize"
     static let projectorTextAlignment = "projectorTextAlignment"
     static let projectorReadingDirection = "projectorReadingDirection"
     static let primaryBibleName = "PrimaryBibleName"

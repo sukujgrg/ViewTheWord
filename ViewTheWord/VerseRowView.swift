@@ -62,6 +62,7 @@ struct VerseRowView: View {
 
     @AppStorage(AppDefaultsKey.primaryBibleName) private var primaryBibleName: String = bundledPrimaryBibleUrl?.absoluteString ?? ""
     @AppStorage(AppDefaultsKey.secondaryBibleName) private var secondaryBibleName: String = bundledSecondaryBibleUrl?.absoluteString ?? ""
+    @AppStorage(AppDefaultsKey.verseRowFontSize) private var verseRowFontSize = 17.0
 
     @State private var currentIndex: Int = -1
     @State private var maxVersesOnCurrentChapter: Int = -1
@@ -69,6 +70,9 @@ struct VerseRowView: View {
     @State private var chapterRows: [ChapterVerseRow] = []
     @State private var chapterRowIndexByVerseNumber: [Int: Int] = [:]
     @State private var visibleVerseTracker = VisibleVerseTracker()
+    @State private var hoveredRowIndex: Int?
+    @State private var hoveredBookmarkActionRowIndex: Int?
+    @State private var hoveredCopyActionRowIndex: Int?
 
     @Binding var windowOpened: Bool
     let onProjectVerse: (Int) -> Void
@@ -78,20 +82,6 @@ struct VerseRowView: View {
     let isBookmarked: (VerseReference) -> Bool
 
     // MARK: - Computed Properties
-
-    private var columns: [GridItem] {
-        if showOnlyPrimary {
-            return [
-                GridItem(.flexible())
-            ]
-        } else {
-            return [
-                GridItem(.flexible()),
-                GridItem(.fixed(60)),
-                GridItem(.flexible())
-            ]
-        }
-    }
 
     private var isVerseProjected: Bool {
         windowOpened && projectedReference != nil
@@ -189,21 +179,6 @@ struct VerseRowView: View {
         }
     }
 
-    private func verseCardFill() -> AnyShapeStyle {
-        // Favor readability: mostly opaque semantic surface with just a subtle blend.
-        AnyShapeStyle(Color(nsColor: .controlBackgroundColor).opacity(0.94))
-    }
-
-    private var verseCardActiveTint: Color {
-        Color.accentColor.opacity(0.10)
-    }
-
-    private func verseCardBorder(isActive: Bool) -> Color {
-        isActive
-            ? Color.accentColor.opacity(0.36)
-            : Color.primary.opacity(0.12)
-    }
-
     private var shouldAnimateVerseSelection: Bool {
         !reduceMotion && displayVerseCount <= 120
     }
@@ -214,6 +189,32 @@ struct VerseRowView: View {
 
     private var displayVerseCount: Int {
         chapterRows.count
+    }
+
+    private var rowCornerRadius: CGFloat { 10 }
+
+    private var rowHorizontalPadding: CGFloat { 10 }
+
+    private var verseTextFontSize: CGFloat {
+        CGFloat(verseRowFontSize)
+    }
+
+    private var verseNumberFontSize: CGFloat {
+        max(11, verseTextFontSize * 0.72)
+    }
+
+    private func rowBackgroundColor(index: Int, isActive: Bool, isHovered: Bool) -> Color {
+        if isActive {
+            return Color.accentColor.opacity(0.11)
+        }
+        if isHovered {
+            return Color.primary.opacity(0.07)
+        }
+        return index.isMultiple(of: 2) ? Color.primary.opacity(0.03) : Color.clear
+    }
+
+    private func rowBorderColor(isActive: Bool) -> Color {
+        isActive ? Color.accentColor.opacity(0.38) : Color.primary.opacity(0.10)
     }
 
     private var headerVerse: AVerse? {
@@ -305,18 +306,11 @@ struct VerseRowView: View {
 
             ScrollViewReader { value in
                 ScrollView {
-                    LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
+                    LazyVStack(alignment: .leading, spacing: 8) {
                         let count = displayVerseCount
                         ForEach(0 ..< count, id: \.self) { index in
                             let row = chapterRows[index]
-                            if showOnlyPrimary {
-                                // Show only primary mode: Verse with superscript number
-                                verseCellWithSuperscript(
-                                    text: row.primary?.verse ?? "\u{200c}",
-                                    index: index,
-                                    verseNumber: row.verseNumber,
-                                    isActive: isCurrentVerse(index)
-                                )
+                            verseRow(index: index, row: row, isActive: isCurrentVerse(index))
                                 .id(index)
                                 .onAppear {
                                     visibleVerseTracker.insert(currentVisibleKey(index: index))
@@ -324,67 +318,44 @@ struct VerseRowView: View {
                                 .onDisappear {
                                     visibleVerseTracker.remove(currentVisibleKey(index: index))
                                 }
-                            } else {
-                                // Full mode: Primary verse, verse number, secondary verse
-                                verseCell(
-                                    text: row.primary?.verse ?? "\u{200c}",
-                                    index: index,
-                                    isActive: isCurrentVerse(index),
-                                    copySource: .primary
-                                )
-                                .id(index)
-                                .onAppear {
-                                    visibleVerseTracker.insert(currentVisibleKey(index: index))
-                                }
-                                .onDisappear {
-                                    visibleVerseTracker.remove(currentVisibleKey(index: index))
-                                }
-                                verseNumberButton(
-                                    index: index,
-                                    verseNumber: row.verseNumber,
-                                    isActive: isCurrentVerse(index)
-                                )
-                                verseCell(
-                                    text: row.secondary?.verse ?? "\u{200c}",
-                                    index: index,
-                                    isActive: isCurrentVerse(index),
-                                    copySource: .secondary
-                                )
-                            }
-                        }
-                        .onChange(of: verseRowViewModel.verseRowData.id) { _, _ in
-                            rebuildChapterRows()
-                            visibleVerseTracker.removeAll()
-                            updateSelectionAndScroll(proxy: value)
-                        }
-                        .onChange(of: verseTargetModel.verseQuery.title) { _, _ in
-                            currentIndex = clampedCurrentIndex
-                            scrollToCurrentVerse(proxy: value)
-                        }
-                        // this scroll is needed when switching between books/chapters
-                        .onChange(of: verseTargetModel.verseQuery.bookAndChapter) { _, _ in
-                            visibleVerseTracker.removeAll()
-                            updateSelectionAndScroll(proxy: value)
-                        }
-                        .onChange(of: showOnlyPrimary) { _, _ in
-                            rebuildChapterRows()
-                            visibleVerseTracker.removeAll()
-                            updateSelectionAndScroll(proxy: value)
                         }
                     }
+                    .padding(.horizontal, rowHorizontalPadding)
+                    .padding(.vertical, 2)
                     .id(showOnlyPrimary)
                 }
-                .padding(.horizontal)
                 .contentShape(Rectangle())
                 .onAppear {
                     // First load path: ensure initial query selection gets the same
                     // scroll behavior as subsequent query changes.
                     rebuildChapterRows()
+                    hoveredRowIndex = nil
                     visibleVerseTracker.removeAll()
                     updateSelectionAndScroll(proxy: value)
                 }
                 .onTapGesture {
                     // Make sure the view can receive keyboard events
+                }
+                .onChange(of: verseRowViewModel.verseRowData.id) { _, _ in
+                    rebuildChapterRows()
+                    hoveredRowIndex = nil
+                    visibleVerseTracker.removeAll()
+                    updateSelectionAndScroll(proxy: value)
+                }
+                .onChange(of: verseTargetModel.verseQuery.title) { _, _ in
+                    currentIndex = clampedCurrentIndex
+                    scrollToCurrentVerse(proxy: value)
+                }
+                // this scroll is needed when switching between books/chapters
+                .onChange(of: verseTargetModel.verseQuery.bookAndChapter) { _, _ in
+                    visibleVerseTracker.removeAll()
+                    updateSelectionAndScroll(proxy: value)
+                }
+                .onChange(of: showOnlyPrimary) { _, _ in
+                    rebuildChapterRows()
+                    hoveredRowIndex = nil
+                    visibleVerseTracker.removeAll()
+                    updateSelectionAndScroll(proxy: value)
                 }
             }
         }
@@ -396,6 +367,7 @@ struct VerseRowView: View {
             rebuildChapterRows()
             maxVersesOnCurrentChapter = displayVerseCount
             currentIndex = clampedCurrentIndex
+            hoveredRowIndex = nil
             refreshAvailableBibles()
         }
         .onChange(of: primaryBibleName) { _, _ in
@@ -467,106 +439,173 @@ struct VerseRowView: View {
     // MARK: - View Components
 
     @ViewBuilder
-    private func verseCell(text: String, index: Int, isActive: Bool, copySource: VerseCopySource) -> some View {
-        Text(text)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .onTapGesture { requestProjection(at: index) }
-            .contextMenu {
-                verseContextMenuItems(for: index, source: copySource)
+    private func verseRow(index: Int, row: ChapterVerseRow, isActive: Bool) -> some View {
+        let isHovered = hoveredRowIndex == index
+        let showsQuickActions = isHovered || isActive
+        let contextCopySource: VerseCopySource = showOnlyPrimary ? .primary : .verseNumber
+
+        HStack(alignment: .top, spacing: 12) {
+            verseNumberGutter(verseNumber: row.verseNumber, isActive: isActive)
+
+            verseTextContent(text: row.primary?.verse ?? "\u{200c}")
+
+            if !showOnlyPrimary {
+                Rectangle()
+                    .fill(Color.secondary.opacity(0.18))
+                    .frame(width: 1)
+                    .padding(.vertical, 2)
+
+                verseTextContent(text: row.secondary?.verse ?? "\u{200c}")
             }
-            .padding()
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(verseCardFill())
-            )
-            .overlay {
-                if isActive {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(verseCardActiveTint)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: rowCornerRadius, style: .continuous)
+                .fill(rowBackgroundColor(index: index, isActive: isActive, isHovered: isHovered))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: rowCornerRadius, style: .continuous)
+                .stroke(rowBorderColor(isActive: isActive), lineWidth: isActive ? 1.2 : 1)
+        )
+        .overlay(alignment: .leading) {
+            if isActive {
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(Color.accentColor)
+                    .frame(width: 3)
+                    .padding(.leading, 4)
+                .padding(.vertical, 6)
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            rowQuickActions(index: index, isVisible: showsQuickActions)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: rowCornerRadius, style: .continuous))
+        .onTapGesture {
+            requestProjection(at: index)
+        }
+        .contextMenu {
+            verseContextMenuItems(for: index, source: contextCopySource)
+        }
+        .onHover { isHovering in
+            if isHovering {
+                hoveredRowIndex = index
+            } else if hoveredRowIndex == index {
+                hoveredRowIndex = nil
+            }
+        }
+        .animation(
+            shouldAnimateVerseSelection ? .easeInOut(duration: 0.14) : nil,
+            value: isActive
+        )
+        .accessibilityLabel("Verse \(row.verseNumber)")
+        .accessibilityHint("Click to project this verse to the projector window")
+    }
+
+    @ViewBuilder
+    private func verseNumberGutter(verseNumber: Int, isActive: Bool) -> some View {
+        Text(String(verseNumber))
+            .font(.system(size: verseNumberFontSize, weight: .semibold, design: .rounded))
+            .monospacedDigit()
+            .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+            .frame(width: 36, alignment: .trailing)
+            .padding(.top, 2)
+            .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private func verseTextContent(text: String) -> some View {
+        Text(text)
+            .font(.system(size: verseTextFontSize))
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func rowQuickActions(index: Int, isVisible: Bool) -> some View {
+        let copySource: VerseCopySource = showOnlyPrimary ? .primary : .verseNumber
+        let bookmarkHovered = hoveredBookmarkActionRowIndex == index
+        let copyHovered = hoveredCopyActionRowIndex == index
+
+        HStack(spacing: 6) {
+            if let reference = referenceForIndex(index) {
+                Button {
+                    if isBookmarked(reference) {
+                        onRemoveBookmark(reference)
+                    } else {
+                        onAddBookmark(reference)
+                    }
+                } label: {
+                    Image(systemName: isBookmarked(reference) ? "bookmark.fill" : "bookmark")
+                        .foregroundStyle(isBookmarked(reference) ? Color.accentColor : Color.secondary)
+                        .frame(width: 22, height: 22)
+                        .background(
+                            Circle()
+                                .fill(
+                                    bookmarkHovered
+                                        ? Color(nsColor: .controlBackgroundColor)
+                                        : Color.primary.opacity(0.08)
+                                )
+                        )
+                        .overlay(
+                            Circle()
+                                .stroke(
+                                    bookmarkHovered
+                                        ? Color.primary.opacity(0.24)
+                                        : Color.primary.opacity(0.10),
+                                    lineWidth: 1
+                                )
+                        )
+                }
+                .buttonStyle(.plain)
+                .help(isBookmarked(reference) ? "Remove bookmark" : "Add bookmark")
+                .onHover { isHovering in
+                    if isHovering {
+                        hoveredBookmarkActionRowIndex = index
+                    } else if hoveredBookmarkActionRowIndex == index {
+                        hoveredBookmarkActionRowIndex = nil
+                    }
                 }
             }
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(verseCardBorder(isActive: isActive), lineWidth: 1)
-            )
-            .animation(
-                shouldAnimateVerseSelection ? .easeInOut(duration: 0.14) : nil,
-                value: isActive
-            )
-    }
 
-    @ViewBuilder
-    private func verseCellWithSuperscript(
-        text: String,
-        index: Int,
-        verseNumber: Int,
-        isActive: Bool
-    ) -> some View {
-        HStack(alignment: .top, spacing: 4) {
-            Text(String(verseNumber))
-                .font(.system(size: 12))
-                .baselineOffset(8)
-                .foregroundColor(.secondary)
-
-            Text(text)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .onTapGesture { requestProjection(at: index) }
-        .contextMenu {
-            verseContextMenuItems(for: index, source: .primary)
-        }
-        .padding()
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(verseCardFill())
-        )
-        .overlay {
-            if isActive {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(verseCardActiveTint)
+            Menu {
+                copyMenuItems(for: index, source: copySource)
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .foregroundStyle(Color.secondary)
+                    .frame(width: 22, height: 22)
+                    .background(
+                        Circle()
+                            .fill(
+                                copyHovered
+                                    ? Color(nsColor: .controlBackgroundColor)
+                                    : Color.primary.opacity(0.08)
+                            )
+                    )
+                    .overlay(
+                        Circle()
+                            .stroke(
+                                copyHovered
+                                    ? Color.primary.opacity(0.24)
+                                    : Color.primary.opacity(0.10),
+                                lineWidth: 1
+                            )
+                    )
+            }
+            .menuStyle(.borderlessButton)
+            .disabled(!hasCopyMenuItems(for: index, source: copySource))
+            .help("Copy verse")
+            .onHover { isHovering in
+                if isHovering {
+                    hoveredCopyActionRowIndex = index
+                } else if hoveredCopyActionRowIndex == index {
+                    hoveredCopyActionRowIndex = nil
+                }
             }
         }
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(verseCardBorder(isActive: isActive), lineWidth: 1)
-        )
-        .animation(
-            shouldAnimateVerseSelection ? .easeInOut(duration: 0.14) : nil,
-            value: isActive
-        )
-        .accessibilityLabel("Verse \(verseNumber): \(text)")
-        .accessibilityHint("Tap to project this verse to the projector window")
-    }
-
-    @ViewBuilder
-    private func verseNumberButton(index: Int, verseNumber: Int, isActive: Bool) -> some View {
-        Button(action: { requestProjection(at: index) }) {
-            Text(String(verseNumber))
-                .frame(width: 60, height: 60)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(
-                            isActive
-                                ? Color.accentColor
-                                : Color(nsColor: .controlBackgroundColor)
-                        )
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(verseCardBorder(isActive: isActive), lineWidth: 1)
-                )
-                .foregroundColor(isActive ? .white : .primary)
-        }
-        .contextMenu {
-            verseContextMenuItems(for: index, source: .verseNumber)
-        }
-        .buttonStyle(PlainButtonStyle())
-        .animation(
-            shouldAnimateVerseSelection ? .easeInOut(duration: 0.14) : nil,
-            value: isActive
-        )
-        .accessibilityLabel("Verse \(verseNumber)")
-        .accessibilityHint("Project this verse to the projector window")
+        .padding(.trailing, 6)
+        .padding(.bottom, 6)
+        .opacity(isVisible ? 1 : 0)
+        .allowsHitTesting(isVisible)
     }
 
     // MARK: - Navigation Helpers
@@ -660,7 +699,7 @@ struct VerseRowView: View {
                     proxy.scrollTo(currentIndex, anchor: .center)
                 }
             }
-            // Lazy grids can settle in two phases for distant targets.
+            // Lazy stacks can settle in two phases for distant targets.
             await Task.yield()
             await Task.yield()
             if !visibleVerseTracker.contains(targetKey) {

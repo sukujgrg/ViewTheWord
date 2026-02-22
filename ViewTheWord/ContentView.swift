@@ -581,6 +581,7 @@ struct MainContentView: View {
     @EnvironmentObject var verseRowViewModel: VerseRowViewModel
     @AppStorage(AppDefaultsKey.transparentBackground) private var transparentBackground = false
     @AppStorage(AppDefaultsKey.preferDarkMode) private var preferDarkMode = false
+    @AppStorage(AppDefaultsKey.verseRowFontSize) private var verseRowFontSize = 17.0
     @AppStorage(AppDefaultsKey.projectorTextAlignment) private var projectorTextAlignmentRaw = ProjectorTextAlignmentMode.center.rawValue
     @AppStorage(AppDefaultsKey.projectorReadingDirection) private var projectorReadingDirectionRaw = ProjectorReadingDirectionMode.auto.rawValue
 
@@ -693,6 +694,7 @@ struct MainContentView: View {
             searchField
                 .frame(minWidth: 160, maxWidth: .infinity, minHeight: 35, maxHeight: 35)
             SearchModeSegmentedControlView(searchMode: $searchMode)
+            VerseRowFontSizePickerView(fontSize: $verseRowFontSize)
 
             Menu {
                 Toggle("Dark Mode", isOn: $preferDarkMode)
@@ -723,6 +725,7 @@ struct MainContentView: View {
             searchField
                 .frame(width: 275, height: 35, alignment: .center)
             SearchModeSegmentedControlView(searchMode: $searchMode)
+            VerseRowFontSizePickerView(fontSize: $verseRowFontSize)
         }
     }
 

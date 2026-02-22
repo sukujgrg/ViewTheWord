@@ -1,7 +1,10 @@
-.PHONY: build build-for-this
+.PHONY: build build-for-this clean
 
-build:
+clean:
+	rm -rf build
+
+build: clean
 	./build.sh
 
-build-for-this:
+build-for-this: clean
 	./build.sh --current-arch
