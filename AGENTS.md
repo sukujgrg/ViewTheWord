@@ -32,6 +32,13 @@ This document is the current source of truth for this repo.
 - Semantic/AI search has been removed:
   - No embeddings/OpenAI pipeline remains in runtime, parser, or settings.
   - Search supports verse lookup and SQLite-backed text search (`s:` phrase / `m:` multi-term) only.
+- Verse POST API feature has been removed:
+  - `ApiCalls.swift` and all network-post hooks are deleted.
+  - Projection is local-only; do not reintroduce network side effects from `ProjectorView` (`onChange`/`onDisappear`).
+- Display slider behavior is stabilized:
+  - Keep font/padding sliders draft-backed and commit to `@AppStorage` on edit end.
+  - Avoid wrapping slider groups in a parent `ScrollView` to prevent drag gesture contention.
+  - Keep numeric `@AppStorage` types consistent across views (for font sizes use `Double` end-to-end).
 - Known translation verse-number divergence (important for row/projection boundaries):
   - `ENG_NIV.bible` vs `ENG_NLT.bible` differ in New Testament chapter verse numbering.
   - `3 John 1`: NIV has 14 verses; NLT has 15 (NLT-only verse number `15`).
@@ -70,6 +77,7 @@ This document is the current source of truth for this repo.
 - For verse auto-scroll, defer one render pass with `Task.yield()` and scroll intentionally.
 - Break complex `body` expressions into small subviews when type-checking slows down (e.g., `SearchResultRowView`).
 - `List(selection:)` `onChange` does not fire when clicking an already selected row; for deterministic activation, use explicit row `Button` handlers and keep selection `onChange` for keyboard paths.
+- Do not place continuously dragged `Slider` controls inside `List` rows for this app's settings screen; prefer `VStack`/`GroupBox` layout with draft state + commit-on-edit-end to avoid sticky drag and heavy re-layout.
 
 ### Styling/HIG lessons
 - Never hardcode blue for selection/highlight.
@@ -82,11 +90,9 @@ This document is the current source of truth for this repo.
   - no shared mutable state read/write from outside queue boundaries
 
 ### Settings and persistence gotchas
-- API post URL is stored as `String` in `@AppStorage(AppDefaultsKey.apiUrlToPost)`.
-- Keep URL validation explicit (only `http`/`https` with host).
-- Migrate legacy `URL`-typed stored value in `onAppear` if present.
 - Bible picker values must be tagged with `absoluteString` to match `AppStorage` string bindings.
 - Bible defaults keys are centralized in `AppDefaultsKey` (`primaryBibleName`, `secondaryBibleName`, `showOnlyPrimary`); avoid raw string keys.
+- Keep numeric `@AppStorage` type usage consistent across all readers/writers (avoid `Int` in one view and `Double` in another for the same key).
 - Bible filename validation is centralized in `BibleFileRule` and must stay consistent between import flow and discovery (`BibleUrl.getAvailableBibleUrls()`).
 - Bible import is actor-backed (`BibleImportService`) and performs strict checks before copy:
   - canonical filename

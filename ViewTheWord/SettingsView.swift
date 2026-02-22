@@ -30,62 +30,86 @@ struct DisplaySettingsView: View {
     @AppStorage("fontSizeVerse") private var fontSizeVerse = 100.0
     @AppStorage("fontSizeVerseRef") private var fontSizeVerseRef = 20.0
     @AppStorage("vStackPadding") private var vStackPadding = 20.0
-    @AppStorage(AppDefaultsKey.apiUrlToPost) private var apiUrlToPost = ""
-    @State private var apiUrlDraft = ""
+
+    @State private var fontSizeVerseDraft = 100.0
+    @State private var fontSizeVerseRefDraft = 20.0
+    @State private var vStackPaddingDraft = 20.0
 
     var body: some View {
-        VStack {
-            List {
-                Section(header: Text("Font Size")) {
-                    Slider(value: $fontSizeVerse, in: 40 ... 200) {
-                        Text("Verse (\(fontSizeVerse, specifier: "%.0f") pts)")
-                    }
-                    Slider(value: $fontSizeVerseRef, in: 20 ... 50) {
-                        Text("Verse reference (\(fontSizeVerseRef, specifier: "%.0f") pts)")
-                    }
-                    Slider(value: $vStackPadding, in: 10 ... 200) {
-                        Text("Padding (\(vStackPadding, specifier: "%.0f") pts)")
-                    }
-                }
-                .headerProminence(.increased)
-
-                Section(header: Text("API to POST verse")) {
-                    TextField("API URL", text: $apiUrlDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .onChange(of: apiUrlDraft) { _, newValue in
-                            persistAPIURLIfValid(newValue)
+        VStack(alignment: .leading, spacing: 16) {
+            GroupBox("Font Size") {
+                VStack(alignment: .leading, spacing: 14) {
+                    sliderRow(
+                        title: "Verse",
+                        valueText: String(format: "%.0f pts", fontSizeVerseDraft)
+                    )
+                    Slider(value: $fontSizeVerseDraft, in: 40 ... 200, step: 1, onEditingChanged: { isEditing in
+                        if !isEditing {
+                            persistFontSettings()
                         }
+                    })
 
-                    if !apiUrlDraft.isEmpty && !isValidAPIURL(apiUrlDraft) {
-                        Text("Enter a valid http(s) URL.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    sliderRow(
+                        title: "Verse reference",
+                        valueText: String(format: "%.0f pts", fontSizeVerseRefDraft)
+                    )
+                    Slider(value: $fontSizeVerseRefDraft, in: 20 ... 50, step: 1, onEditingChanged: { isEditing in
+                        if !isEditing {
+                            persistFontSettings()
+                        }
+                    })
+
+                    sliderRow(
+                        title: "Padding",
+                        valueText: String(format: "%.0f pts", vStackPaddingDraft)
+                    )
+                    Slider(value: $vStackPaddingDraft, in: 10 ... 200, step: 1, onEditingChanged: { isEditing in
+                        if !isEditing {
+                            persistFontSettings()
+                        }
+                    })
                 }
+                .padding(.top, 2)
             }
-            .listStyle(.inset)
+
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.vertical, 4)
         .onAppear {
-            if apiUrlToPost.isEmpty, let legacyURL = UserDefaults.standard.url(forKey: AppDefaultsKey.apiUrlToPost) {
-                apiUrlToPost = legacyURL.absoluteString
-            }
-            apiUrlDraft = apiUrlToPost
+            fontSizeVerseDraft = fontSizeVerse
+            fontSizeVerseRefDraft = fontSizeVerseRef
+            vStackPaddingDraft = vStackPadding
+        }
+        .onDisappear {
+            persistFontSettings()
         }
     }
 
-    private func persistAPIURLIfValid(_ rawValue: String) {
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty || isValidAPIURL(trimmed) {
-            apiUrlToPost = trimmed
+    private func persistFontSettings() {
+        if fontSizeVerse != fontSizeVerseDraft {
+            fontSizeVerse = fontSizeVerseDraft
+        }
+
+        if fontSizeVerseRef != fontSizeVerseRefDraft {
+            fontSizeVerseRef = fontSizeVerseRefDraft
+        }
+
+        if vStackPadding != vStackPaddingDraft {
+            vStackPadding = vStackPaddingDraft
         }
     }
 
-    private func isValidAPIURL(_ rawValue: String) -> Bool {
-        guard let url = URL(string: rawValue) else { return false }
-        guard let scheme = url.scheme?.lowercased(), (scheme == "http" || scheme == "https") else {
-            return false
+    @ViewBuilder
+    private func sliderRow(title: String, valueText: String) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text(valueText)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 76, alignment: .trailing)
         }
-        return url.host != nil
     }
 }
 

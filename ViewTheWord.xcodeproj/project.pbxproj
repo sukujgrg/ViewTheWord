@@ -19,8 +19,8 @@
 		03EEAE4F28793D69008EC35C /* AppConstants.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03EEAE4E28793D69008EC35C /* AppConstants.swift */; };
 		03EFCF7928703DC500A69AD2 /* ProjectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03EFCF7828703DC500A69AD2 /* ProjectorView.swift */; };
 		03EFCF7B28703E1A00A69AD2 /* VerseRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03EFCF7A28703E1A00A69AD2 /* VerseRowView.swift */; };
-		B20522252C13983700585F6D /* ApiCalls.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20522242C13983700585F6D /* ApiCalls.swift */; };
 		B229A7A22F48F46100EF8FAD /* ProjectionControlsRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B229A7A12F48F46100EF8FAD /* ProjectionControlsRowView.swift */; };
+		B229A7A42F4993B900EF8FAD /* VERSION in Resources */ = {isa = PBXBuildFile; fileRef = B229A7A32F4993B900EF8FAD /* VERSION */; };
 		B26FEF50287B94F000DAD012 /* Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26FEF4F287B94F000DAD012 /* Extensions.swift */; };
 /* End PBXBuildFile section */
 
@@ -40,8 +40,8 @@
 		03EEAE4E28793D69008EC35C /* AppConstants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConstants.swift; sourceTree = "<group>"; };
 		03EFCF7828703DC500A69AD2 /* ProjectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectorView.swift; sourceTree = "<group>"; };
 		03EFCF7A28703E1A00A69AD2 /* VerseRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerseRowView.swift; sourceTree = "<group>"; };
-		B20522242C13983700585F6D /* ApiCalls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApiCalls.swift; sourceTree = "<group>"; };
 		B229A7A12F48F46100EF8FAD /* ProjectionControlsRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectionControlsRowView.swift; sourceTree = "<group>"; };
+		B229A7A32F4993B900EF8FAD /* VERSION */ = {isa = PBXFileReference; lastKnownFileType = text; path = VERSION; sourceTree = "<group>"; };
 		B26FEF4F287B94F000DAD012 /* Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Extensions.swift; sourceTree = "<group>"; };
 		B26FEF51287B9F6900DAD012 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		B2B7BDE52BE4A13B00A1CB41 /* ViewTheWordRelease.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ViewTheWordRelease.entitlements; sourceTree = "<group>"; };
@@ -71,6 +71,7 @@
 		03A1D25728672D1700511E73 = {
 			isa = PBXGroup;
 			children = (
+				B229A7A32F4993B900EF8FAD /* VERSION */,
 				B26FEF51287B9F6900DAD012 /* README.md */,
 				03A1D26228672D1700511E73 /* ViewTheWord */,
 				03A1D26128672D1700511E73 /* Products */,
@@ -99,7 +100,6 @@
 				03A1D26928672D1800511E73 /* Preview Content */,
 				03A1D27C2867FBC800511E73 /* Db.swift */,
 				03A1D27E28685D5400511E73 /* RxVerse.swift */,
-				B20522242C13983700585F6D /* ApiCalls.swift */,
 				03EFCF7A28703E1A00A69AD2 /* VerseRowView.swift */,
 				039A40962872325E00A672BD /* SettingsView.swift */,
 				03EEAE4E28793D69008EC35C /* AppConstants.swift */,
@@ -182,6 +182,7 @@
 				033226F42876258700336EDD /* ENG_UKJV.bible in Resources */,
 				03A1D26B28672D1800511E73 /* Preview Assets.xcassets in Resources */,
 				03A1D26828672D1800511E73 /* Assets.xcassets in Resources */,
+				B229A7A42F4993B900EF8FAD /* VERSION in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -194,7 +195,6 @@
 			files = (
 				039A40972872325E00A672BD /* SettingsView.swift in Sources */,
 				B26FEF50287B94F000DAD012 /* Extensions.swift in Sources */,
-				B20522252C13983700585F6D /* ApiCalls.swift in Sources */,
 				B229A7A22F48F46100EF8FAD /* ProjectionControlsRowView.swift in Sources */,
 				03EFCF7928703DC500A69AD2 /* ProjectorView.swift in Sources */,
 				03A1D26628672D1700511E73 /* ContentView.swift in Sources */,
@@ -334,19 +334,27 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				AUTOMATION_APPLE_EVENTS = NO;
 				CODE_SIGN_ENTITLEMENTS = ViewTheWord/ViewTheWord.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"ViewTheWord/Preview Content\"";
 				DEVELOPMENT_TEAM = E5N29VFW8T;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readonly;
+				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = ViewTheWord/Info.plist;
@@ -357,10 +365,16 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 2.0;
+				MARKETING_VERSION = 3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = suku.ViewTheWord;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
+				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
+				RUNTIME_EXCEPTION_ALLOW_JIT = NO;
+				RUNTIME_EXCEPTION_ALLOW_UNSIGNED_EXECUTABLE_MEMORY = NO;
+				RUNTIME_EXCEPTION_DEBUGGING_TOOL = NO;
+				RUNTIME_EXCEPTION_DISABLE_EXECUTABLE_PAGE_PROTECTION = NO;
+				RUNTIME_EXCEPTION_DISABLE_LIBRARY_VALIDATION = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 			};
@@ -372,18 +386,26 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				AUTOMATION_APPLE_EVENTS = NO;
 				CODE_SIGN_ENTITLEMENTS = ViewTheWord/ViewTheWordRelease.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"ViewTheWord/Preview Content\"";
 				DEVELOPMENT_TEAM = E5N29VFW8T;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readonly;
+				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = ViewTheWord/Info.plist;
@@ -394,10 +416,16 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 2.0;
+				MARKETING_VERSION = 3.0;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = suku.ViewTheWord;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
+				RUNTIME_EXCEPTION_ALLOW_JIT = NO;
+				RUNTIME_EXCEPTION_ALLOW_UNSIGNED_EXECUTABLE_MEMORY = NO;
+				RUNTIME_EXCEPTION_DEBUGGING_TOOL = NO;
+				RUNTIME_EXCEPTION_DISABLE_EXECUTABLE_PAGE_PROTECTION = NO;
+				RUNTIME_EXCEPTION_DISABLE_LIBRARY_VALIDATION = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 			};

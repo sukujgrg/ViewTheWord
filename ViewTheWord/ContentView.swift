@@ -54,6 +54,11 @@ private struct NativePersistentVSplitView<Top: View, Bottom: View>: NSViewContro
             topHost = NSHostingController(rootView: top)
             bottomHost = NSHostingController(rootView: bottom)
 
+            // These hosted panes live inside split views; they should not
+            // continuously drive NSWindow min/max content-size extrema.
+            topHost.sizingOptions = [.intrinsicContentSize]
+            bottomHost.sizingOptions = [.intrinsicContentSize]
+
             let topItem = NSSplitViewItem(viewController: topHost)
             topItem.canCollapse = false
             topItem.minimumThickness = topMinHeight

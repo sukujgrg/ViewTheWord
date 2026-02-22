@@ -46,7 +46,7 @@ struct ProjectorView: View {
     @EnvironmentObject var projectorViewModel: ProjectorViewModel
 
     @Binding var windowOpened: Bool
-    @AppStorage("fontSizeVerse") private var fontSizeVerse = 200
+    @AppStorage("fontSizeVerse") private var fontSizeVerse = 200.0
     @AppStorage("fontSizeVerseRef") private var fontSizeVerseRef = 20.0
     @AppStorage("vStackPadding") private var vStackPadding = 20.0
     @AppStorage(AppDefaultsKey.projectorTextAlignment) private var projectorTextAlignmentRaw = ProjectorTextAlignmentMode.center.rawValue
@@ -130,14 +130,7 @@ struct ProjectorView: View {
         .multilineTextAlignment(resolvedTextAlignment)
         .onDisappear {
             windowOpened = false
-            clearApi()
             projectorViewModel.clearProjection()
-        }
-        .onChange(of: projectorViewModel.projectorViewData.title) { _, _ in
-            // Only send if we have valid data (not placeholder)
-            if projectorViewModel.projectorViewData.primaryText != "?" {
-                sendTextOverNetwork(text: projectorViewModel.projectorViewData.primaryText, title: projectorViewModel.projectorViewData.title)
-            }
         }
     }
 

@@ -86,7 +86,9 @@ extension View {
             return
         }
         let priorKeyWindow = NSApplication.shared.keyWindow
-        window.contentView = NSHostingView(rootView: self)
+        let hostView = NSHostingView(rootView: self)
+        hostView.sizingOptions = [.intrinsicContentSize]
+        window.contentView = hostView
         window.orderFrontRegardless()  // useful when showing over a fullscreen background video.
 
         // Keep keyboard focus on the main app window so verse navigation shortcuts

@@ -21,7 +21,9 @@ struct ViewTheWordApp: App {
                 .navigationTitle("")
                 .preferredColorScheme(preferDarkMode ? .dark : .light)
         }
-        .windowResizability(.contentSize)
+        // Keep only minimum content-size enforcement; full content-size tracking
+        // can trigger recursive constraint updates on complex split hierarchies.
+        .windowResizability(.contentMinSize)
         .defaultSize(width: 1200, height: 800)
         .windowStyle(.hiddenTitleBar)
         .commands {
