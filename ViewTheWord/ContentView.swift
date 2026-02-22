@@ -654,7 +654,9 @@ struct MainContentView: View {
             )
         }
         .frame(minWidth: 600, maxWidth: .infinity, minHeight: 600, maxHeight: .infinity)
-        .padding()
+        .padding(.top, 2)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 12)
         .onExitCommand(perform: closeProjector)
     }
 
