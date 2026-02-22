@@ -54,10 +54,10 @@ private struct NativePersistentVSplitView<Top: View, Bottom: View>: NSViewContro
             topHost = NSHostingController(rootView: top)
             bottomHost = NSHostingController(rootView: bottom)
 
-            // These hosted panes live inside split views; they should not
-            // continuously drive NSWindow min/max content-size extrema.
-            topHost.sizingOptions = [.intrinsicContentSize]
-            bottomHost.sizingOptions = [.intrinsicContentSize]
+            // These hosted panes live inside split views and should not
+            // participate in NSWindow content-size extrema propagation.
+            topHost.sizingOptions = []
+            bottomHost.sizingOptions = []
 
             let topItem = NSSplitViewItem(viewController: topHost)
             topItem.canCollapse = false
@@ -806,7 +806,6 @@ enum NavigationColumn: Hashable {
 @MainActor
 struct MainView: View {
     @EnvironmentObject var verseTargetModel: VerseTargetModel
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject var verseRowViewModel: VerseRowViewModel = .init()
     @StateObject var projectorViewModel: ProjectorViewModel = .init()
 
@@ -1031,10 +1030,6 @@ struct MainView: View {
             searchTask?.cancel()
             searchTask = nil
         }
-        .animation(
-            reduceMotion ? nil : .easeInOut(duration: 0.2),
-            value: selectedBook
-        )
         .applyWindowSurfaceBackground()
     }
     
@@ -1458,9 +1453,11 @@ struct MainView: View {
             ProjectorView(windowOpened: $windowOpened)
                 .environmentObject(projectorViewModel)
                 .openNewWindow(with: AppWindowTitle.projector)
-            if let projectorWindow {
-                applyProjectorWindowAppearance(projectorWindow)
+            guard let projectorWindow else {
+                windowOpened = false
+                return
             }
+            applyProjectorWindowAppearance(projectorWindow)
         }
     }
 

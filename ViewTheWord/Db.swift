@@ -15,25 +15,36 @@ class BibleUrl {
     var secondaryBibleUrl: URL
 
     init() {
-        // Initialize with default values first
-        primaryBibleUrl = bundledPrimaryBibleUrl ?? URL(fileURLWithPath: "/")
-        secondaryBibleUrl = bundledSecondaryBibleUrl ?? URL(fileURLWithPath: "/")
+        primaryBibleUrl = bundledPrimaryBibleUrl ?? URL(fileURLWithPath: "/dev/null")
+        secondaryBibleUrl = bundledSecondaryBibleUrl ?? primaryBibleUrl
 
-        // Now we can safely call instance methods
-        if let primary = self.getBibleUrl(defaultsKey: AppDefaultsKey.primaryBibleName) {
+        let availableBibleUrls = getAvailableBibleUrls()
+
+        let fallbackURL = availableBibleUrls.first ?? URL(fileURLWithPath: "/dev/null")
+        if fallbackURL.path == "/dev/null" {
+            logger.fault("No Bible files are available; using /dev/null as a non-crashing placeholder.")
+        }
+
+        if let primary = getBibleUrl(defaultsKey: AppDefaultsKey.primaryBibleName) {
             primaryBibleUrl = primary
         } else if let bundledPrimary = bundledPrimaryBibleUrl {
             primaryBibleUrl = bundledPrimary
+        } else if let firstAvailable = availableBibleUrls.first {
+            logger.warning("Bundled primary Bible missing; falling back to \(firstAvailable.lastPathComponent).")
+            primaryBibleUrl = firstAvailable
         } else {
-            fatalError("Primary Bible resource not found in bundle. Ensure MAL_BSI.bible exists.")
+            primaryBibleUrl = fallbackURL
         }
 
-        if let secondary = self.getBibleUrl(defaultsKey: AppDefaultsKey.secondaryBibleName) {
+        if let secondary = getBibleUrl(defaultsKey: AppDefaultsKey.secondaryBibleName) {
             secondaryBibleUrl = secondary
         } else if let bundledSecondary = bundledSecondaryBibleUrl {
             secondaryBibleUrl = bundledSecondary
+        } else if let secondaryFallback = availableBibleUrls.first(where: { $0 != primaryBibleUrl }) {
+            logger.warning("Bundled secondary Bible missing; falling back to \(secondaryFallback.lastPathComponent).")
+            secondaryBibleUrl = secondaryFallback
         } else {
-            fatalError("Secondary Bible resource not found in bundle. Ensure ENG_UKJV.bible exists.")
+            secondaryBibleUrl = primaryBibleUrl
         }
     }
 
@@ -42,12 +53,12 @@ class BibleUrl {
 
         let defaults = UserDefaults.standard
 
-        if let bibleName = defaults.string(forKey: defaultsKey) {
-            for url in availableBibleUrls {
-                let bibleNameUrl = URL(string: bibleName)
-                if url.lastPathComponent == bibleNameUrl?.lastPathComponent {
-                    return url
-                }
+        if let bibleName = defaults.string(forKey: defaultsKey), !bibleName.isEmpty {
+            let storedLastPath = URL(string: bibleName)?.lastPathComponent
+                ?? URL(fileURLWithPath: bibleName).lastPathComponent
+
+            for url in availableBibleUrls where url.lastPathComponent == storedLastPath {
+                return url
             }
         }
         return nil
@@ -79,7 +90,12 @@ class BibleUrl {
         } catch {
             logger.error("\(documentsURL.path): \(error.localizedDescription)")
         }
-        return availableBibleUrls
+        var dedupedByFileName: [String: URL] = [:]
+        for url in availableBibleUrls {
+            dedupedByFileName[url.lastPathComponent] = url
+        }
+
+        return Array(dedupedByFileName.values)
     }
 }
 

@@ -87,7 +87,7 @@ extension View {
         }
         let priorKeyWindow = NSApplication.shared.keyWindow
         let hostView = NSHostingView(rootView: self)
-        hostView.sizingOptions = [.intrinsicContentSize]
+        hostView.sizingOptions = []
         window.contentView = hostView
         window.orderFrontRegardless()  // useful when showing over a fullscreen background video.
 
