@@ -1,9 +1,15 @@
 import Foundation
 
+enum SearchMode: String, CaseIterable {
+    case verseReference
+    case wordSearch
+    case phraseSearch
+}
+
 enum SearchType {
     case verse(VerseQuery)
-    case phrase(String, filter: SearchFilter)  // s: - exact phrase search
-    case multiTerm(String, filter: SearchFilter)  // m: - word search with AND/OR/NOT
+    case phrase(String, filter: SearchFilter)  // Phrase mode - exact phrase search
+    case multiTerm(String, filter: SearchFilter)  // Words mode - search with AND/OR/NOT
 }
 
 enum SearchFilter: Sendable {
@@ -195,30 +201,33 @@ class SearchQuery {
         self.ask = ask
     }
 
-    func searchType() -> SearchType? {
-        // Check if this is a phrase search (starts with "s:")
-        if ask.lowercased().hasPrefix("s:") {
-            let searchText = ask.dropFirst(2).trimmingCharacters(in: .whitespaces)
-            guard !searchText.isEmpty else { return nil }
-
-            // Parse filter if present
-            let (filter, query) = parseSearchFilter(searchText: searchText)
+    func searchType(mode: SearchMode) -> SearchType? {
+        switch mode {
+        case .verseReference:
+            guard let verseQuery = verseQuery() else { return nil }
+            return .verse(verseQuery)
+        case .wordSearch:
+            let normalized = normalizedSearchTextForMode()
+            guard !normalized.isEmpty else { return nil }
+            let (filter, query) = parseSearchFilter(searchText: normalized)
+            guard !query.isEmpty else { return nil }
+            return .multiTerm(query, filter: filter)
+        case .phraseSearch:
+            let normalized = normalizedSearchTextForMode()
+            guard !normalized.isEmpty else { return nil }
+            let (filter, query) = parseSearchFilter(searchText: normalized)
+            guard !query.isEmpty else { return nil }
             return .phrase(query, filter: filter)
         }
+    }
 
-        // Check if this is a multi-term search with operators (starts with "m:")
-        if ask.lowercased().hasPrefix("m:") {
-            let searchText = ask.dropFirst(2).trimmingCharacters(in: .whitespaces)
-            guard !searchText.isEmpty else { return nil }
-
-            // Parse filter if present
-            let (filter, query) = parseSearchFilter(searchText: searchText)
-            return .multiTerm(query, filter: filter)
+    private func normalizedSearchTextForMode() -> String {
+        let trimmed = ask.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowered = trimmed.lowercased()
+        if lowered.hasPrefix("s:") || lowered.hasPrefix("v:") || lowered.hasPrefix("m:") {
+            return String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespacesAndNewlines)
         }
-
-        // Otherwise try to parse as verse reference
-        guard let verseQuery = verseQuery() else { return nil }
-        return .verse(verseQuery)
+        return trimmed
     }
 
     private func parseSearchFilter(searchText: String) -> (SearchFilter, String) {

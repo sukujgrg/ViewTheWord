@@ -560,6 +560,7 @@ private struct SearchResultRowView: View {
 // MARK: - Main Content View
 struct MainContentView: View {
     @Binding var ask: String
+    @Binding var searchMode: SearchMode
     @Binding var queryValidationToken: Int
     @Binding var windowOpened: Bool
     @Binding var searchResults: (primary: [AVerse], secondary: [AVerse])?
@@ -621,7 +622,7 @@ struct MainContentView: View {
                             .font(.body)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
-                        Text("Example: John 3:16  or  s: his only begotten son")
+                        Text("Example: John 3:16, or switch to Phrase mode and type a phrase")
                             .font(.callout)
                             .foregroundStyle(.tertiary)
                         Spacer()
@@ -670,8 +671,7 @@ struct MainContentView: View {
         HStack(alignment: .center, spacing: 12) {
             appearanceToggle
             Spacer(minLength: 0)
-            searchField
-                .frame(width: 275, height: 35, alignment: .center)
+            searchControlsGroup
             Spacer(minLength: 0)
             primaryOnlyToggle
         }
@@ -692,6 +692,7 @@ struct MainContentView: View {
         HStack(alignment: .center, spacing: 12) {
             searchField
                 .frame(minWidth: 160, maxWidth: .infinity, minHeight: 35, maxHeight: 35)
+            SearchModeSegmentedControlView(searchMode: $searchMode)
 
             Menu {
                 Toggle("Dark Mode", isOn: $preferDarkMode)
@@ -717,6 +718,14 @@ struct MainContentView: View {
         .frame(maxWidth: .infinity, alignment: .center)
     }
 
+    private var searchControlsGroup: some View {
+        HStack(alignment: .center, spacing: 8) {
+            searchField
+                .frame(width: 275, height: 35, alignment: .center)
+            SearchModeSegmentedControlView(searchMode: $searchMode)
+        }
+    }
+
     private var appearanceToggle: some View {
         Toggle("Dark Mode", isOn: $preferDarkMode)
             .toggleStyle(.switch)
@@ -737,7 +746,7 @@ struct MainContentView: View {
         TextField(
             "",
             text: $ask,
-            prompt: Text("John 3:16  or  s: phrase  or  m: words")
+            prompt: Text(searchPromptText)
                 .font(.body)
                 .foregroundStyle(.secondary)
         )
@@ -779,11 +788,33 @@ struct MainContentView: View {
         .font(.largeTitle)
         .disableAutocorrection(true)
         .accessibilityLabel("Verse search or text search")
-        .accessibilityHint("Enter verse reference like John 3:16, or search text with s: prefix")
+        .accessibilityHint(searchAccessibilityHint)
         .onReceive(NotificationCenter.default.publisher(for: .focusSearchField)) { _ in
             isSearchFieldFocused = true
         }
         .layoutPriority(1)
+    }
+
+    private var searchPromptText: String {
+        switch searchMode {
+        case .verseReference:
+            return "John 3:16"
+        case .wordSearch:
+            return "jesus AND mary"
+        case .phraseSearch:
+            return "his only begotten son"
+        }
+    }
+
+    private var searchAccessibilityHint: String {
+        switch searchMode {
+        case .verseReference:
+            return "Enter verse reference like John 3:16"
+        case .wordSearch:
+            return "Enter word search text with optional operators AND, OR, and NOT"
+        case .phraseSearch:
+            return "Enter phrase search text"
+        }
     }
 }
 
@@ -810,6 +841,7 @@ struct MainView: View {
     @StateObject var projectorViewModel: ProjectorViewModel = .init()
 
     @State private var ask: String = ""
+    @State private var searchMode: SearchMode = .verseReference
     @State private var selectedBook: String?
     @State private var selectedChapter: Int?
     @State private var windowOpened = false
@@ -919,6 +951,7 @@ struct MainView: View {
             // Detail: Main content
             MainContentView(
                 ask: $ask,
+                searchMode: $searchMode,
                 queryValidationToken: $queryValidationToken,
                 windowOpened: $windowOpened,
                 searchResults: $searchResults,
@@ -989,6 +1022,14 @@ struct MainView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleKeyboardShortcuts)) { _ in
             showKeyboardShortcuts.toggle()
+        }
+        .onChange(of: searchMode) { _, _ in
+            searchTask?.cancel()
+            searchTask = nil
+            activeSearchID = UUID()
+            ask = ""
+            searchResults = nil
+            currentSearchQuery = nil
         }
         .onChange(of: primaryBibleName) { _, newValue in
             // Recreate primary Bible connection when translation changes
@@ -1090,7 +1131,7 @@ struct MainView: View {
 
     func processSearchQuery(updateRowView: Bool = true, project: Bool = true, recordHistory: Bool = false) {
         // Check if this is a text search or verse query
-        guard let searchType = SearchQuery(ask: ask).searchType() else {
+        guard let searchType = SearchQuery(ask: ask).searchType(mode: searchMode) else {
             searchTask?.cancel()
             triggerInvalidQueryFeedback()
             return
@@ -1495,25 +1536,28 @@ struct KeyboardShortcutsView: View {
     @Environment(\.dismiss) var dismiss
 
     let searchTips: [(category: String, items: [(example: String, description: String)])] = [
+        ("Mode Toggle", [
+            ("Ref / Words / Phrase", "Use the toggle to the right of search field")
+        ]),
         ("Verse Reference", [
             ("John 3:16", "Go to specific verse"),
             ("gen 1:1", "Book name abbreviation works"),
             ("1 cor 13", "Goes to chapter 13, verse 1")
         ]),
-        ("Phrase Search (s:)", [
-            ("s: his only begotten son", "Exact phrase match"),
-            ("s: in the beginning", "Finds exact phrase"),
-            ("s: ot: the lord", "Search Old Testament only"),
-            ("s: nt: believe", "Search New Testament only"),
-            ("s: john: light", "Search in book of John")
+        ("Phrase Search (Phrase Mode)", [
+            ("his only begotten son", "Exact phrase match"),
+            ("in the beginning", "Finds exact phrase"),
+            ("ot: the lord", "Search Old Testament only"),
+            ("nt: believe", "Search New Testament only"),
+            ("john: light", "Search in book of John")
         ]),
-        ("Multi-term Search (m:)", [
-            ("m: jesus AND mary", "Both words must appear"),
-            ("m: jesus OR christ", "Either word appears"),
-            ("m: love AND NOT hate", "Include love, exclude hate"),
-            ("m: god AND (love OR mercy)", "Grouping with parentheses"),
-            ("m: nt: faith AND hope", "Multi-term in New Testament"),
-            ("m: john: light AND darkness", "Multi-term in specific book")
+        ("Word Search (Words Mode)", [
+            ("jesus AND mary", "Both words must appear"),
+            ("jesus OR christ", "Either word appears"),
+            ("love AND NOT hate", "Include love, exclude hate"),
+            ("god AND (love OR mercy)", "Grouping with parentheses"),
+            ("nt: faith AND hope", "Search in New Testament"),
+            ("john: light AND darkness", "Search in specific book")
         ])
     ]
 

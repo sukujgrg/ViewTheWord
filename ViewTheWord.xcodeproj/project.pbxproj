@@ -18,10 +18,11 @@
 		03A1D27F28685D5400511E73 /* RxVerse.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03A1D27E28685D5400511E73 /* RxVerse.swift */; };
 		03EEAE4F28793D69008EC35C /* AppConstants.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03EEAE4E28793D69008EC35C /* AppConstants.swift */; };
 		03EFCF7928703DC500A69AD2 /* ProjectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03EFCF7828703DC500A69AD2 /* ProjectorView.swift */; };
-		03EFCF7B28703E1A00A69AD2 /* VerseRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03EFCF7A28703E1A00A69AD2 /* VerseRowView.swift */; };
-		B229A7A22F48F46100EF8FAD /* ProjectionControlsRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B229A7A12F48F46100EF8FAD /* ProjectionControlsRowView.swift */; };
-		B229A7A42F4993B900EF8FAD /* VERSION in Resources */ = {isa = PBXBuildFile; fileRef = B229A7A32F4993B900EF8FAD /* VERSION */; };
-		B26FEF50287B94F000DAD012 /* Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26FEF4F287B94F000DAD012 /* Extensions.swift */; };
+			03EFCF7B28703E1A00A69AD2 /* VerseRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03EFCF7A28703E1A00A69AD2 /* VerseRowView.swift */; };
+			B229A7A22F48F46100EF8FAD /* ProjectionControlsRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B229A7A12F48F46100EF8FAD /* ProjectionControlsRowView.swift */; };
+			B229A7A42F4993B900EF8FAD /* VERSION in Resources */ = {isa = PBXBuildFile; fileRef = B229A7A32F4993B900EF8FAD /* VERSION */; };
+			B26FEF50287B94F000DAD012 /* Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26FEF4F287B94F000DAD012 /* Extensions.swift */; };
+			B2F9C1022F4C2A9100A1C001 /* SearchModeSegmentedControlView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2F9C1012F4C2A9100A1C001 /* SearchModeSegmentedControlView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -39,12 +40,13 @@
 		03A1D27E28685D5400511E73 /* RxVerse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RxVerse.swift; sourceTree = "<group>"; };
 		03EEAE4E28793D69008EC35C /* AppConstants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConstants.swift; sourceTree = "<group>"; };
 		03EFCF7828703DC500A69AD2 /* ProjectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectorView.swift; sourceTree = "<group>"; };
-		03EFCF7A28703E1A00A69AD2 /* VerseRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerseRowView.swift; sourceTree = "<group>"; };
-		B229A7A12F48F46100EF8FAD /* ProjectionControlsRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectionControlsRowView.swift; sourceTree = "<group>"; };
-		B229A7A32F4993B900EF8FAD /* VERSION */ = {isa = PBXFileReference; lastKnownFileType = text; path = VERSION; sourceTree = "<group>"; };
-		B26FEF4F287B94F000DAD012 /* Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Extensions.swift; sourceTree = "<group>"; };
-		B26FEF51287B9F6900DAD012 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
-		B2B7BDE52BE4A13B00A1CB41 /* ViewTheWordRelease.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ViewTheWordRelease.entitlements; sourceTree = "<group>"; };
+			03EFCF7A28703E1A00A69AD2 /* VerseRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerseRowView.swift; sourceTree = "<group>"; };
+			B229A7A12F48F46100EF8FAD /* ProjectionControlsRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectionControlsRowView.swift; sourceTree = "<group>"; };
+			B229A7A32F4993B900EF8FAD /* VERSION */ = {isa = PBXFileReference; lastKnownFileType = text; path = VERSION; sourceTree = "<group>"; };
+			B26FEF4F287B94F000DAD012 /* Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Extensions.swift; sourceTree = "<group>"; };
+			B26FEF51287B9F6900DAD012 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+			B2B7BDE52BE4A13B00A1CB41 /* ViewTheWordRelease.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ViewTheWordRelease.entitlements; sourceTree = "<group>"; };
+			B2F9C1012F4C2A9100A1C001 /* SearchModeSegmentedControlView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchModeSegmentedControlView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -102,12 +104,13 @@
 				03A1D27E28685D5400511E73 /* RxVerse.swift */,
 				03EFCF7A28703E1A00A69AD2 /* VerseRowView.swift */,
 				039A40962872325E00A672BD /* SettingsView.swift */,
-				03EEAE4E28793D69008EC35C /* AppConstants.swift */,
-				B26FEF4F287B94F000DAD012 /* Extensions.swift */,
-			);
-			path = ViewTheWord;
-			sourceTree = "<group>";
-		};
+					03EEAE4E28793D69008EC35C /* AppConstants.swift */,
+					B26FEF4F287B94F000DAD012 /* Extensions.swift */,
+					B2F9C1012F4C2A9100A1C001 /* SearchModeSegmentedControlView.swift */,
+				);
+				path = ViewTheWord;
+				sourceTree = "<group>";
+			};
 		03A1D26928672D1800511E73 /* Preview Content */ = {
 			isa = PBXGroup;
 			children = (
@@ -199,11 +202,12 @@
 				03EFCF7928703DC500A69AD2 /* ProjectorView.swift in Sources */,
 				03A1D26628672D1700511E73 /* ContentView.swift in Sources */,
 				03EEAE4F28793D69008EC35C /* AppConstants.swift in Sources */,
-				03A1D27D2867FBC800511E73 /* Db.swift in Sources */,
-				03A1D26428672D1700511E73 /* ViewTheWordApp.swift in Sources */,
-				03EFCF7B28703E1A00A69AD2 /* VerseRowView.swift in Sources */,
-				03A1D27F28685D5400511E73 /* RxVerse.swift in Sources */,
-			);
+					03A1D27D2867FBC800511E73 /* Db.swift in Sources */,
+					03A1D26428672D1700511E73 /* ViewTheWordApp.swift in Sources */,
+					03EFCF7B28703E1A00A69AD2 /* VerseRowView.swift in Sources */,
+					03A1D27F28685D5400511E73 /* RxVerse.swift in Sources */,
+					B2F9C1022F4C2A9100A1C001 /* SearchModeSegmentedControlView.swift in Sources */,
+				);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
