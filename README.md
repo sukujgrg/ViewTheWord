@@ -16,7 +16,9 @@ xcrun notarytool store-credentials "ViewTheWordNotary" \
 Create a notarized local release artifact:
 
 ```bash
-make release-notarize NOTARY_PROFILE=ViewTheWordNotary
+echo "3.1.0" > VERSION
+git tag v3.1.0
+make release-notarize NOTARY_PROFILE=ViewTheWordNotary TAG=v3.1.0
 ```
 
 Create notarized artifacts and publish to GitHub release:
@@ -24,7 +26,14 @@ Create notarized artifacts and publish to GitHub release:
 ```bash
 make release-github \
   NOTARY_PROFILE=ViewTheWordNotary \
-  GH_REPO=sukujgrg/ViewTheWord
+  GH_REPO=sukujgrg/ViewTheWord \
+  TAG=v3.1.0
 ```
 
 Artifacts are written to `build/release`.
+
+Release guardrails:
+
+- Script derives app `MARKETING_VERSION` from `TAG` (or exact HEAD tag, then `VERSION` file fallback).
+- `VERSION` file must match the resolved release version; release fails if it is not updated.
+- Optional tag format `vX.Y.Z+BUILD` also sets `CURRENT_PROJECT_VERSION=BUILD`.

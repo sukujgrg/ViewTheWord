@@ -14,7 +14,9 @@ Optional:
   --project PATH             Xcode project path (default: ViewTheWord.xcodeproj)
   --scheme NAME              Xcode scheme (default: ViewTheWord)
   --configuration NAME       Build configuration (default: Release)
-  --version VERSION          Release version (default: contents of VERSION file)
+  --version VERSION          Release version (default: derived from Git tag, else VERSION file)
+  --build-number NUMBER      Build number for CURRENT_PROJECT_VERSION (default: from tag +BUILD suffix, else Xcode project default)
+  --skip-version-file-check  Do not require VERSION file to match release version.
   --output-dir DIR           Output directory (default: build/release)
   --team-id TEAM_ID          Apple Developer Team ID for export signing.
   --signing-identity NAME    Override CODE_SIGN_IDENTITY at archive time.
@@ -24,7 +26,7 @@ Optional:
 GitHub distribution:
   --github                   Upload artifacts to GitHub release using gh CLI.
   --repo OWNER/REPO          GitHub repository slug. Required when --github is set.
-  --tag TAG                  Git tag for the release (default: v<VERSION>)
+  --tag TAG                  Git tag for the release (default: exact tag at HEAD, else v<VERSION>)
   --notes FILE               Release notes file path for gh release create.
 
 Examples:
@@ -34,7 +36,7 @@ Examples:
     --notary-profile ViewTheWordNotary \
     --github \
     --repo sukujgrg/ViewTheWord \
-    --tag v3.0.1
+    --tag v3.0.1+45
 
 One-time notary profile setup example:
   xcrun notarytool store-credentials "ViewTheWordNotary" \
@@ -61,12 +63,14 @@ NOTARY_PROFILE=""
 TEAM_ID=""
 SIGNING_IDENTITY=""
 VERSION=""
+BUILD_NUMBER=""
 CURRENT_ARCH_ONLY=false
 ALLOW_PROVISIONING=false
 PUBLISH_GITHUB=false
 REPO=""
 TAG=""
 NOTES_FILE=""
+SKIP_VERSION_FILE_CHECK=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -85,6 +89,14 @@ while [[ $# -gt 0 ]]; do
     --version)
       VERSION="$2"
       shift 2
+      ;;
+    --build-number)
+      BUILD_NUMBER="$2"
+      shift 2
+      ;;
+    --skip-version-file-check)
+      SKIP_VERSION_FILE_CHECK=true
+      shift
       ;;
     --output-dir)
       OUTPUT_DIR="$2"
@@ -156,15 +168,67 @@ derive_repo_from_origin() {
   printf '%s' "$repo_slug"
 }
 
+derive_version_from_tag() {
+  local tag="$1"
+  local normalized_tag="${tag#refs/tags/}"
+  normalized_tag="${normalized_tag#v}"
+  local version_part="${normalized_tag%%+*}"
+
+  if [[ "$version_part" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
+    printf '%s' "$version_part"
+    return 0
+  fi
+
+  return 1
+}
+
+derive_build_from_tag() {
+  local tag="$1"
+  local normalized_tag="${tag#refs/tags/}"
+  normalized_tag="${normalized_tag#v}"
+
+  if [[ "$normalized_tag" =~ \+([0-9]+)$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+
+  return 1
+}
+
+find_exact_head_tag() {
+  command -v git >/dev/null 2>&1 || return 1
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  git describe --tags --exact-match 2>/dev/null || return 1
+}
+
 if [[ -z "$NOTARY_PROFILE" ]]; then
   fail "--notary-profile is required"
 fi
 
-if [[ -z "$VERSION" ]]; then
-  if [[ -f VERSION ]]; then
-    VERSION="$(tr -d '[:space:]' < VERSION)"
+if [[ -n "$TAG" ]]; then
+  TAG_VERSION="$(derive_version_from_tag "$TAG" || true)"
+  [[ -n "$TAG_VERSION" ]] || fail "Tag '$TAG' is not a valid release tag. Use vX.Y.Z or vX.Y.Z+BUILD."
+
+  if [[ -n "$VERSION" && "$VERSION" != "$TAG_VERSION" ]]; then
+    fail "--version ($VERSION) does not match --tag ($TAG => $TAG_VERSION)"
   fi
-  [[ -n "$VERSION" ]] || fail "Unable to determine version. Pass --version or create VERSION file."
+  VERSION="$TAG_VERSION"
+fi
+
+if [[ -z "$VERSION" ]]; then
+  HEAD_TAG="$(find_exact_head_tag || true)"
+  if [[ -n "$HEAD_TAG" ]]; then
+    TAG="$HEAD_TAG"
+    VERSION="$(derive_version_from_tag "$HEAD_TAG" || true)"
+  fi
+
+  if [[ -f VERSION ]]; then
+    if [[ -z "$VERSION" ]]; then
+      VERSION="$(tr -d '[:space:]' < VERSION)"
+    fi
+  fi
+
+  [[ -n "$VERSION" ]] || fail "Unable to determine version. Pass --version, create VERSION file, or create a Git tag like vX.Y.Z."
 fi
 
 if [[ "$PUBLISH_GITHUB" == true ]]; then
@@ -173,6 +237,21 @@ if [[ "$PUBLISH_GITHUB" == true ]]; then
   fi
   [[ -n "$REPO" ]] || fail "--repo OWNER/REPO is required when --github is set (or set a GitHub origin remote)"
   [[ -n "$TAG" ]] || TAG="v$VERSION"
+fi
+
+if [[ -z "$BUILD_NUMBER" && -n "$TAG" ]]; then
+  BUILD_NUMBER="$(derive_build_from_tag "$TAG" || true)"
+fi
+
+if [[ -n "$BUILD_NUMBER" && ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
+  fail "--build-number must be numeric."
+fi
+
+if [[ "$SKIP_VERSION_FILE_CHECK" == false ]]; then
+  [[ -f VERSION ]] || fail "VERSION file is required for release. Set it to $VERSION."
+  VERSION_FILE_VALUE="$(tr -d '[:space:]' < VERSION)"
+  [[ -n "$VERSION_FILE_VALUE" ]] || fail "VERSION file is empty. Set it to $VERSION."
+  [[ "$VERSION_FILE_VALUE" == "$VERSION" ]] || fail "VERSION file ($VERSION_FILE_VALUE) does not match release version ($VERSION). Update VERSION first."
 fi
 
 require_command xcodebuild
@@ -225,6 +304,12 @@ fi
 
 if [[ -n "$SIGNING_IDENTITY" ]]; then
   BUILD_ARGS+=("CODE_SIGN_IDENTITY=$SIGNING_IDENTITY")
+fi
+
+BUILD_ARGS+=("MARKETING_VERSION=$VERSION")
+
+if [[ -n "$BUILD_NUMBER" ]]; then
+  BUILD_ARGS+=("CURRENT_PROJECT_VERSION=$BUILD_NUMBER")
 fi
 
 ARCHIVE_CMD=(
