@@ -47,10 +47,11 @@ struct ProjectorView: View {
 
     @Binding var windowOpened: Bool
     @AppStorage("fontSizeVerse") private var fontSizeVerse = 200.0
-    @AppStorage("fontSizeVerseRef") private var fontSizeVerseRef = 20.0
+    @AppStorage("fontSizeVerseRef") private var fontSizeVerseRef = 36.0
     @AppStorage("vStackPadding") private var vStackPadding = 20.0
     @AppStorage(AppDefaultsKey.projectorTextAlignment) private var projectorTextAlignmentRaw = ProjectorTextAlignmentMode.center.rawValue
     @AppStorage(AppDefaultsKey.projectorReadingDirection) private var projectorReadingDirectionRaw = ProjectorReadingDirectionMode.auto.rawValue
+    @AppStorage(AppDefaultsKey.projectorDualLayoutVertical) private var projectorDualLayoutVertical = false
 
     private var projectorTextAlignmentMode: ProjectorTextAlignmentMode {
         ProjectorTextAlignmentMode(rawValue: projectorTextAlignmentRaw) ?? .center
@@ -96,31 +97,28 @@ struct ProjectorView: View {
         }
     }
 
+    private var secondaryVerseText: String? {
+        guard let secondaryText = projectorViewModel.projectorViewData.secondaryText,
+              secondaryText != "\u{200c}" else {
+            return nil
+        }
+
+        return secondaryText
+    }
+
     var body: some View {
-        VStack {
+        VStack(spacing: 0) {
+            Text(projectorViewModel.projectorViewData.title)
+                .font(.system(size: CGFloat(fontSizeVerseRef), weight: .bold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: resolvedFrameAlignment)
+                .padding(.bottom, 16)
+
             Spacer(minLength: 0)
-            VStack(spacing: 14) {
-                Text(projectorViewModel.projectorViewData.primaryText)
-                    .font(.system(size: CGFloat(fontSizeVerse), weight: .heavy))
-                    .minimumScaleFactor(0.1)
-                    .lineLimit(10)
-                    .frame(maxWidth: .infinity, alignment: resolvedFrameAlignment)
 
-                Text(projectorViewModel.projectorViewData.title)
-                    .padding(.vertical, 4)
-                    .minimumScaleFactor(0.1)
-                    .lineLimit(1)
-                    .font(.system(size: CGFloat(fontSizeVerseRef), weight: .bold))
-                    .frame(maxWidth: .infinity, alignment: resolvedFrameAlignment)
+            verseContent
 
-                if let secondaryText = projectorViewModel.projectorViewData.secondaryText, secondaryText != "\u{200c}" {
-                    Text(secondaryText)
-                        .font(.system(size: CGFloat(fontSizeVerse), weight: .heavy))
-                        .minimumScaleFactor(0.1)
-                        .lineLimit(10)
-                        .frame(maxWidth: .infinity, alignment: resolvedFrameAlignment)
-                }
-            }
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -132,6 +130,43 @@ struct ProjectorView: View {
             windowOpened = false
             projectorViewModel.clearProjection()
         }
+    }
+
+    @ViewBuilder
+    private var verseContent: some View {
+        if let secondaryVerseText {
+            if projectorDualLayoutVertical {
+                VStack(spacing: 18) {
+                    verseText(projectorViewModel.projectorViewData.primaryText)
+                    dualLayoutDivider
+                        .padding(.horizontal, 12)
+                    verseText(secondaryVerseText)
+                }
+            } else {
+                HStack(alignment: .top, spacing: 20) {
+                    verseText(projectorViewModel.projectorViewData.primaryText)
+                    dualLayoutDivider
+                        .frame(width: 2)
+                        .padding(.vertical, 8)
+                    verseText(secondaryVerseText)
+                }
+            }
+        } else {
+            verseText(projectorViewModel.projectorViewData.primaryText)
+        }
+    }
+
+    private var dualLayoutDivider: some View {
+        Divider()
+            .overlay(Color.white.opacity(0.26))
+    }
+
+    private func verseText(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: CGFloat(fontSizeVerse), weight: .heavy))
+            .minimumScaleFactor(0.1)
+            .lineLimit(10)
+            .frame(maxWidth: .infinity, alignment: resolvedFrameAlignment)
     }
 
     private func inferredLayoutDirection(from text: String) -> LayoutDirection {

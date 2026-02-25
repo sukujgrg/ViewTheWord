@@ -17,6 +17,7 @@ enum AppDefaultsKey {
     static let verseRowFontSize = "verseRowFontSize"
     static let projectorTextAlignment = "projectorTextAlignment"
     static let projectorReadingDirection = "projectorReadingDirection"
+    static let projectorDualLayoutVertical = "projectorDualLayoutVertical"
     static let primaryBibleName = "PrimaryBibleName"
     static let secondaryBibleName = "SecondaryBibleName"
     static let showOnlyPrimary = "showOnlyPrimary"

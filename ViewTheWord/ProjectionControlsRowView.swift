@@ -4,6 +4,7 @@ struct ProjectionControlsRowView: View {
     @Binding var transparentBackground: Bool
     @Binding var projectorTextAlignmentRaw: String
     @Binding var projectorReadingDirectionRaw: String
+    @Binding var projectorDualLayoutVertical: Bool
 
     private var projectorAlignmentSelection: Binding<ProjectorTextAlignmentMode> {
         Binding {
@@ -33,6 +34,7 @@ struct ProjectionControlsRowView: View {
             transparentBackgroundToggle
             projectorAlignmentSegmentedControl
             projectorDirectionSegmentedControl
+            projectorDualLayoutSegmentedControl
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 12)
@@ -70,6 +72,13 @@ struct ProjectionControlsRowView: View {
                         .tag(ProjectorReadingDirectionMode.leftToRight)
                     Label("Direction RTL", systemImage: "arrow.left")
                         .tag(ProjectorReadingDirectionMode.rightToLeft)
+                }
+                Divider()
+                Picker("Dual layout", selection: $projectorDualLayoutVertical) {
+                    Label("Side by side", systemImage: "rectangle.split.2x1")
+                        .tag(false)
+                    Label("Stacked", systemImage: "rectangle.split.1x2")
+                        .tag(true)
                 }
             } label: {
                 Image(systemName: "display")
@@ -135,5 +144,21 @@ struct ProjectionControlsRowView: View {
         .frame(width: 120)
         .help("Projector reading direction")
         .accessibilityLabel("Projector reading direction")
+    }
+
+    private var projectorDualLayoutSegmentedControl: some View {
+        Picker("Dual translation layout", selection: $projectorDualLayoutVertical) {
+            Label("Side by side", systemImage: "rectangle.split.2x1")
+                .labelStyle(.iconOnly)
+                .tag(false)
+            Label("Stacked", systemImage: "rectangle.split.1x2")
+                .labelStyle(.iconOnly)
+                .tag(true)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 88)
+        .help("Dual translation layout")
+        .accessibilityLabel("Dual translation layout")
     }
 }

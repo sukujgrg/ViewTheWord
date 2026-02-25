@@ -584,13 +584,15 @@ struct MainContentView: View {
     @AppStorage(AppDefaultsKey.verseRowFontSize) private var verseRowFontSize = 17.0
     @AppStorage(AppDefaultsKey.projectorTextAlignment) private var projectorTextAlignmentRaw = ProjectorTextAlignmentMode.center.rawValue
     @AppStorage(AppDefaultsKey.projectorReadingDirection) private var projectorReadingDirectionRaw = ProjectorReadingDirectionMode.auto.rawValue
+    @AppStorage(AppDefaultsKey.projectorDualLayoutVertical) private var projectorDualLayoutVertical = false
 
     var body: some View {
         VStack(spacing: 8) {
             ProjectionControlsRowView(
                 transparentBackground: $transparentBackground,
                 projectorTextAlignmentRaw: $projectorTextAlignmentRaw,
-                projectorReadingDirectionRaw: $projectorReadingDirectionRaw
+                projectorReadingDirectionRaw: $projectorReadingDirectionRaw,
+                projectorDualLayoutVertical: $projectorDualLayoutVertical
             )
 
             ViewThatFits(in: .horizontal) {

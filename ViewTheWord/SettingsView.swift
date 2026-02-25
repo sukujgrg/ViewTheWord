@@ -28,11 +28,11 @@ struct SettingsView: View {
 
 struct DisplaySettingsView: View {
     @AppStorage("fontSizeVerse") private var fontSizeVerse = 100.0
-    @AppStorage("fontSizeVerseRef") private var fontSizeVerseRef = 20.0
+    @AppStorage("fontSizeVerseRef") private var fontSizeVerseRef = 36.0
     @AppStorage("vStackPadding") private var vStackPadding = 20.0
 
     @State private var fontSizeVerseDraft = 100.0
-    @State private var fontSizeVerseRefDraft = 20.0
+    @State private var fontSizeVerseRefDraft = 36.0
     @State private var vStackPaddingDraft = 20.0
 
     var body: some View {
@@ -53,7 +53,7 @@ struct DisplaySettingsView: View {
                         title: "Verse reference",
                         valueText: String(format: "%.0f pts", fontSizeVerseRefDraft)
                     )
-                    Slider(value: $fontSizeVerseRefDraft, in: 20 ... 50, step: 1, onEditingChanged: { isEditing in
+                    Slider(value: $fontSizeVerseRefDraft, in: 20 ... 72, step: 1, onEditingChanged: { isEditing in
                         if !isEditing {
                             persistFontSettings()
                         }
