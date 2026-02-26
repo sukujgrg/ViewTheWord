@@ -1110,13 +1110,17 @@ struct MainView: View {
         reference: VerseReference,
         primaryText: String,
         secondaryText: String?,
+        primaryTranslationName: String,
+        secondaryTranslationName: String?,
         owner: ProjectionOwner
     ) {
         projectorViewModel.project(
             ProjectorViewData(
                 title: reference.verseQuery.title,
                 primaryText: primaryText,
-                secondaryText: secondaryText
+                secondaryText: secondaryText,
+                primaryTranslationName: primaryTranslationName,
+                secondaryTranslationName: secondaryTranslationName
             ),
             owner: owner
         )
@@ -1314,10 +1318,18 @@ struct MainView: View {
         if project {
             let displayPrimaryText = primaryText ?? secondaryText ?? "\u{200c}"
             let displaySecondaryText = primaryText != nil ? secondaryText : nil
+            let displayPrimaryTranslationName = primaryText != nil
+                ? formatBibleName(primaryBibleName)
+                : formatBibleName(secondaryBibleName)
+            let displaySecondaryTranslationName = (primaryText != nil && secondaryText != nil)
+                ? formatBibleName(secondaryBibleName)
+                : nil
             setProjection(
                 reference: targetReference,
                 primaryText: displayPrimaryText,
                 secondaryText: displaySecondaryText,
+                primaryTranslationName: displayPrimaryTranslationName,
+                secondaryTranslationName: displaySecondaryTranslationName,
                 owner: .textInputTarget(targetReference)
             )
             openProjector()
@@ -1393,6 +1405,8 @@ struct MainView: View {
             reference: reference,
             primaryText: primaryText,
             secondaryText: secondaryText,
+            primaryTranslationName: primaryVerse != nil ? formatBibleName(primaryBibleName) : formatBibleName(secondaryBibleName),
+            secondaryTranslationName: (primaryVerse != nil && secondaryVerse != nil) ? formatBibleName(secondaryBibleName) : nil,
             owner: .verseRowSelection(reference)
         )
         openProjector()
@@ -1420,10 +1434,20 @@ struct MainView: View {
                 reference: reference,
                 primaryText: primaryText,
                 secondaryText: secondaryText,
+                primaryTranslationName: primaryVerse != nil ? formatBibleName(primaryBibleName) : formatBibleName(secondaryBibleName),
+                secondaryTranslationName: (primaryVerse != nil && secondaryText != nil) ? formatBibleName(secondaryBibleName) : nil,
                 owner: .searchResult(reference)
             )
             openProjector()
         }
+    }
+
+    private func formatBibleName(_ bibleUrl: String) -> String {
+        let fileName = URL(string: bibleUrl)?.lastPathComponent ?? bibleUrl
+        return fileName
+            .removingPercentEncoding?
+            .replacingOccurrences(of: ".bible", with: "")
+            .replacingOccurrences(of: "_", with: " ") ?? fileName
     }
 
     func navigateColumnLeft() {

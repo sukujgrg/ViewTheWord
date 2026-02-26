@@ -22,7 +22,13 @@ extension ProjectionOwner: Equatable {
 }
 
 class ProjectorViewModel: ObservableObject {
-    @Published private(set) var projectorViewData: ProjectorViewData = .init(title: "?", primaryText: "?", secondaryText: "?")
+    @Published private(set) var projectorViewData: ProjectorViewData = .init(
+        title: "?",
+        primaryText: "?",
+        secondaryText: "?",
+        primaryTranslationName: "",
+        secondaryTranslationName: nil
+    )
     @Published private(set) var projectionOwner: ProjectionOwner?
 
     func project(_ data: ProjectorViewData, owner: ProjectionOwner) {
@@ -31,7 +37,13 @@ class ProjectorViewModel: ObservableObject {
     }
 
     func clearProjection() {
-        projectorViewData = .init(title: "?", primaryText: "?", secondaryText: "?")
+        projectorViewData = .init(
+            title: "?",
+            primaryText: "?",
+            secondaryText: "?",
+            primaryTranslationName: "",
+            secondaryTranslationName: nil
+        )
         projectionOwner = nil
     }
 }
@@ -40,6 +52,8 @@ struct ProjectorViewData {
     let title: String
     let primaryText: String
     let secondaryText: String?
+    let primaryTranslationName: String
+    let secondaryTranslationName: String?
 }
 
 struct ProjectorView: View {
@@ -106,13 +120,79 @@ struct ProjectorView: View {
         return secondaryText
     }
 
+    private var translationInfoText: String {
+        let orderedNames = orderedTranslationNames.compactMap { name in
+            let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmedName.isEmpty ? nil : trimmedName
+        }
+
+        return orderedNames.joined(separator: " ↔ ")
+    }
+
+    private var orderedTranslationNames: [String] {
+        let primaryName = projectorViewModel.projectorViewData.primaryTranslationName
+        guard let secondaryVerseText,
+              !secondaryVerseText.isEmpty,
+              let secondaryName = projectorViewModel.projectorViewData.secondaryTranslationName
+        else {
+            return [primaryName]
+        }
+
+        if projectorDualLayoutVertical {
+            return [primaryName, secondaryName]
+        }
+
+        if resolvedLayoutDirection == .leftToRight {
+            return [primaryName, secondaryName]
+        }
+
+        return [secondaryName, primaryName]
+    }
+
+    private var referenceTitleText: some View {
+        Text(projectorViewModel.projectorViewData.title)
+            .foregroundStyle(Color.accentColor.opacity(0.95))
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .layoutPriority(1)
+    }
+
+    private var translationInfoLabelText: some View {
+        Text(translationInfoText)
+            .foregroundStyle(Color.teal.opacity(0.92))
+            .lineLimit(1)
+            .truncationMode(.tail)
+    }
+
+    @ViewBuilder
+    private var referenceLineView: some View {
+        let translationInfoText = translationInfoText
+        if translationInfoText.isEmpty {
+            referenceTitleText
+                .frame(maxWidth: .infinity, alignment: resolvedFrameAlignment)
+        } else if resolvedLayoutDirection == .leftToRight {
+            HStack(spacing: 14) {
+                referenceTitleText
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                translationInfoLabelText
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        } else {
+            HStack(spacing: 14) {
+                translationInfoLabelText
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                referenceTitleText
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            Text(projectorViewModel.projectorViewData.title)
+            referenceLineView
                 .font(.system(size: CGFloat(fontSizeVerseRef), weight: .bold))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: resolvedFrameAlignment)
                 .padding(.bottom, 16)
 
             Spacer(minLength: 0)
