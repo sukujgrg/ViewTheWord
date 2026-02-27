@@ -453,6 +453,7 @@ struct BibleImportView: View {
             )
 
             logger.info("Successfully imported Bible: \(importedURL.lastPathComponent)")
+            BibleUrl.invalidateAvailableBibleUrlCache()
             refreshAvailableBibles()
             showStatus(.success("Successfully imported \(importedURL.lastPathComponent)"))
         } catch let error as CocoaError where error.code == .userCancelled {

@@ -351,12 +351,6 @@ struct VerseRowView: View {
                     visibleVerseTracker.removeAll()
                     updateSelectionAndScroll(proxy: value)
                 }
-                .onChange(of: showOnlyPrimary) { _, _ in
-                    rebuildChapterRows()
-                    hoveredRowIndex = nil
-                    visibleVerseTracker.removeAll()
-                    updateSelectionAndScroll(proxy: value)
-                }
             }
         }
         .frame(maxHeight: .infinity)

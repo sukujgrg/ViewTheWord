@@ -196,6 +196,12 @@ class SearchParser {
 
 class SearchQuery {
     let ask: String
+    private static let verseAskRegexPattern =
+        #"(?<series>[1-3])?[^a-zA-Z0-9]*"#
+        + #"(?<book>[a-zA-Z]+)\D*"#
+        + #"(?<chapter>\d+)?"#
+        + #"((?:\D+)(?<verse>\d+))?"#
+    private static let verseAskRegex = try? NSRegularExpression(pattern: verseAskRegexPattern, options: [])
 
     init(ask: String) {
         self.ask = ask
@@ -276,16 +282,11 @@ class SearchQuery {
     }
 
     func formatVerseAsk() -> VerseQuery? {
-        let regex =
-            #"(?<series>[1-3])?[^a-zA-Z0-9]*"# +
-            #"(?<book>[a-zA-Z]+)\D*"# +
-            #"(?<chapter>\d+)?"# +
-            #"((?:\D+)(?<verse>\d+))?"#
         let captureGroups = ["series", "book", "chapter", "verse"]
 
         let strRange = NSRange(ask.startIndex ..< ask.endIndex, in: ask)
 
-        guard let nameRegex = try? NSRegularExpression(pattern: regex, options: []) else {
+        guard let nameRegex = Self.verseAskRegex else {
             logger.error("Failed to compile verse query regex")
             return nil
         }

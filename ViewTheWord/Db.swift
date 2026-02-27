@@ -1,7 +1,9 @@
 import Foundation
 import SQLite3
 
-struct AVerse {
+struct AVerse: Identifiable {
+    var id: Int { verseId }
+
     let verseId: Int
     let bookNumber: Int
     let bookName: String
@@ -11,8 +13,17 @@ struct AVerse {
 }
 
 class BibleUrl {
+    private static let cacheQueue = DispatchQueue(label: "com.viewtheword.bibleurl.cache")
+    private static var cachedAvailableBibleUrls: [URL]?
+
     var primaryBibleUrl: URL
     var secondaryBibleUrl: URL
+
+    static func invalidateAvailableBibleUrlCache() {
+        cacheQueue.sync {
+            cachedAvailableBibleUrls = nil
+        }
+    }
 
     init() {
         primaryBibleUrl = bundledPrimaryBibleUrl ?? URL(fileURLWithPath: "/dev/null")
@@ -64,7 +75,22 @@ class BibleUrl {
         return nil
     }
 
-    func getAvailableBibleUrls() -> [URL] {
+    func getAvailableBibleUrls(forceRefresh: Bool = false) -> [URL] {
+        if !forceRefresh {
+            let cachedUrls = Self.cacheQueue.sync { Self.cachedAvailableBibleUrls }
+            if let cachedUrls {
+                return cachedUrls
+            }
+        }
+
+        let scannedUrls = scanAvailableBibleUrls()
+        Self.cacheQueue.sync {
+            Self.cachedAvailableBibleUrls = scannedUrls
+        }
+        return scannedUrls
+    }
+
+    private func scanAvailableBibleUrls() -> [URL] {
         var availableBibleUrls: [URL] = []
 
         if let primary = bundledPrimaryBibleUrl {
@@ -103,6 +129,31 @@ final class Bible: @unchecked Sendable {
     let dbUrl: URL
     private var db: OpaquePointer?
     private let dbQueue = DispatchQueue(label: "com.viewtheword.database", qos: .userInitiated)
+    private var pickVerseStatement: OpaquePointer?
+    private var pickChapterStatement: OpaquePointer?
+    private var searchTextStatement: OpaquePointer?
+
+    private let pickVerseQuery = """
+        SELECT id, bnumber, cnumber, vnumber, verse
+        FROM bible
+        WHERE bnumber = ? AND cnumber = ? AND vnumber = ?
+        LIMIT 1;
+    """
+
+    private let pickChapterQuery = """
+        SELECT id, bnumber, cnumber, vnumber, verse
+        FROM bible
+        WHERE bnumber = ? AND cnumber = ?
+        ORDER BY vnumber;
+    """
+
+    private let searchTextQuery = """
+        SELECT id, bnumber, cnumber, vnumber, verse
+        FROM bible
+        WHERE verse LIKE ?
+        ORDER BY bnumber, cnumber, vnumber
+        LIMIT ?;
+    """
 
     // Cache for O(1) book number to name lookups
     internal static let bookNumberToName: [Int: String] = {
@@ -124,6 +175,10 @@ final class Bible: @unchecked Sendable {
 
     func closeDb() {
         dbQueue.sync {
+            finalizeStatement(&pickVerseStatement)
+            finalizeStatement(&pickChapterStatement)
+            finalizeStatement(&searchTextStatement)
+
             if let db = db, sqlite3_close_v2(db) != SQLITE_OK {
                 logger.error("Error closing \(self.dbUrl.absoluteString).")
             }
@@ -320,49 +375,83 @@ final class Bible: @unchecked Sendable {
         guard let bookNumber = bookNumber(bookName: verseQuery.bookName) else {
             return nil
         }
-        let queryStatementString = """
-            SELECT * FROM bible
-                WHERE
-                    bnumber = ? AND
-                    cnumber = ? AND
-                    vnumber = ?;
-        """
-        if let result = runVerseQuery(
-            queryStatementString: queryStatementString,
-            verseQuery: verseQuery,
-            parameters: [bookNumber, verseQuery.chapterNumber, verseQuery.verseNumber]
-        ) {
-            return result.first
-        } else {
+
+        guard let statement = cachedStatement(
+            statement: &pickVerseStatement,
+            query: pickVerseQuery,
+            context: "pick verse query"
+        ) else {
             return nil
         }
+
+        sqlite3_reset(statement)
+        sqlite3_clear_bindings(statement)
+        sqlite3_bind_int(statement, 1, Int32(bookNumber))
+        sqlite3_bind_int(statement, 2, Int32(verseQuery.chapterNumber))
+        sqlite3_bind_int(statement, 3, Int32(verseQuery.verseNumber))
+
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+
+        return makeVerse(from: statement, fallbackBookName: verseQuery.bookName)
     }
 
     private func pickAChapterUnlocked(verseQuery: VerseQuery) -> [AVerse]? {
         guard let bookNumber = bookNumber(bookName: verseQuery.bookName) else {
             return nil
         }
-        let queryStatementString = """
-            SELECT * FROM bible
-                WHERE
-                    bnumber = ? AND
-                    cnumber = ?;
-        """
-        return runVerseQuery(
-            queryStatementString: queryStatementString,
-            verseQuery: verseQuery,
-            parameters: [bookNumber, verseQuery.chapterNumber]
-        )
+
+        guard let statement = cachedStatement(
+            statement: &pickChapterStatement,
+            query: pickChapterQuery,
+            context: "pick chapter query"
+        ) else {
+            return nil
+        }
+
+        sqlite3_reset(statement)
+        sqlite3_clear_bindings(statement)
+        sqlite3_bind_int(statement, 1, Int32(bookNumber))
+        sqlite3_bind_int(statement, 2, Int32(verseQuery.chapterNumber))
+
+        var verses: [AVerse] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let verse = makeVerse(from: statement, fallbackBookName: verseQuery.bookName) else {
+                continue
+            }
+            verses.append(verse)
+        }
+
+        return verses.isEmpty ? nil : verses
     }
 
     private func searchTextUnlocked(searchQuery: String, limit: Int) -> [AVerse]? {
-        let queryStatementString = """
-            SELECT * FROM bible
-                WHERE verse LIKE ?
-                ORDER BY bnumber, cnumber, vnumber
-                LIMIT ?;
-        """
-        return runSearchQuery(queryStatementString: queryStatementString, searchPattern: "%\(searchQuery)%", limit: limit)
+        guard let statement = cachedStatement(
+            statement: &searchTextStatement,
+            query: searchTextQuery,
+            context: "search text query"
+        ) else {
+            return nil
+        }
+
+        let pattern = "%\(searchQuery)%"
+        let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+        sqlite3_reset(statement)
+        sqlite3_clear_bindings(statement)
+        sqlite3_bind_text(statement, 1, (pattern as NSString).utf8String, -1, sqliteTransient)
+        sqlite3_bind_int(statement, 2, Int32(limit))
+
+        var verses: [AVerse] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let verse = makeVerse(from: statement, fallbackBookName: nil) else {
+                continue
+            }
+            verses.append(verse)
+        }
+
+        return verses.isEmpty ? nil : verses
     }
 
     private func searchTextWithFilterUnlocked(searchQuery: String, filter: SearchFilter, limit: Int) -> [AVerse]? {
@@ -427,52 +516,59 @@ final class Bible: @unchecked Sendable {
         )
     }
 
-    private func runVerseQuery(
-        queryStatementString: String,
-        verseQuery: VerseQuery,
-        parameters: [Int] = []
-    ) -> [AVerse]? {
-        guard db != nil else {
+    private func cachedStatement(
+        statement: inout OpaquePointer?,
+        query: String,
+        context: String
+    ) -> OpaquePointer? {
+        guard let db else {
             return nil
         }
-        var verses: [AVerse] = []
 
-        var queryStatement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, queryStatementString, -1, &queryStatement, nil) == SQLITE_OK else {
+        if let statement {
+            return statement
+        }
+
+        var newStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, query, -1, &newStatement, nil) == SQLITE_OK else {
             let errmsg = String(cString: sqlite3_errmsg(db))
-            logger.error("Failed to prepare query: \(errmsg)")
+            logger.error("Failed to prepare \(context): \(errmsg)")
             return nil
         }
 
-        // Bind parameters
-        for (index, parameter) in parameters.enumerated() {
-            sqlite3_bind_int(queryStatement, Int32(index + 1), Int32(parameter))
+        statement = newStatement
+        return newStatement
+    }
+
+    private func finalizeStatement(_ statement: inout OpaquePointer?) {
+        guard let currentStatement = statement else {
+            return
         }
 
-        while sqlite3_step(queryStatement) == SQLITE_ROW {
-            let verseId = sqlite3_column_int(queryStatement, 0)
-            let bookNumber = sqlite3_column_int(queryStatement, 1)
-            let chapterNumber = sqlite3_column_int(queryStatement, 2)
-            let verseNumber = sqlite3_column_int(queryStatement, 3)
+        sqlite3_finalize(currentStatement)
+        statement = nil
+    }
 
-            guard let verseText = sqlite3_column_text(queryStatement, 4) else {
-                continue
-            }
-            let verse = String(cString: verseText)
-
-            verses.append(AVerse(
-                verseId: Int(verseId),
-                bookNumber: Int(bookNumber),
-                bookName: verseQuery.bookName,
-                chapterNumber: Int(chapterNumber),
-                verseNumber: Int(verseNumber),
-                verse: verse
-            ))
+    private func makeVerse(from statement: OpaquePointer?, fallbackBookName: String?) -> AVerse? {
+        guard let statement else {
+            return nil
         }
 
-        sqlite3_finalize(queryStatement)
+        guard let verseText = sqlite3_column_text(statement, 4) else {
+            return nil
+        }
 
-        return verses.isEmpty ? nil : verses
+        let bookNumber = Int(sqlite3_column_int(statement, 1))
+        let bookName = fallbackBookName ?? Bible.bookNumberToName[bookNumber] ?? "Unknown"
+
+        return AVerse(
+            verseId: Int(sqlite3_column_int(statement, 0)),
+            bookNumber: bookNumber,
+            bookName: bookName,
+            chapterNumber: Int(sqlite3_column_int(statement, 2)),
+            verseNumber: Int(sqlite3_column_int(statement, 3)),
+            verse: String(cString: verseText)
+        )
     }
 
     private func runChapterCountQuery(queryStatementString: String, bookNumber: Int) -> Int32? {

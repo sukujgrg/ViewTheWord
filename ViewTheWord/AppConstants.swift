@@ -135,12 +135,12 @@ final class HistoryStore: ObservableObject {
 
     @Published private(set) var entries: [Entry] = []
 
+    @Published private(set) var groupedSections: [WeekSection] = []
+
+    @Published private(set) var version: Int = 0
+
     var items: [String] {
         entries.map(\.title)
-    }
-
-    var groupedSections: [WeekSection] {
-        Self.makeGroupedSections(from: entries)
     }
 
     private static let maxWeekCount = 5
@@ -157,15 +157,17 @@ final class HistoryStore: ObservableObject {
         let trimmed = rawItem.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        entries = Self.normalized(
+        setEntries(
+            Self.normalized(
             from: entries + [Entry(title: trimmed, selectedAt: Date())]
+            )
         )
         persist()
     }
 
     func clear() {
         guard !entries.isEmpty else { return }
-        entries.removeAll()
+        setEntries([])
         persist()
     }
 
@@ -173,19 +175,22 @@ final class HistoryStore: ObservableObject {
         do {
             let data = try Data(contentsOf: historyFileURL)
             if let decoded = try? JSONDecoder().decode([Entry].self, from: data) {
-                entries = Self.normalized(from: decoded)
+                setEntries(Self.normalized(from: decoded), incrementVersion: false)
                 return
             }
 
             if let legacyDecoded = try? JSONDecoder().decode([String].self, from: data) {
-                entries = Self.normalized(from: Self.legacyEntries(from: legacyDecoded))
+                setEntries(
+                    Self.normalized(from: Self.legacyEntries(from: legacyDecoded)),
+                    incrementVersion: false
+                )
                 persist() // Rewrite history file using the newer timestamped schema.
                 return
             }
 
-            entries = []
+            setEntries([], incrementVersion: false)
         } catch {
-            entries = []
+            setEntries([], incrementVersion: false)
         }
     }
 
@@ -212,9 +217,17 @@ final class HistoryStore: ObservableObject {
             return
         }
 
-        entries = Self.normalized(from: Self.legacyEntries(from: legacyItems))
+        setEntries(Self.normalized(from: Self.legacyEntries(from: legacyItems)))
         persist()
         UserDefaults.standard.removeObject(forKey: Self.legacyUserDefaultsKey)
+    }
+
+    private func setEntries(_ newEntries: [Entry], incrementVersion: Bool = true) {
+        entries = newEntries
+        groupedSections = Self.makeGroupedSections(from: newEntries)
+        if incrementVersion {
+            version &+= 1
+        }
     }
 
     private static func normalized(from values: [Entry], now: Date = Date()) -> [Entry] {
@@ -357,8 +370,11 @@ final class BookmarkStore: ObservableObject {
 
     @Published private(set) var entries: [Entry] = []
 
+    @Published private(set) var version: Int = 0
+
     private static let maxCount = 200
     private let bookmarkFileURL: URL
+    private var entryIDs: Set<String> = []
 
     private init() {
         bookmarkFileURL = Self.makeBookmarkFileURL()
@@ -366,29 +382,30 @@ final class BookmarkStore: ObservableObject {
     }
 
     func add(_ reference: VerseReference) {
-        entries.removeAll { $0.id == Entry(reference: reference).id }
-        entries.append(Entry(reference: reference))
-        entries = Self.normalized(from: entries)
+        var nextEntries = entries
+        nextEntries.removeAll { $0.id == Entry(reference: reference).id }
+        nextEntries.append(Entry(reference: reference))
+        setEntries(Self.normalized(from: nextEntries))
         persist()
     }
 
     func remove(_ reference: VerseReference) {
         let id = Entry(reference: reference).id
-        let originalCount = entries.count
-        entries.removeAll { $0.id == id }
-        if entries.count != originalCount {
+        let nextEntries = entries.filter { $0.id != id }
+        if nextEntries.count != entries.count {
+            setEntries(nextEntries)
             persist()
         }
     }
 
     func contains(_ reference: VerseReference) -> Bool {
         let id = Entry(reference: reference).id
-        return entries.contains { $0.id == id }
+        return entryIDs.contains(id)
     }
 
     func clear() {
         guard !entries.isEmpty else { return }
-        entries.removeAll()
+        setEntries([])
         persist()
     }
 
@@ -396,9 +413,9 @@ final class BookmarkStore: ObservableObject {
         do {
             let data = try Data(contentsOf: bookmarkFileURL)
             let decoded = try JSONDecoder().decode([Entry].self, from: data)
-            entries = Self.normalized(from: decoded)
+            setEntries(Self.normalized(from: decoded), incrementVersion: false)
         } catch {
-            entries = []
+            setEntries([], incrementVersion: false)
         }
     }
 
@@ -434,6 +451,14 @@ final class BookmarkStore: ObservableObject {
             normalized.removeFirst(normalized.count - maxCount)
         }
         return normalized
+    }
+
+    private func setEntries(_ newEntries: [Entry], incrementVersion: Bool = true) {
+        entries = newEntries
+        entryIDs = Set(newEntries.map(\.id))
+        if incrementVersion {
+            version &+= 1
+        }
     }
 
     private static func makeBookmarkFileURL() -> URL {

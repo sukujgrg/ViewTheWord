@@ -223,10 +223,12 @@ struct ChaptersListView: View {
     let chapterCount: Int32
     let onChapterSelected: (Int) -> Void
     let bookmarkEntries: [BookmarkStore.Entry]
+    let bookmarkVersion: Int
     let onSelectBookmarkItem: (BookmarkStore.Entry) -> Void
     let onRemoveBookmarkItem: (BookmarkStore.Entry) -> Void
     let onClearBookmarks: () -> Void
     let historySections: [HistoryStore.WeekSection]
+    let historyVersion: Int
     let onSelectHistoryItem: (String) -> Void
     let onClearHistory: () -> Void
 
@@ -378,8 +380,9 @@ struct ChaptersListView: View {
             else { return }
             onSelectBookmarkItem(selectedEntry)
         }
-        .onChange(of: bookmarkEntries.map(\.id)) { _, currentIDs in
+        .onChange(of: bookmarkVersion) { _, _ in
             guard let selectedBookmarkID else { return }
+            let currentIDs = bookmarkEntries.map(\.id)
             if !currentIDs.contains(selectedBookmarkID) {
                 self.selectedBookmarkID = nil
             }
@@ -443,8 +446,9 @@ struct ChaptersListView: View {
                 }
             }
         }
-        .onChange(of: historySections.flatMap(\.items).map(\.id)) { _, currentIDs in
+        .onChange(of: historyVersion) { _, _ in
             guard let selectedHistoryID else { return }
+            let currentIDs = historySections.flatMap(\.items).map(\.id)
             if !currentIDs.contains(selectedHistoryID) {
                 self.selectedHistoryID = nil
             }
@@ -481,6 +485,13 @@ struct SearchResultsView: View {
     let showOnlyPrimary: Bool
     let onVerseSelected: (AVerse) -> Void
 
+    private var secondaryResultsByReference: [String: String] {
+        Dictionary(
+            secondaryResults.map { (verseReferenceKey(for: $0), $0.verse) },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -502,11 +513,10 @@ struct SearchResultsView: View {
             // Results
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(primaryResults.indices, id: \.self) { index in
-                        let verse = primaryResults[index]
+                    ForEach(primaryResults) { verse in
                         SearchResultRowView(
                             verse: verse,
-                            secondaryVerse: (!showOnlyPrimary && index < secondaryResults.count) ? secondaryResults[index].verse : nil,
+                            secondaryVerse: showOnlyPrimary ? nil : secondaryResultsByReference[verseReferenceKey(for: verse)],
                             onTap: { onVerseSelected(verse) }
                         )
                     }
@@ -514,6 +524,10 @@ struct SearchResultsView: View {
                 .padding()
             }
         }
+    }
+
+    private func verseReferenceKey(for verse: AVerse) -> String {
+        "\(verse.bookNumber):\(verse.chapterNumber):\(verse.verseNumber)"
     }
 }
 
@@ -857,6 +871,8 @@ struct MainView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showKeyboardShortcuts = false
     @State private var searchResults: (primary: [AVerse], secondary: [AVerse])? = nil
+    @State private var primaryChapterByVerseNumber: [Int: AVerse] = [:]
+    @State private var secondaryChapterByVerseNumber: [Int: AVerse] = [:]
     @State private var currentSearchQuery: String? = nil
     @State private var programmaticChapterSelection: Int?
     @FocusState private var focusedColumn: NavigationColumn?
@@ -923,6 +939,7 @@ struct MainView: View {
                     )
                 },
                 bookmarkEntries: bookmarkStore.entries,
+                bookmarkVersion: bookmarkStore.version,
                 onSelectBookmarkItem: { entry in
                     if let reference = entry.reference {
                         navigateToReference(
@@ -944,6 +961,7 @@ struct MainView: View {
                     bookmarkStore.clear()
                 },
                 historySections: historyStore.groupedSections,
+                historyVersion: historyStore.version,
                 onSelectHistoryItem: { item in
                     ask = item
                     processSearchQuery(updateRowView: true, project: false, recordHistory: false)
@@ -1100,6 +1118,20 @@ struct MainView: View {
 
     func clearVerseRows() {
         verseRowViewModel.verseRowData = VerseRowData(primaryChapter: [], secondaryChapter: [])
+        primaryChapterByVerseNumber = [:]
+        secondaryChapterByVerseNumber = [:]
+    }
+
+    private func buildVerseNumberIndex(verses: [AVerse]) -> [Int: AVerse] {
+        Dictionary(
+            verses.map { ($0.verseNumber, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
+
+    private func updateChapterVerseLookupMaps(primaryChapter: [AVerse], secondaryChapter: [AVerse]) {
+        primaryChapterByVerseNumber = buildVerseNumberIndex(verses: primaryChapter)
+        secondaryChapterByVerseNumber = buildVerseNumberIndex(verses: secondaryChapter)
     }
 
     func appendToHistory(_ title: String) {
@@ -1359,25 +1391,21 @@ struct MainView: View {
                 primaryChapter: primaryChapter,
                 secondaryChapter: secondaryChapter
             )
+            updateChapterVerseLookupMaps(
+                primaryChapter: primaryChapter,
+                secondaryChapter: secondaryChapter
+            )
         }
 
         guard isCurrentSearch(searchID) else { return }
     }
 
-    private var primaryChapterForDisplay: [AVerse] {
-        verseRowViewModel.verseRowData.primaryChapter
-    }
-
-    private var secondaryChapterForDisplay: [AVerse] {
-        showOnlyPrimary ? [] : verseRowViewModel.verseRowData.secondaryChapter
-    }
-
     private func primaryVerseForNumber(_ verseNumber: Int) -> AVerse? {
-        primaryChapterForDisplay.first(where: { $0.verseNumber == verseNumber })
+        primaryChapterByVerseNumber[verseNumber]
     }
 
     private func secondaryVerseForNumber(_ verseNumber: Int) -> AVerse? {
-        secondaryChapterForDisplay.first(where: { $0.verseNumber == verseNumber })
+        secondaryChapterByVerseNumber[verseNumber]
     }
 
     func projectVerseFromRow(verseNumber: Int) {
