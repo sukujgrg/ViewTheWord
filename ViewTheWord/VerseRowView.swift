@@ -307,9 +307,7 @@ struct VerseRowView: View {
             ScrollViewReader { value in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
-                        let count = displayVerseCount
-                        ForEach(0 ..< count, id: \.self) { index in
-                            let row = chapterRows[index]
+                        ForEach(Array(chapterRows.enumerated()), id: \.element.verseNumber) { index, row in
                             verseRow(index: index, row: row, isActive: isCurrentVerse(index))
                                 .id(index)
                                 .onAppear {
