@@ -7,6 +7,7 @@ struct ProjectionControlsRowView: View {
     @Binding var projectorDualLayoutVertical: Bool
 
     @AppStorage(AppDefaultsKey.projectorScreenDisplayID) private var projectorScreenDisplayID = 0
+    @AppStorage(AppDefaultsKey.projectorShowTranslationInfo) private var projectorShowTranslationInfo = true
     @State private var availableScreens: [ScreenOption] = []
 
     private var projectorAlignmentSelection: Binding<ProjectorTextAlignmentMode> {
@@ -76,6 +77,7 @@ struct ProjectionControlsRowView: View {
     private var regularControls: some View {
         HStack(alignment: .center, spacing: 12) {
             transparentBackgroundToggle
+            translationInfoToggle
             projectorScreenPicker
             projectorAlignmentSegmentedControl
             projectorDirectionSegmentedControl
@@ -100,6 +102,7 @@ struct ProjectionControlsRowView: View {
             Spacer(minLength: 0)
             Menu {
                 Toggle("Transparent BG", isOn: $transparentBackground)
+                Toggle("Show Translations", isOn: $projectorShowTranslationInfo)
                 Divider()
                 Picker("Projector Screen", selection: $projectorScreenDisplayID) {
                     Text("Auto").tag(0)
@@ -157,6 +160,14 @@ struct ProjectionControlsRowView: View {
             .toggleStyle(.switch)
             .controlSize(.small)
             .help("Use transparent background for projector window")
+            .fixedSize()
+    }
+
+    private var translationInfoToggle: some View {
+        Toggle("Show Translations", isOn: $projectorShowTranslationInfo)
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .help("Show translation names on the projector reference line")
             .fixedSize()
     }
 

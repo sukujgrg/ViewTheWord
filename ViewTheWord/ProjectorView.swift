@@ -65,6 +65,7 @@ struct ProjectorView: View {
     @AppStorage(AppDefaultsKey.projectorTextAlignment) private var projectorTextAlignmentRaw = ProjectorTextAlignmentMode.center.rawValue
     @AppStorage(AppDefaultsKey.projectorReadingDirection) private var projectorReadingDirectionRaw = ProjectorReadingDirectionMode.auto.rawValue
     @AppStorage(AppDefaultsKey.projectorDualLayoutVertical) private var projectorDualLayoutVertical = false
+    @AppStorage(AppDefaultsKey.projectorShowTranslationInfo) private var projectorShowTranslationInfo = true
 
     private var projectorTextAlignmentMode: ProjectorTextAlignmentMode {
         ProjectorTextAlignmentMode(rawValue: projectorTextAlignmentRaw) ?? .center
@@ -120,12 +121,16 @@ struct ProjectorView: View {
     }
 
     private var translationInfoText: String {
+        guard projectorShowTranslationInfo else {
+            return ""
+        }
+
         let orderedNames = orderedTranslationNames.compactMap { name in
             let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmedName.isEmpty ? nil : trimmedName
         }
 
-        return orderedNames.joined(separator: " ↔ ")
+        return orderedNames.joined(separator: " • ")
     }
 
     private var orderedTranslationNames: [String] {
