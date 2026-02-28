@@ -55,6 +55,7 @@ enum BibleFileRule {
 extension Notification.Name {
     static let focusSearchField = Notification.Name("FocusSearchField")
     static let toggleKeyboardShortcuts = Notification.Name("ToggleKeyboardShortcuts")
+    static let closeProjectorRequested = Notification.Name("CloseProjectorRequested")
 }
 
 enum VerseBoundary {

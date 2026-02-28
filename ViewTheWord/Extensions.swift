@@ -6,7 +6,7 @@ private final class ProjectorWindow: NSWindow {
     override var canBecomeMain: Bool { true }
 
     override func cancelOperation(_ sender: Any?) {
-        close()
+        requestProjectorClose()
     }
 
     override func keyDown(with event: NSEvent) {
@@ -16,6 +16,15 @@ private final class ProjectorWindow: NSWindow {
             return
         }
         super.keyDown(with: event)
+    }
+
+    private func requestProjectorClose() {
+        // Defer close request to next turn of the run loop so AppKit can
+        // finish event handling before we tear down the hosted SwiftUI view.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            NotificationCenter.default.post(name: .closeProjectorRequested, object: self)
+        }
     }
 }
 

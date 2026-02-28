@@ -1048,6 +1048,20 @@ struct MainView: View {
         .onReceive(NotificationCenter.default.publisher(for: .toggleKeyboardShortcuts)) { _ in
             showKeyboardShortcuts.toggle()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .closeProjectorRequested)) { notification in
+            guard let window = notification.object as? NSWindow,
+                  window.title == AppWindowTitle.projector else {
+                return
+            }
+            closeProjector()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { notification in
+            guard let window = notification.object as? NSWindow,
+                  window.title == AppWindowTitle.projector else {
+                return
+            }
+            handleProjectorWindowClosed()
+        }
         .onChange(of: searchMode) { _, _ in
             searchTask?.cancel()
             searchTask = nil
@@ -1550,7 +1564,7 @@ struct MainView: View {
         if !windowOpened && projectorViewModel.projectorViewData.primaryText != "?" {
             // Set flag immediately to prevent duplicate window creation
             windowOpened = true
-            ProjectorView(windowOpened: $windowOpened)
+            ProjectorView()
                 .environmentObject(projectorViewModel)
                 .openNewWindow(with: AppWindowTitle.projector)
             guard let projectorWindow else {
@@ -1562,12 +1576,18 @@ struct MainView: View {
     }
 
     func closeProjector() {
-        // Close window first, then update flag
         if let projectorWindow {
-            projectorWindow.close()
+            projectorWindow.performClose(nil)
+            return
         }
-        projectorViewModel.clearProjection()
-        windowOpened = false
+        handleProjectorWindowClosed()
+    }
+
+    func handleProjectorWindowClosed() {
+        DispatchQueue.main.async {
+            projectorViewModel.clearProjection()
+            windowOpened = false
+        }
     }
 
 }

@@ -59,7 +59,6 @@ struct ProjectorViewData {
 struct ProjectorView: View {
     @EnvironmentObject var projectorViewModel: ProjectorViewModel
 
-    @Binding var windowOpened: Bool
     @AppStorage("fontSizeVerse") private var fontSizeVerse = 200.0
     @AppStorage("fontSizeVerseRef") private var fontSizeVerseRef = 36.0
     @AppStorage("vStackPadding") private var vStackPadding = 20.0
@@ -206,10 +205,6 @@ struct ProjectorView: View {
         .preferredColorScheme(.dark)
         .environment(\.layoutDirection, resolvedLayoutDirection)
         .multilineTextAlignment(resolvedTextAlignment)
-        .onDisappear {
-            windowOpened = false
-            projectorViewModel.clearProjection()
-        }
     }
 
     @ViewBuilder
