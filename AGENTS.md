@@ -22,6 +22,12 @@ This document is the current source of truth for this repo.
   - `ProjectorView` has no `onDisappear` teardown and no `@Binding windowOpened` — all projector lifecycle is owned by `MainView`.
   - Do not use `performClose(nil)` on the projector window — it silently fails on borderless windows (no visible close button). Use `close()` instead.
   - Do not call `close()` directly from `ProjectorWindow.keyDown`/`cancelOperation` — this causes AppKit/SwiftUI constraint crashes during event handling. Always defer to next runloop tick.
+- HDMI/screen-change projection hardening (learned from `eucaly` patterns):
+  - Do not reposition projector window synchronously on every `didChangeScreenParametersNotification`.
+  - Use a coalesced/deferred path (`scheduleProjectorWindowReposition`) with a cancellable `Task` and short delay to avoid rapid `setFrame` churn during display attach/detach.
+  - Cancel pending reposition tasks on projector close and view disappear.
+  - Prefer `NSView` container + constraints hosting pattern for projector content instead of assigning `NSHostingView` directly as `window.contentView`.
+  - Keep projector `collectionBehavior` set to `[.canJoinAllSpaces, .fullScreenAuxiliary]` for stable external-display/full-screen behavior.
 - Verse row scrolling behavior is now fixed/default:
   - Removed `scrollTo` setting from Bible settings UI.
   - Verse list always auto-scrolls to the targeted verse (for text-field verse queries like `Psalm 119:53`).
