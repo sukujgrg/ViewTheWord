@@ -882,6 +882,7 @@ struct MainView: View {
     @AppStorage(AppDefaultsKey.showOnlyPrimary) var showOnlyPrimary = false
 
     @AppStorage(AppDefaultsKey.transparentBackground) private var transparentBackground = false
+    @AppStorage(AppDefaultsKey.projectorScreenDisplayID) private var projectorScreenDisplayID = 0
 
     // To reload the VerseRowView and ProjectorView if the bible changes in Settings.
     @AppStorage(AppDefaultsKey.primaryBibleName) private var primaryBibleName: String = bundledPrimaryBibleUrl?.absoluteString ?? ""
@@ -1109,6 +1110,14 @@ struct MainView: View {
                 return
             }
             applyProjectorWindowAppearance(projectorWindow)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+            guard windowOpened, let projectorWindow else { return }
+            repositionProjectorWindow(projectorWindow)
+        }
+        .onChange(of: projectorScreenDisplayID) { _, _ in
+            guard windowOpened, let projectorWindow else { return }
+            repositionProjectorWindow(projectorWindow)
         }
         .onDisappear {
             searchTask?.cancel()
@@ -1552,9 +1561,19 @@ struct MainView: View {
         }
     }
 
+    func repositionProjectorWindow(_ window: NSWindow) {
+        guard let targetScreen = resolveProjectorTargetScreen(preferredDisplayID: projectorScreenDisplayID) else {
+            return
+        }
+        if window.frame != targetScreen.frame {
+            window.setFrame(targetScreen.frame, display: true)
+        }
+    }
+
     func openProjector() {
         if let existingProjectorWindow = projectorWindow {
             applyProjectorWindowAppearance(existingProjectorWindow)
+            repositionProjectorWindow(existingProjectorWindow)
             let priorKeyWindow = NSApplication.shared.keyWindow
             existingProjectorWindow.orderFrontRegardless()
             if let priorKeyWindow, priorKeyWindow != existingProjectorWindow {

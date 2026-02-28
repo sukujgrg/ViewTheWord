@@ -48,6 +48,24 @@ extension Array: @retroactive RawRepresentable where Element: Codable {
     }
 }
 
+extension NSScreen {
+    var displayID: Int {
+        (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? Int) ?? 0
+    }
+}
+
+func resolveProjectorTargetScreen(preferredDisplayID: Int = 0) -> NSScreen? {
+    let screens = NSScreen.screens.filter { $0.frame.width > 0 && $0.frame.height > 0 }
+    if preferredDisplayID != 0,
+       let match = screens.first(where: { $0.displayID == preferredDisplayID }) {
+        return match
+    }
+    if preferredDisplayID != 0 {
+        logger.warning("Preferred projector screen (displayID \(preferredDisplayID)) not found, falling back")
+    }
+    return screens.last ?? NSScreen.main
+}
+
 extension View {
     private func newWindowInternal(with title: String) -> NSWindow? {
         let transparentBackground = UserDefaults.standard.bool(forKey: AppDefaultsKey.transparentBackground)
@@ -59,14 +77,8 @@ extension View {
             defer: true
         )
 
-        // Use the last screen if available (typically the projector), otherwise use main screen
-        // Filter to only active screens to avoid stale display identifiers
-        let availableScreens = NSScreen.screens.filter { screen in
-            // Check if screen frame is valid (not zero)
-            return screen.frame.width > 0 && screen.frame.height > 0
-        }
-
-        guard let targetScreen = availableScreens.last ?? NSScreen.main else {
+        let preferredDisplayID = UserDefaults.standard.integer(forKey: AppDefaultsKey.projectorScreenDisplayID)
+        guard let targetScreen = resolveProjectorTargetScreen(preferredDisplayID: preferredDisplayID) else {
             logger.warning("No screen available for projector window")
             return nil
         }

@@ -23,6 +23,7 @@ enum AppDefaultsKey {
     static let showOnlyPrimary = "showOnlyPrimary"
     static let chapterHistorySplitAutosaveName = "chapterHistorySplit"
     static let bookmarkHistorySplitAutosaveName = "bookmarkHistorySplit"
+    static let projectorScreenDisplayID = "projectorScreenDisplayID"
 }
 
 enum ProjectorTextAlignmentMode: String, CaseIterable {

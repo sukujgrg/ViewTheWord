@@ -6,6 +6,9 @@ struct ProjectionControlsRowView: View {
     @Binding var projectorReadingDirectionRaw: String
     @Binding var projectorDualLayoutVertical: Bool
 
+    @AppStorage(AppDefaultsKey.projectorScreenDisplayID) private var projectorScreenDisplayID = 0
+    @State private var availableScreens: [(name: String, displayID: Int)] = []
+
     private var projectorAlignmentSelection: Binding<ProjectorTextAlignmentMode> {
         Binding {
             ProjectorTextAlignmentMode(rawValue: projectorTextAlignmentRaw) ?? .center
@@ -27,11 +30,22 @@ struct ProjectionControlsRowView: View {
             regularControls
             compactControls
         }
+        .onAppear { refreshScreenList() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+            refreshScreenList()
+        }
+    }
+
+    private func refreshScreenList() {
+        availableScreens = NSScreen.screens
+            .filter { $0.frame.width > 0 && $0.frame.height > 0 }
+            .map { (name: $0.localizedName, displayID: $0.displayID) }
     }
 
     private var regularControls: some View {
         HStack(alignment: .center, spacing: 12) {
             transparentBackgroundToggle
+            projectorScreenPicker
             projectorAlignmentSegmentedControl
             projectorDirectionSegmentedControl
             projectorDualLayoutSegmentedControl
@@ -55,6 +69,13 @@ struct ProjectionControlsRowView: View {
             Spacer(minLength: 0)
             Menu {
                 Toggle("Transparent BG", isOn: $transparentBackground)
+                Divider()
+                Picker("Projector Screen", selection: $projectorScreenDisplayID) {
+                    Text("Auto").tag(0)
+                    ForEach(availableScreens, id: \.displayID) { screen in
+                        Text(screen.name).tag(screen.displayID)
+                    }
+                }
                 Divider()
                 Picker("Projector Alignment", selection: projectorAlignmentSelection) {
                     Label("Align Left", systemImage: "text.alignleft")
@@ -160,5 +181,18 @@ struct ProjectionControlsRowView: View {
         .frame(width: 88)
         .help("Dual translation layout")
         .accessibilityLabel("Dual translation layout")
+    }
+
+    private var projectorScreenPicker: some View {
+        Picker("Screen", selection: $projectorScreenDisplayID) {
+            Text("Auto").tag(0)
+            ForEach(availableScreens, id: \.displayID) { screen in
+                Text(screen.name).tag(screen.displayID)
+            }
+        }
+        .controlSize(.small)
+        .fixedSize()
+        .help("Choose which screen to project on")
+        .accessibilityLabel("Projector screen")
     }
 }
