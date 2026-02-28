@@ -156,19 +156,27 @@ struct ProjectionControlsRowView: View {
     }
 
     private var transparentBackgroundToggle: some View {
-        Toggle("Transparent BG", isOn: $transparentBackground)
-            .toggleStyle(.switch)
+        Toggle(isOn: $transparentBackground) {
+            Label("Transparent background", systemImage: "square.stack.3d.up.slash")
+                .labelStyle(.iconOnly)
+        }
+            .toggleStyle(.button)
             .controlSize(.small)
             .help("Use transparent background for projector window")
-            .fixedSize()
+            .accessibilityLabel("Transparent background")
+            .fixedSize(horizontal: true, vertical: false)
     }
 
     private var translationInfoToggle: some View {
-        Toggle("Show Translations", isOn: $projectorShowTranslationInfo)
-            .toggleStyle(.switch)
+        Toggle(isOn: $projectorShowTranslationInfo) {
+            Label("Show translation names", systemImage: "character.bubble")
+                .labelStyle(.iconOnly)
+        }
+            .toggleStyle(.button)
             .controlSize(.small)
             .help("Show translation names on the projector reference line")
-            .fixedSize()
+            .accessibilityLabel("Show translation names")
+            .fixedSize(horizontal: true, vertical: false)
     }
 
     private var projectorAlignmentSegmentedControl: some View {
@@ -226,13 +234,23 @@ struct ProjectionControlsRowView: View {
     }
 
     private var projectorScreenPicker: some View {
-        Picker("Screen", selection: $projectorScreenDisplayID) {
-            Text("Auto").tag(0)
-            ForEach(availableScreens) { screen in
-                Text(screen.label).tag(screen.displayID)
+        Menu {
+            Button("Auto") {
+                projectorScreenDisplayID = 0
             }
+
+            if !availableScreens.isEmpty {
+                Divider()
+                ForEach(availableScreens) { screen in
+                    Button(screen.label) {
+                        projectorScreenDisplayID = screen.displayID
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "display")
         }
-        .controlSize(.small)
+        .menuStyle(.borderlessButton)
         .fixedSize()
         .help("Choose which screen to project on")
         .accessibilityLabel("Projector screen")

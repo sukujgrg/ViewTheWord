@@ -49,15 +49,22 @@ if [[ "$BUILD_CURRENT_ARCH_ONLY" == true ]]; then
   )
 fi
 
-xcodebuild \
-  -project ViewTheWord.xcodeproj \
-  -scheme ViewTheWord \
-  -configuration Release \
-  -archivePath "$ARCHIVE_PATH" \
-  archive \
-  STRIP_INSTALLED_PRODUCT=YES \
-  COPY_PHASE_STRIP=YES \
-  "${BUILD_ARGS[@]}"
+ARCHIVE_CMD=(
+  xcodebuild
+  -project ViewTheWord.xcodeproj
+  -scheme ViewTheWord
+  -configuration Release
+  -archivePath "$ARCHIVE_PATH"
+  archive
+  STRIP_INSTALLED_PRODUCT=YES
+  COPY_PHASE_STRIP=YES
+)
+
+if ((${#BUILD_ARGS[@]} > 0)); then
+  ARCHIVE_CMD+=("${BUILD_ARGS[@]}")
+fi
+
+"${ARCHIVE_CMD[@]}"
 
 
 cat > "$EXPORT_PLIST" <<'PLIST'
