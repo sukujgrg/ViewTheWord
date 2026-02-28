@@ -3,6 +3,20 @@
 - Projection update path: keep projector content updates immediate (`VerseRowView` -> `MainView` -> `ProjectorViewModel`) for arrow-key navigation responsiveness.
 - Network mirror path: add debounce/throttle only around `sendTextOverNetwork(...)` in `ProjectorView` to avoid flooding external display/API updates during rapid verse navigation.
 
+## Projector Window — External Monitor Edge Cases
+
+- [ ] **Handle screen configuration changes while projector is open** — `Extensions.swift` / `ContentView.swift`
+  - **Why:** If a monitor is disconnected/reconnected or resolution changes while the projector window is visible, the window is orphaned or wrong-sized. macOS moves it to the laptop screen at the old dimensions. Reconnecting the cable doesn't move the window back.
+  - **Change:** Listen for `NSApplication.didChangeScreenParametersNotification` in `MainView`. When received and `windowOpened` is true, reposition the projector window to the current target screen with updated frame dimensions.
+
+- [ ] **Reusing existing projector window doesn't reposition to current target screen** — `ContentView.swift:1555`
+  - **Why:** `openProjector()` reuses the existing window with `orderFrontRegardless()` but never rechecks which screen is the target or updates the frame. If screen configuration changed since creation (cable re-plugged, different port), the window stays wherever macOS put it.
+  - **Change:** In the existing-window path of `openProjector()`, recalculate the target screen and call `setFrame(targetScreen.frame, display: true)` before bringing the window to front.
+
+- [ ] **`availableScreens.last` heuristic breaks with 3+ screens** — `Extensions.swift:69`
+  - **Why:** `NSScreen.screens` order after the first element (main screen) is not guaranteed by macOS. With laptop + external monitor + projector, `.last` might pick the monitor instead of the projector. Works fine for typical 2-screen setups.
+  - **Change:** Add a projector screen picker in Settings, persisting the chosen `screen.displayID`. Fall back to `.last` when no preference is set or the preferred screen is unavailable.
+
 ## Performance Improvements
 
 ### High Priority

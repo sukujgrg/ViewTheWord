@@ -15,8 +15,13 @@ This document is the current source of truth for this repo.
 - Book/Chapter/Verse boundaries are explicit:
   - `VerseBoundary` and `VerseReference` validate/normalize references.
   - Row projection rejects out-of-range verse indices for current chapter.
-- ESC close is now native and reliable for projection:
-  - `ProjectorWindow` handles ESC in responder chain (`cancelOperation` / `keyDown`) for borderless window behavior.
+- ESC close for projection uses a dual-path deferred flow:
+  - **Main window key (normal case):** ESC → SwiftUI `onExitCommand` on `MainView` → `closeProjector()` → `window.close()` → `willCloseNotification` → deferred state cleanup.
+  - **Projector window key (rare):** ESC → `ProjectorWindow.cancelOperation` → deferred `DispatchQueue.main.async` posts `.closeProjectorRequested` notification → `MainView` receives → `closeProjector()` → same path.
+  - State cleanup (`clearProjection`, `windowOpened = false`) is always deferred via `DispatchQueue.main.async` in `handleProjectorWindowClosed()` to avoid re-entrant SwiftUI/AppKit constraint updates during window teardown.
+  - `ProjectorView` has no `onDisappear` teardown and no `@Binding windowOpened` — all projector lifecycle is owned by `MainView`.
+  - Do not use `performClose(nil)` on the projector window — it silently fails on borderless windows (no visible close button). Use `close()` instead.
+  - Do not call `close()` directly from `ProjectorWindow.keyDown`/`cancelOperation` — this causes AppKit/SwiftUI constraint crashes during event handling. Always defer to next runloop tick.
 - Verse row scrolling behavior is now fixed/default:
   - Removed `scrollTo` setting from Bible settings UI.
   - Verse list always auto-scrolls to the targeted verse (for text-field verse queries like `Psalm 119:53`).
@@ -58,7 +63,7 @@ This document is the current source of truth for this repo.
 - `verseTargetModel.verseQuery` is the current selected verse source of truth across views.
 - projected content ownership is `MainView` + `ProjectorViewModel.project(_:owner:)`; do not directly assign projector payload from child views.
 - Keep projector window title centralized: `AppWindowTitle.projector`.
-- Keep cross-view notifications centralized in `Notification.Name` extensions (`.focusSearchField`, `.toggleKeyboardShortcuts`).
+- Keep cross-view notifications centralized in `Notification.Name` extensions (`.focusSearchField`, `.toggleKeyboardShortcuts`, `.closeProjectorRequested`).
 
 ### Query/search flow lessons
 - Do not use bool toggling for validation animation triggers.
@@ -72,8 +77,7 @@ This document is the current source of truth for this repo.
 
 ### SwiftUI safety lessons
 - Avoid hidden controls for keyboard shortcuts.
-- For projector ESC behavior on borderless macOS windows, prefer native AppKit responder handling (window-level `cancelOperation` / `keyDown`) over hidden controls.
-- Avoid `DispatchQueue.main.async` as a generic fix for publish-during-update warnings.
+- Avoid `DispatchQueue.main.async` as a generic fix for publish-during-update warnings. The one justified use is `handleProjectorWindowClosed()` where `willCloseNotification` fires synchronously during `close()` and SwiftUI state mutation would re-enter the update cycle.
 - For verse auto-scroll, defer one render pass with `Task.yield()` and scroll intentionally.
 - Break complex `body` expressions into small subviews when type-checking slows down (e.g., `SearchResultRowView`).
 - `List(selection:)` `onChange` does not fire when clicking an already selected row; for deterministic activation, use explicit row `Button` handlers and keep selection `onChange` for keyboard paths.

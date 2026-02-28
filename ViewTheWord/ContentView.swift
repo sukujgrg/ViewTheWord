@@ -1581,7 +1581,7 @@ struct MainView: View {
 
     func closeProjector() {
         if let projectorWindow {
-            projectorWindow.performClose(nil)
+            projectorWindow.close()
             return
         }
         handleProjectorWindowClosed()
