@@ -1042,6 +1042,10 @@ struct MainView: View {
 
             return .ignored
         }
+        .onExitCommand {
+            guard windowOpened else { return }
+            closeProjector()
+        }
         .sheet(isPresented: $showKeyboardShortcuts) {
             KeyboardShortcutsView()
         }
