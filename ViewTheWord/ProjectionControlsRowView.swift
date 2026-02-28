@@ -7,7 +7,7 @@ struct ProjectionControlsRowView: View {
     @Binding var projectorDualLayoutVertical: Bool
 
     @AppStorage(AppDefaultsKey.projectorScreenDisplayID) private var projectorScreenDisplayID = 0
-    @State private var availableScreens: [(name: String, displayID: Int)] = []
+    @State private var availableScreens: [ScreenOption] = []
 
     private var projectorAlignmentSelection: Binding<ProjectorTextAlignmentMode> {
         Binding {
@@ -37,9 +37,40 @@ struct ProjectionControlsRowView: View {
     }
 
     private func refreshScreenList() {
-        availableScreens = NSScreen.screens
+        let activeScreens = NSScreen.screens
             .filter { $0.frame.width > 0 && $0.frame.height > 0 }
-            .map { (name: $0.localizedName, displayID: $0.displayID) }
+            .map { screen in
+                (
+                    name: screen.localizedName,
+                    displayID: screen.displayID,
+                    width: Int(screen.frame.width.rounded()),
+                    height: Int(screen.frame.height.rounded())
+                )
+            }
+
+        let countsByName = Dictionary(grouping: activeScreens, by: \.name)
+            .mapValues(\.count)
+
+        availableScreens = activeScreens.map { screen in
+            let hasDuplicateName = (countsByName[screen.name] ?? 0) > 1
+            let label: String
+
+            if hasDuplicateName {
+                label = "\(screen.name) • \(screen.width)x\(screen.height) • #\(screen.displayID)"
+            } else {
+                label = "\(screen.name) • \(screen.width)x\(screen.height)"
+            }
+
+            return ScreenOption(
+                label: label,
+                displayID: screen.displayID
+            )
+        }
+
+        if projectorScreenDisplayID != 0,
+           !availableScreens.contains(where: { $0.displayID == projectorScreenDisplayID }) {
+            projectorScreenDisplayID = 0
+        }
     }
 
     private var regularControls: some View {
@@ -72,8 +103,8 @@ struct ProjectionControlsRowView: View {
                 Divider()
                 Picker("Projector Screen", selection: $projectorScreenDisplayID) {
                     Text("Auto").tag(0)
-                    ForEach(availableScreens, id: \.displayID) { screen in
-                        Text(screen.name).tag(screen.displayID)
+                    ForEach(availableScreens) { screen in
+                        Text(screen.label).tag(screen.displayID)
                     }
                 }
                 Divider()
@@ -186,8 +217,8 @@ struct ProjectionControlsRowView: View {
     private var projectorScreenPicker: some View {
         Picker("Screen", selection: $projectorScreenDisplayID) {
             Text("Auto").tag(0)
-            ForEach(availableScreens, id: \.displayID) { screen in
-                Text(screen.name).tag(screen.displayID)
+            ForEach(availableScreens) { screen in
+                Text(screen.label).tag(screen.displayID)
             }
         }
         .controlSize(.small)
@@ -195,4 +226,11 @@ struct ProjectionControlsRowView: View {
         .help("Choose which screen to project on")
         .accessibilityLabel("Projector screen")
     }
+}
+
+private struct ScreenOption: Identifiable {
+    let label: String
+    let displayID: Int
+
+    var id: Int { displayID }
 }

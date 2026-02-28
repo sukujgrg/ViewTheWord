@@ -1112,12 +1112,16 @@ struct MainView: View {
             applyProjectorWindowAppearance(projectorWindow)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+            reconcilePreferredProjectorScreenIfNeeded()
             guard windowOpened, let projectorWindow else { return }
             repositionProjectorWindow(projectorWindow)
         }
         .onChange(of: projectorScreenDisplayID) { _, _ in
             guard windowOpened, let projectorWindow else { return }
             repositionProjectorWindow(projectorWindow)
+        }
+        .onAppear {
+            reconcilePreferredProjectorScreenIfNeeded()
         }
         .onDisappear {
             searchTask?.cancel()
@@ -1570,7 +1574,27 @@ struct MainView: View {
         }
     }
 
+    func reconcilePreferredProjectorScreenIfNeeded() {
+        guard projectorScreenDisplayID != 0 else {
+            return
+        }
+
+        let activeDisplayIDs = Set(
+            NSScreen.screens
+                .filter { $0.frame.width > 0 && $0.frame.height > 0 }
+                .map(\.displayID)
+        )
+
+        guard activeDisplayIDs.contains(projectorScreenDisplayID) else {
+            logger.warning("Clearing unavailable projector screen preference (displayID \(projectorScreenDisplayID)); using Auto.")
+            projectorScreenDisplayID = 0
+            return
+        }
+    }
+
     func openProjector() {
+        reconcilePreferredProjectorScreenIfNeeded()
+
         if let existingProjectorWindow = projectorWindow {
             applyProjectorWindowAppearance(existingProjectorWindow)
             repositionProjectorWindow(existingProjectorWindow)
