@@ -893,6 +893,7 @@ struct MainView: View {
     @State private var bibleSecondary: Bible
     @State private var searchTask: Task<Void, Never>?
     @State private var activeSearchID = UUID()
+    @State private var projectorRepositionTask: Task<Void, Never>?
 
     init() {
         let bibleUrl = BibleUrl()
@@ -1112,13 +1113,10 @@ struct MainView: View {
             applyProjectorWindowAppearance(projectorWindow)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
-            reconcilePreferredProjectorScreenIfNeeded()
-            guard windowOpened, let projectorWindow else { return }
-            repositionProjectorWindow(projectorWindow)
+            scheduleProjectorWindowReposition()
         }
         .onChange(of: projectorScreenDisplayID) { _, _ in
-            guard windowOpened, let projectorWindow else { return }
-            repositionProjectorWindow(projectorWindow)
+            scheduleProjectorWindowReposition()
         }
         .onAppear {
             reconcilePreferredProjectorScreenIfNeeded()
@@ -1126,6 +1124,8 @@ struct MainView: View {
         .onDisappear {
             searchTask?.cancel()
             searchTask = nil
+            projectorRepositionTask?.cancel()
+            projectorRepositionTask = nil
         }
         .applyWindowSurfaceBackground()
     }
@@ -1574,6 +1574,19 @@ struct MainView: View {
         }
     }
 
+    private func scheduleProjectorWindowReposition() {
+        projectorRepositionTask?.cancel()
+        projectorRepositionTask = Task { @MainActor in
+            // HDMI attach/detach can generate rapid screen-parameter updates.
+            // Defer and coalesce to avoid frame churn during active layout passes.
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+            reconcilePreferredProjectorScreenIfNeeded()
+            guard windowOpened, let projectorWindow else { return }
+            repositionProjectorWindow(projectorWindow)
+        }
+    }
+
     func reconcilePreferredProjectorScreenIfNeeded() {
         guard projectorScreenDisplayID != 0 else {
             return
@@ -1623,6 +1636,8 @@ struct MainView: View {
     }
 
     func closeProjector() {
+        projectorRepositionTask?.cancel()
+        projectorRepositionTask = nil
         if let projectorWindow {
             projectorWindow.close()
             return
@@ -1631,6 +1646,8 @@ struct MainView: View {
     }
 
     func handleProjectorWindowClosed() {
+        projectorRepositionTask?.cancel()
+        projectorRepositionTask = nil
         DispatchQueue.main.async {
             projectorViewModel.clearProjection()
             windowOpened = false

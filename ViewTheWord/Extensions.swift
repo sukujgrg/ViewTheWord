@@ -89,6 +89,7 @@ extension View {
         window.title = title
         window.canHide = false
         window.hasShadow = false  // this has to be set if NSColor.clear has to work without showing prior verse as shadow.
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         if transparentBackground {
             window.isOpaque = false
@@ -109,7 +110,18 @@ extension View {
         let priorKeyWindow = NSApplication.shared.keyWindow
         let hostView = NSHostingView(rootView: self)
         hostView.sizingOptions = []
-        window.contentView = hostView
+        hostView.translatesAutoresizingMaskIntoConstraints = false
+
+        let container = NSView(frame: window.frame)
+        container.addSubview(hostView)
+        NSLayoutConstraint.activate([
+            hostView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            hostView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hostView.topAnchor.constraint(equalTo: container.topAnchor),
+            hostView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+
+        window.contentView = container
         window.orderFrontRegardless()  // useful when showing over a fullscreen background video.
 
         // Keep keyboard focus on the main app window so verse navigation shortcuts
