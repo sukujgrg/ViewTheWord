@@ -16,8 +16,8 @@ array in Icon Composer's decoder.
 
 The Xcode target includes the document as an Icon Composer resource and keeps
 `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon` in both configurations. Build with
-Xcode 26 or later. The asset compiler generates `Assets.car` for the layered icon
-and `AppIcon.icns` for compatibility; the app still targets macOS 14. There is no
+Xcode 26.5 or later. The asset compiler generates `Assets.car` for the layered icon
+and `AppIcon.icns`; the app requires macOS 26.0 or later. There is no
 second bitmap app icon to keep in sync.
 
 Render all six macOS appearances with the Icon Composer renderer bundled with

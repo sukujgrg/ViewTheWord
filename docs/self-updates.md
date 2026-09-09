@@ -61,6 +61,8 @@ key, archive signature and length, app/build versions, and minimum macOS version
 It generates from an isolated directory containing only this release's archive.
 When publishing, it retains previous feed entries for older macOS versions and
 rejects build numbers that would prevent installed copies from seeing the update.
+Current releases require macOS 26.0 or later; the feed takes this minimum from
+the built app's `LSMinimumSystemVersion`.
 
 Sparkle compares `CFBundleVersion`. Release builds now default to a numeric UTC
 timestamp (`YYYYMMDDHHMMSS`) instead of the old constant `3`. An explicit

@@ -1,6 +1,6 @@
 # ViewTheWord
 
-A local macOS app for browsing and projecting Bible verses in one or two translations. Requires macOS 14 or later. Malayalam BSI and English UKJV are included; an internet connection is not required.
+A local macOS app for browsing and projecting Bible verses in one or two translations. Requires macOS 26.0 or later. Malayalam BSI and English UKJV are included; an internet connection is not required.
 
 ## Getting started
 
@@ -56,7 +56,7 @@ The app validates and indexes a private copy of each import. Translation numberi
 
 ## Build and test
 
-Open `ViewTheWord.xcodeproj` in Xcode 26 or later, choose the ViewTheWord scheme, and configure your signing team. For a local build without a configured signing certificate:
+Open `ViewTheWord.xcodeproj` in Xcode 26.5 or later, choose the ViewTheWord scheme, and configure your signing team. CI uses macOS 26 with Xcode 26.5 selected explicitly. For a local build without a configured signing certificate:
 
 ```bash
 xcodebuild -project ViewTheWord.xcodeproj -scheme ViewTheWord -configuration Debug -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build
