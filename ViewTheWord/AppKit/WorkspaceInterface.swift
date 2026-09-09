@@ -186,13 +186,14 @@ extension MainWorkspaceController: NSToolbarDelegate {
     }
     func renderStatus() {
         let live = windowOpened && projector.projectionOwner != nil
+        if !live { preview.performClose(nil) }
         statusLabel.stringValue = live ? "\(projector.isBlanked ? "Blanked" : "Live") · \(projector.projectorViewData.title)" : "Projection stopped"
         statusLabel.textColor = live && !projector.isBlanked ? .systemGreen : .secondaryLabelColor
-        loadingLabel.stringValue = navigation.isProjecting ? "Projecting…" : navigation.isLoading ? "Loading…" : ""
+        loadingLabel.stringValue = liveProjection.isProjecting ? "Projecting…" : navigation.isLoading ? "Loading…" : ""
         blankButton.title = projector.isBlanked ? "Unblank" : "Blank"
         previewButton.isEnabled = live
         blankButton.isEnabled = live
-        stopButton.isEnabled = live || navigation.isProjecting
+        stopButton.isEnabled = live || liveProjection.isProjecting
         let screen = resolveProjectorTargetScreen(preferredDisplayID: preferredDisplayID)
         let disconnected = preferredDisplayID != 0 && !NSScreen.screens.contains { $0.displayID == preferredDisplayID }
         screenLabel.stringValue = "Output: \(screen?.localizedName ?? "No display")\(disconnected ? " · preferred display disconnected" : "")"
@@ -211,6 +212,7 @@ extension MainWorkspaceController: NSToolbarDelegate {
     }
     func setPreference(_ value: Any, key: String) {
         defaults.set(value, forKey: key)
+        liveProjection.refreshPreferences()
         scheduleRender()
     }
 }

@@ -86,6 +86,7 @@ extension View {
         window.title = title
         window.canHide = false
         window.hasShadow = false  // this has to be set if NSColor.clear has to work without showing prior verse as shadow.
+        window.tabbingMode = .disallowed
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         if transparentBackground {

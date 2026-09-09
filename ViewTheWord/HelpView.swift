@@ -31,6 +31,13 @@ struct KeyboardShortcutsView: View {
     ]
 
     let keyboardShortcuts: [(category: String, items: [(keys: String, description: String)])] = [
+        ("Passage Tabs", [
+            ("⌘ T", "New passage tab"),
+            ("⌘ Return", "Open selected passage in a new tab"),
+            ("⌘ W", "Close tab; live output continues"),
+            ("⌃ Tab / ⌃ ⇧ Tab", "Next/previous tab"),
+            ("Drag a tab", "Reorder passages")
+        ]),
         ("Chapter Grid", [
             ("↑ / ↓ / ← / →", "Move between chapter numbers"),
             ("Return / Space", "Open selected chapter"),

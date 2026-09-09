@@ -47,6 +47,7 @@ final class NativeReferenceTableController: NSObject, NSTableViewDataSource, NST
     var onMoveFocus: (Int) -> Void = { _ in }
     var onCancel: () -> Void = {}
     var onBookmark: (VerseReference) -> Void = { _ in }
+    var onOpenInNewTab: (VerseReference) -> Void = { _ in }
     var activatesOnSelection = true
     var onSelection: (VerseReference) -> Void = { _ in }
 
@@ -144,6 +145,11 @@ final class NativeReferenceTableController: NSObject, NSTableViewDataSource, NST
         view.setAccessibilityCustomActions([
             NSAccessibilityCustomAction(name: style.isVerse ? "Project verse" : "Open chapter") { [weak view] in
                 view?.accessibilityPerformPress() ?? false
+            },
+            NSAccessibilityCustomAction(name: "Open in New Tab") { [weak self] in
+                guard let self, self.enabled else { return false }
+                self.onOpenInNewTab(reference)
+                return true
             }
         ])
         return view
@@ -237,6 +243,7 @@ final class NativeReferenceTableController: NSObject, NSTableViewDataSource, NST
             }
         }
         if includeBookmark {
+            menu.addAction(title: "Open in New Tab") { [weak self] in self?.onOpenInNewTab(item.reference) }
             if !menu.items.isEmpty { menu.addItem(.separator()) }
             menu.addAction(title: item.bookmarked ? "Remove Bookmark" : "Add Bookmark") { [weak self] in
                 self?.onBookmark(item.reference)

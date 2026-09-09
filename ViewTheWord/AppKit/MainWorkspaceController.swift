@@ -1,18 +1,19 @@
 import AppKit
 import Combine
 
-/// Owns the complete working interface. Model snapshots never request focus.
-/// This is also the sole publisher and lifecycle owner of live projection.
+/// One passage workspace. Model snapshots never request focus.
+/// Live output belongs to the shared LiveProjectionController.
 @MainActor
 final class MainWorkspaceController: NSViewController {
     let navigation: VerseTargetModel
-    let projector: ProjectorViewModel
+    let liveProjection: LiveProjectionController
+    var projector: ProjectorViewModel { liveProjection.projector }
+    var windowOpened: Bool { liveProjection.windowOpened }
+    var onOpenInNewTab: ((VerseReference?) -> Void)?
     let history: HistoryStore
     let bookmarks: BookmarkStore
     let library: BibleLibrary
     let defaults: UserDefaults
-    let sourceResolver: ((Bool) -> BibleSources)?
-    var projectorWindowFactory: ((ProjectorViewModel) -> NSWindow?)?
 
     let books = NativeSidebarController(label: "Bible books")
     let savedBookmarks = NativeSidebarController(label: "Bookmarks")
@@ -52,39 +53,28 @@ final class MainWorkspaceController: NSViewController {
     private var searchSelection: VerseReference?
     private var subscriptions = Set<AnyCancellable>()
     private var renderTask: Task<Void, Never>?
-    var repositionTask: Task<Void, Never>?
-    var ownedProjectorWindow: NSWindow?
-    var windowOpened = false
     private var previousSources: BibleSources?
-    private var previousDisplayID = 0
-    private var previousTransparency = false
     private var presentingLibraryAlert = false
     private var shuttingDown = false
 
     init(navigation: VerseTargetModel? = nil, projector: ProjectorViewModel? = nil,
          history: HistoryStore? = nil, bookmarks: BookmarkStore? = nil,
          library: BibleLibrary? = nil, defaults: UserDefaults = .standard,
-         sourceResolver: ((Bool) -> BibleSources)? = nil) {
+         sourceResolver: ((Bool) -> BibleSources)? = nil, liveProjection: LiveProjectionController? = nil) {
         self.navigation = navigation ?? VerseTargetModel()
-        self.projector = projector ?? ProjectorViewModel()
+        let liveProjection = liveProjection ?? LiveProjectionController(projector: projector, library: library, defaults: defaults, sourceResolver: sourceResolver)
+        self.liveProjection = liveProjection
         self.history = history ?? .shared
         self.bookmarks = bookmarks ?? .shared
-        self.library = library ?? .shared
-        self.defaults = defaults
-        self.sourceResolver = sourceResolver
+        self.library = liveProjection.library
+        self.defaults = liveProjection.defaults
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    deinit { renderTask?.cancel(); repositionTask?.cancel() }
+    deinit { renderTask?.cancel() }
 
     var primaryOnly: Bool { defaults.bool(forKey: AppDefaultsKey.showOnlyPrimary) }
-    var sources: BibleSources {
-        sourceResolver?(primaryOnly) ?? library.sources(
-            primary: defaults.string(forKey: AppDefaultsKey.primaryBibleName) ?? bundledPrimaryBibleUrl?.absoluteString ?? "",
-            secondary: defaults.string(forKey: AppDefaultsKey.secondaryBibleName) ?? bundledSecondaryBibleUrl?.absoluteString ?? "",
-            primaryOnly: primaryOnly
-        )
-    }
+    var sources: BibleSources { liveProjection.sources }
     var rowFontSize: CGFloat {
         let value = defaults.double(forKey: AppDefaultsKey.verseRowFontSize)
         return value > 0 ? value : 17
@@ -97,40 +87,33 @@ final class MainWorkspaceController: NSViewController {
         buildInterface()
         connectActions()
         previousSources = sources
-        previousDisplayID = preferredDisplayID
-        previousTransparency = defaults.bool(forKey: AppDefaultsKey.transparentBackground)
-        for publisher in [navigation.objectWillChange, projector.objectWillChange, history.objectWillChange,
+        for publisher in [navigation.objectWillChange, liveProjection.objectWillChange, projector.objectWillChange, history.objectWillChange,
                           bookmarks.objectWillChange, library.objectWillChange] {
             publisher.sink { [weak self] _ in self?.scheduleRender() }.store(in: &subscriptions)
         }
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification, object: defaults)
             .sink { [weak self] _ in self?.scheduleRender() }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
-            .sink { [weak self] _ in
-                self?.scheduleProjectorReposition()
-                self?.scheduleRender()
-            }.store(in: &subscriptions)
-        NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)
-            .sink { [weak self] note in
-                guard let self, let window = note.object as? NSWindow, window === self.ownedProjectorWindow else { return }
-                self.handleProjectorWindowClosed()
-            }.store(in: &subscriptions)
-        NotificationCenter.default.publisher(for: .closeProjectorRequested)
-            .sink { [weak self] note in
-                guard let self, let window = note.object as? NSWindow, window === self.ownedProjectorWindow else { return }
-                self.closeProjector()
-            }.store(in: &subscriptions)
+            .sink { [weak self] _ in self?.scheduleRender() }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for: .focusSearchField)
-            .sink { [weak self] _ in self?.focusSearch(nil) }.store(in: &subscriptions)
+            .sink { [weak self] _ in
+                guard let self, self.view.window?.isKeyWindow == true else { return }
+                self.focusSearch(nil)
+            }.store(in: &subscriptions)
         render()
     }
 
     private func connectActions() {
         books.onActivate = { [weak self] node in if let book = node.book { self?.browse(book) } }
         books.onMoveFocus = { [weak self] direction in self?.moveFocus(from: .books, direction: direction) }
+        books.onContextMenu = { [weak self] node in
+            guard let self, let book = node.book, let reference = VerseReference(book: book, chapter: 1, verse: 1) else { return nil }
+            return self.passageMenu(for: reference)
+        }
         books.onCancel = { [weak self] in self?.closeProjector() }
         chapters.onActivate = { [weak self] reference in self?.navigate(to: reference, focusVerses: false) }
         chapters.onMoveFocus = { [weak self] direction in self?.moveFocus(from: .chapters, direction: direction) }
+        chapters.onOpenInNewTab = { [weak self] in self?.onOpenInNewTab?($0) }
         chapters.onCancel = { [weak self] in self?.closeProjector() }
         verses.onActivate = { [weak self] reference in self?.activateVerse(reference) }
         verses.onSelection = { [weak self] reference in
@@ -150,6 +133,7 @@ final class MainWorkspaceController: NSViewController {
         }
         verses.onMoveFocus = { [weak self] direction in self?.moveFocus(from: .verses, direction: direction) }
         verses.onCancel = { [weak self] in self?.closeProjector() }
+        verses.onOpenInNewTab = { [weak self] in self?.onOpenInNewTab?($0) }
         verses.onBookmark = { [weak self] in self?.toggleBookmark($0) }
         for saved in [savedBookmarks, savedHistory] {
             saved.onActivate = { [weak self] node in
@@ -184,19 +168,11 @@ final class MainWorkspaceController: NSViewController {
 
     func render() {
         guard isViewLoaded, !shuttingDown else { return }
+        liveProjection.refreshPreferences()
         let sources = sources
         if let previousSources, previousSources != sources {
             self.previousSources = sources
             refreshSources()
-        }
-        if previousDisplayID != preferredDisplayID {
-            previousDisplayID = preferredDisplayID
-            scheduleProjectorReposition()
-        }
-        let transparent = defaults.bool(forKey: AppDefaultsKey.transparentBackground)
-        if transparent != previousTransparency {
-            previousTransparency = transparent
-            if let ownedProjectorWindow { applyProjectorAppearance(ownedProjectorWindow) }
         }
         books.apply([
             SidebarNode(id: "old-testament", title: "Old Testament", children: bibleBookNames.prefix(39).map {
@@ -244,10 +220,14 @@ final class MainWorkspaceController: NSViewController {
             loadMoreButton.isHidden = true
             emptyLabel.stringValue = navigation.isLoading ? "Loading chapter…" : "Choose a book and chapter, or enter a reference in Search."
         }
+        let title = navigation.searchPage != nil ? "Search" : navigation.refreshReference?.verseQuery.bookAndChapter ?? browsedBook ?? "New Passage"
+        view.window?.title = title
+        view.window?.tab.title = title
+        view.window?.tab.toolTip = navigation.searchPage.map { "Search: " + $0.request.text } ?? title
         emptyLabel.isHidden = !verses.rows.isEmpty
         renderStatus()
         rebuildOptionMenus()
-        let messages = [navigation.message, bookmarks.issue, history.issue].compactMap { $0 }
+        let messages = [navigation.message, liveProjection.message, bookmarks.issue, history.issue].compactMap { $0 }
         messageLabel.stringValue = messages.joined(separator: "  ")
         messageLabel.toolTip = messageLabel.stringValue
         footer.isHidden = messages.isEmpty
@@ -290,6 +270,7 @@ final class MainWorkspaceController: NSViewController {
     func navigate(to reference: VerseReference, project: Bool = false, recordHistory: Bool = false,
                   updateDraft: Bool = true, focusVerses: Bool = true) {
         let originalDraft = draft
+        let intent = project ? liveProjection.beginIntent(using: navigation) : nil
         navigation.navigate(to: reference, sources: sources, project: project) { [weak self] result in
             guard let self else { return }
             self.browsedBook = result.reference.book
@@ -298,7 +279,7 @@ final class MainWorkspaceController: NSViewController {
                 if focusVerses { self.focus(.verses) }
             }
             if recordHistory && result.requestedAvailable { self.history.append(reference.verseQuery.title) }
-            if let projection = result.projection { self.publish(projection) }
+            if let projection = result.projection, let intent { self.liveProjection.publish(projection, intent: intent) }
             self.scheduleRender()
         }
         scheduleRender()
@@ -338,29 +319,19 @@ final class MainWorkspaceController: NSViewController {
 
     func activateVerse(_ reference: VerseReference) {
         if navigation.searchPage != nil {
-            navigation.requestProjection(owner: .searchResult(reference), sources: sources) { [weak self] projection in
-                if let projection { self?.publish(projection) }
-            }
+            liveProjection.requestProjection(owner: .searchResult(reference), using: navigation)
         } else {
             guard let projection = navigation.prepareRowProjection(reference, sources: sources) else { return }
             browsedBook = reference.book
             draft = reference.verseQuery.title
-            publish(projection)
+            liveProjection.publishRow(projection)
         }
     }
 
     func refreshSources() {
-        let liveOwner = projector.projectionOwner
-        navigation.cancelProjection()
         if let request = navigation.searchRequest { navigation.search(request, sources: sources) }
-        else if let reference = navigation.refreshReference { navigate(to: reference, updateDraft: false) }
+        else if let reference = navigation.refreshReference { navigate(to: reference, updateDraft: false, focusVerses: false) }
         else { navigation.cancelLoading() }
-        if windowOpened, let liveOwner {
-            navigation.requestProjection(owner: liveOwner, sources: sources) { [weak self] projection in
-                if let projection { self?.publish(projection, preserveBlanking: true) }
-                else { self?.closeProjector() }
-            }
-        }
     }
 
     func toggleBookmark(_ reference: VerseReference) {
@@ -370,6 +341,7 @@ final class MainWorkspaceController: NSViewController {
 
     enum FocusColumn: CaseIterable { case books, chapters, search, verses }
     func focus(_ column: FocusColumn) {
+        guard view.window?.isKeyWindow == true else { return }
         switch column {
         case .books: view.window?.makeFirstResponder(books.outline)
         case .chapters: view.window?.makeFirstResponder(chapters.collection)
@@ -383,6 +355,7 @@ final class MainWorkspaceController: NSViewController {
         focus(columns[(index + direction + columns.count) % columns.count])
     }
     @objc func focusSearch(_ sender: Any?) {
+        guard view.window?.isKeyWindow == true else { return }
         searchToolbarItem?.beginSearchInteraction()
         view.window?.makeFirstResponder(search.field)
     }
@@ -390,14 +363,16 @@ final class MainWorkspaceController: NSViewController {
     func shutdown() {
         shuttingDown = true
         navigation.cancelAll()
-        closeProjector()
+        preview.performClose(nil)
         renderTask?.cancel()
         subscriptions.removeAll()
     }
 
     private func presentLibraryAlertIfNeeded() {
-        guard !presentingLibraryAlert, library.presentationTarget == .main, let window = view.window else { return }
+        guard !presentingLibraryAlert, library.presentationTarget == .main, let window = view.window, window.isKeyWindow else { return }
         if let url = library.pendingReplacement {
+            // Claim the shared request before another passage window can present it.
+            library.pendingReplacement = nil
             presentingLibraryAlert = true
             let alert = NSAlert()
             alert.messageText = "Replace imported translation?"
@@ -407,7 +382,6 @@ final class MainWorkspaceController: NSViewController {
             alert.beginSheetModal(for: window) { [weak self] response in
                 guard let self else { return }
                 self.presentingLibraryAlert = false
-                self.library.pendingReplacement = nil
                 if response == .alertFirstButtonReturn { self.library.importFile(url, replaceExisting: true, presenter: .main) }
             }
         } else if let notice = library.notice {

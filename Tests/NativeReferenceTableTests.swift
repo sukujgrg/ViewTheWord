@@ -301,15 +301,20 @@ final class NativeReferenceTableTests: XCTestCase {
         item.primaryCopy = nil
         item.secondaryCopy = "3 John 1:15 secondary text"
         var bookmarked: VerseReference?
+        var opened: VerseReference?
         subject.onBookmark = { bookmarked = $0 }
+        subject.onOpenInNewTab = { opened = $0 }
         subject.apply(rows: [item], selection: item.reference, style: .verses(fontSize: 17, dual: true))
         let menu = subject.contextMenu(at: 0)!
-        XCTAssertEqual(menu.items.map(\.title), ["Copy Verse (Secondary)", "", "Add Bookmark"])
+        XCTAssertEqual(menu.items.map(\.title), ["Copy Verse (Secondary)", "Open in New Tab", "", "Add Bookmark"])
         let replacement = row(1, book: "1 Peter")
         subject.apply(rows: [replacement], selection: replacement.reference, style: .verses(fontSize: 17, dual: true))
         let bookmarkItem = menu.items.last!
         XCTAssertTrue(NSApp.sendAction(bookmarkItem.action!, to: bookmarkItem.target, from: bookmarkItem))
         XCTAssertEqual(bookmarked, item.reference)
+        let openItem = menu.items.first { $0.title == "Open in New Tab" }!
+        XCTAssertTrue(NSApp.sendAction(openItem.action!, to: openItem.target, from: openItem))
+        XCTAssertEqual(opened, item.reference)
         subject.apply(rows: [replacement], selection: replacement.reference, style: .verses(fontSize: 17, dual: false), enabled: false)
         XCTAssertNil(subject.contextMenu(at: 0))
     }

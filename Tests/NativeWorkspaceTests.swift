@@ -24,10 +24,11 @@ final class NativeWorkspaceTests: XCTestCase {
         let source = BibleSources(primary: directory.appendingPathComponent("ENG_TEST.bible"), secondary: nil, revision: 1)
         let workspace = MainWorkspaceController(navigation: VerseTargetModel(readerFactory: { _ in WorkspaceBible() }),
             history: HistoryStore(fileURL: directory.appendingPathComponent("history.json")),
-            bookmarks: BookmarkStore(fileURL: directory.appendingPathComponent("bookmarks.json")), defaults: defaults,
+            bookmarks: BookmarkStore(fileURL: directory.appendingPathComponent("bookmarks.json")),
+            library: BibleLibrary(preloadedURLs: [source.primary]), defaults: defaults,
             sourceResolver: { _ in source })
         // Projection intent is tested without opening live output on a display.
-        workspace.projectorWindowFactory = { _ in nil }
+        workspace.liveProjection.projectorWindowFactory = { _ in nil }
         let controller = MainWindowController(workspace: workspace, savesFrame: false)
         controller.window!.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         controller.window!.orderBack(nil)
@@ -102,11 +103,11 @@ final class NativeWorkspaceTests: XCTestCase {
         let old = VerseReference(book: "John", chapter: 3, verse: 16)!
         let new = VerseReference(book: "John", chapter: 3, verse: 17)!
         subject.projector.project(.empty, owner: .textInputTarget(old))
-        subject.handleProjectorWindowClosed()
+        subject.liveProjection.handleProjectorWindowClosed()
         subject.projector.project(.empty, owner: .verseRowSelection(new))
         try await settle(subject)
         XCTAssertEqual(subject.projector.projectionOwner, .verseRowSelection(new))
-        subject.handleProjectorWindowClosed()
+        subject.liveProjection.handleProjectorWindowClosed()
         try await settle(subject)
         XCTAssertNil(subject.projector.projectionOwner)
     }

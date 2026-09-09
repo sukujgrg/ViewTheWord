@@ -23,7 +23,7 @@ struct NavigationResult {
 }
 
 /// Selected reference, chapter rows and their translation identities are one published value.
-/// MainWorkspaceController consumes projection intents; this model never opens a window or publishes live content.
+/// The shared LiveProjectionController consumes prepared projection intents; this model never opens a window or publishes live content.
 @MainActor
 final class VerseTargetModel: ObservableObject {
     struct NavigationState {

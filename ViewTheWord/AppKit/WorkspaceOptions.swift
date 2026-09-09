@@ -3,7 +3,7 @@ import AppKit
 extension MainWorkspaceController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(showPreview(_:)) || menuItem.action == #selector(toggleBlank(_:)) { return windowOpened }
-        if menuItem.action == #selector(stopProjection(_:)) { return windowOpened || navigation.isProjecting }
+        if menuItem.action == #selector(stopProjection(_:)) { return windowOpened || liveProjection.isProjecting }
         return true
     }
 }
@@ -94,11 +94,31 @@ extension MainWorkspaceController {
         historyActions.menu = historyMenu
     }
 
+    func passageMenu(for reference: VerseReference) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.command("Open in New Tab") { [weak self] in self?.onOpenInNewTab?(reference) }
+        return menu
+    }
+
+    @objc func openInNewTab(_ sender: Any?) {
+        let responder = view.window?.firstResponder
+        let reference: VerseReference?
+        if responder === books.outline, let book = books.selectedNode?.book {
+            reference = VerseReference(book: book, chapter: 1, verse: 1)
+        } else if responder === chapters.collection { reference = chapters.selectedReference }
+        else if responder === savedBookmarks.outline { reference = savedBookmarks.selectedNode?.reference }
+        else if responder === savedHistory.outline { reference = savedHistory.selectedNode?.reference }
+        else { reference = verses.selectedReference ?? navigation.refreshReference }
+        onOpenInNewTab?(reference)
+    }
+
     func savedMenu(for node: SidebarNode) -> NSMenu? {
         guard let reference = node.reference else { return nil }
         let menu = NSMenu()
         menu.autoenablesItems = false
-        menu.command("Go to \(reference.verseQuery.title)") { [weak self] in self?.navigate(to: reference) }
+        menu.command("Go to \(reference.verseQuery.title)") { [weak self] in self?.navigate(to: reference, project: true) }
+        menu.command("Open in New Tab") { [weak self] in self?.onOpenInNewTab?(reference) }
         menu.command(bookmarks.contains(reference) ? "Remove bookmark" : "Add bookmark") { [weak self] in self?.toggleBookmark(reference) }
         return menu
     }

@@ -7,16 +7,20 @@ This document is the current source of truth for this repo.
 ### Review implementation (2026-09-07)
 - `Core/VerseTargetModel.swift` owns lazy database readers, cancellable navigation/search work, and projection preparation through `BibleReading`. It never opens a window or publishes live content.
 - `verseTargetModel.verseQuery` is computed from one published navigation snapshot containing the selected reference, complete chapter rows, and `BibleSources`. Verse rows emit full `VerseReference` intents; Option-Up/Down delegates chapter loading to MainWorkspaceController.
-- Browsing/search and live projection refresh are independent. Only a newer projection intent or close invalidates projection work; canceling a verse submission also cancels its own pending projection. `MainWorkspaceController` remains the sole publisher and lifecycle owner. Keep the deferred close cleanup and its revision/window-identity guard.
+- Browsing/search and live projection refresh are independent. Only a newer projection intent or close invalidates projection work; canceling a verse submission also cancels its own pending projection. `LiveProjectionController` is the shared sole publisher and lifecycle owner across all passage tabs. Keep the deferred close cleanup and its revision/window-identity guard.
 - Text searches merge by coordinates across both translations, fetch counterpart text, and use cursor pagination (100 results plus a lookahead). SQL selects four named columns; imported `id` and column order are irrelevant. Words use Unicode boundaries and NOT > AND > OR, with implicit AND and strict syntax errors.
 - `Core/BibleLibrary.swift` provides one shared observable import/translation library. Imports snapshot committed SQLite/WAL data, normalize to standalone journal mode, validate coordinates and canonical coverage, create a unique coordinate index, and atomically install. Replacement is explicit; removal uses Trash.
 - `Core/Persistence.swift` contains history/bookmark stores, recovery copies for unreadable data, visible errors, and undoable bookmark clearing. Defaults and projector types live in AppConstants/Core.
-- Preserve preferred display IDs when disconnected. MainWorkspaceController owns the projector window reference. Blank hides the content; preview uses display proportions. Text fitting uses AppKit measurement followed by SwiftUI natural-height checks; do not reintroduce a fixed ten-line cap.
+- Preserve preferred display IDs when disconnected. LiveProjectionController owns the single projector window reference. Blank hides the content; preview uses display proportions. Text fitting uses AppKit measurement followed by SwiftUI natural-height checks; do not reintroduce a fixed ten-line cap.
 - Xcode's ordinary version comes from `Config/Version.xcconfig`, generated with `scripts/set-version.sh` from VERSION. Release preflight requires a clean tree and matching tag/HEAD; publication additionally verifies GitHub's tag and refuses to overwrite a release.
 - Regression commands: `swift test --scratch-path build/SwiftPM` and `python3 scripts/test-review-regressions.py`. Offscreen projector checks: `scripts/render-projector-review.sh`. See `docs/review-implementation-2026-09-07.md` and `docs/manual-validation.md` for coverage and remaining manual checks.
 
 ### Session handoff note (latest)
-- The main workspace is entirely AppKit. `ViewTheWordApp` starts `NSApplication`; `MainWindowController` owns the main window and `MainWorkspaceController` owns navigation orchestration and live projection. Settings, help, preview, and projected content remain isolated SwiftUI screens.
+- Passage tabs use native `NSWindow` tabbing, retained by `PassageTabsController`. Each tab keeps its full AppKit hierarchy, navigation model, query mode/draft/results/selection, and scroll positions. Native tab groups handle selection, dragging/reordering, detach, and merge.
+- Command-T creates a tab; Command-Return and row context menus open the selected passage in a new tab without projection or history capture. Command-W closes a tab, Control-Tab/Control-Shift-Tab and Command-Shift-[/] switch tabs. Closing/switching tabs never stops already-published live output, even when the originating or last tab closes.
+- Bookmarks, bookmark Undo, History, translations/preferences, and live projection are shared. Every tab observes the same Live/Blank state. Preview is local to a tab and observes shared output. Only the active tab may request focus or present library alerts; a replacement prompt claims the shared pending request before presenting.
+- Shared projection intents invalidate pending preparation across tabs, while each `VerseTargetModel` still cancels its own superseded verse submission. Translation refresh uses a separate shared reader so browsing or closing the originating tab cannot cancel it. Deferred close retains revision/window guards and preserves newer pending preparation while clearing stopped output.
+- The main workspace is entirely AppKit. `ViewTheWordApp` starts `NSApplication`; `PassageTabsController` retains the passage windows; each `MainWindowController` owns one native window/tab and `MainWorkspaceController` owns its navigation orchestration. One `LiveProjectionController` owns shared live projection. Settings, help, preview, and projected content remain isolated SwiftUI screens.
 - `AppKit/NativeSidebar.swift` provides native book, bookmark, and history rows. Bookmarks and History have separate, resizable panes. Same-row mouse activation remains explicit.
 - `AppKit/ChapterGridController.swift` provides an adaptive `NSCollectionView` of chapter-number buttons. Column count follows available width, with no fixed three-column layout. Arrow keys use native spatial navigation; Command-Left/Right changes workspace columns.
 - `NativeReferenceTable.swift` provides native verse and search-result tables. `NativeSearchField.swift` supplies the real `NSSearchToolbarItem` field. There are no SwiftUI representables or focus bindings in the workspace.
@@ -25,11 +29,12 @@ This document is the current source of truth for this repo.
 - Native table rows use automatic heights from constrained `NSTextField`s. Do not query/reconfigure row views inside selection delegates. Coalesce resize-driven height invalidation after `Task.yield()` and disable implicit height animation.
 - A new chapter-data UUID reveals a resubmitted verse; bookmark-only refreshes preserve scroll. Grid reveal runs after collection layout, uses `.nearestHorizontalEdge` for vertical scrolling, and preserves a visible selected chapter when column count changes.
 - Ordinary verse selection projects; search-result arrow selection does not project until Return/Space or a click. Space compares the actual projected reference. Book and chapter browsing do not project. Activating a bookmark or history entry loads, selects, and projects that reference in one action, including same-row reactivation. Replaying saved references does not capture history.
+- Native tab checks launch a fixture app through LaunchServices and inject its BibleLibrary catalog, avoiding macOS activation races and unrelated Documents discovery. The app still runs a real event loop; projector windows are suppressed. Test viewport restoration by visible verse and offset because automatic row measurements can change absolute scroll coordinates.
 - First-click validation now runs in `scripts/render-navigation-review.sh` with a real `NSApplication.run()` loop and key `NSWindow`. It dispatches book-to-chapter clicks through `window.sendEvent`, checks four books, spatial grid arrows, toolbar command routing, adaptive widths, and bilingual rendering. The old mocked-key-window/direct-table-mouse regression was removed.
 - Physical OS-delivered clicks, VoiceOver, and external-display checks still require the manual checks in `docs/manual-validation.md`. Computer-use permissions were unavailable during this migration; do not describe window-dispatched synthetic events as physical clicks. Native macOS glass is not fully captured by offscreen view caching.
 - See `docs/native-workspace-2026-09-09.md` for the migration and review boundary.
 - Projection ownership is now explicit and centralized:
-  - `MainWorkspaceController` is the only place that sets projected content.
+  - `LiveProjectionController` is the only place that sets projected content. Passage workspaces submit globally ordered intents before asynchronous preparation begins.
   - `ProjectorViewModel` projection writes go through `project(_:owner:)` and clear through `clearProjection()`.
   - Ownership is typed as `ProjectionOwner` (`textInputTarget`, `verseRowSelection`, `searchResult`).
 - Workspace controls emit navigation/projection intents to the root controller. Do not publish projection from a row, sidebar, grid item, or settings screen.
@@ -37,16 +42,16 @@ This document is the current source of truth for this repo.
   - `VerseBoundary` and `VerseReference` validate/normalize references.
   - Row projection rejects references that are absent from the current chapter.
 - ESC close for projection uses a dual-path deferred flow:
-  - **Main window key (normal case):** ESC → native responder close intent → `MainWorkspaceController.closeProjector()` → `window.close()` → `willCloseNotification` → deferred state cleanup.
-  - **Projector window key (rare):** ESC → `ProjectorWindow.cancelOperation` → deferred `DispatchQueue.main.async` posts `.closeProjectorRequested` notification → `MainWorkspaceController` receives → `closeProjector()` → same path.
+  - **Main window key (normal case):** ESC → native responder close intent → `MainWorkspaceController.closeProjector()` → shared `LiveProjectionController.closeProjector()` → `window.close()` → `willCloseNotification` → deferred state cleanup.
+  - **Projector window key (rare):** ESC → `ProjectorWindow.cancelOperation` → deferred `DispatchQueue.main.async` posts `.closeProjectorRequested` notification → `LiveProjectionController` receives → `closeProjector()` → same path.
   - State cleanup (`clearProjection`, `windowOpened = false`) is always deferred via `DispatchQueue.main.async` in `handleProjectorWindowClosed()` to avoid re-entrant SwiftUI/AppKit constraint updates during window teardown.
-  - `ProjectorView` has no `onDisappear` teardown and no `@Binding windowOpened` — all projector lifecycle is owned by `MainWorkspaceController`.
+  - `ProjectorView` has no `onDisappear` teardown and no `@Binding windowOpened` — all projector lifecycle is owned by `LiveProjectionController`.
   - Do not use `performClose(nil)` on the projector window — it silently fails on borderless windows (no visible close button). Use `close()` instead.
   - Do not call `close()` directly from `ProjectorWindow.keyDown`/`cancelOperation` — this causes AppKit/SwiftUI constraint crashes during event handling. Always defer to next runloop tick.
 - HDMI/screen-change projection hardening (learned from `eucaly` patterns):
   - Do not reposition projector window synchronously on every `didChangeScreenParametersNotification`.
   - Use a coalesced/deferred path (`scheduleProjectorWindowReposition`) with a cancellable `Task` and short delay to avoid rapid `setFrame` churn during display attach/detach.
-  - Cancel pending reposition tasks on projector close and view disappear.
+  - Cancel pending reposition tasks on projector close and application shutdown. Closing a passage tab must not cancel shared output or display repositioning.
   - Prefer `NSView` container + constraints hosting pattern for projector content instead of assigning `NSHostingView` directly as `window.contentView`.
   - Keep projector `collectionBehavior` set to `[.canJoinAllSpaces, .fullScreenAuxiliary]` for stable external-display/full-screen behavior.
 - Verse row scrolling behavior is now fixed/default:
@@ -77,7 +82,8 @@ This document is the current source of truth for this repo.
 ### Current app structure (actual code)
 - Entry: `ViewTheWord/ViewTheWordApp.swift`
 - Main window and commands: `ViewTheWord/AppKit/MainWindowController.swift`
-- Main orchestration: `ViewTheWord/AppKit/MainWorkspaceController.swift`
+- Per-tab navigation: `ViewTheWord/AppKit/MainWorkspaceController.swift`
+- Tab retention and shared services: `PassageTabsController` in `ViewTheWord/AppKit/MainWindowController.swift`
 - Native layout, toolbar, and options: `ViewTheWord/AppKit/WorkspaceInterface.swift`, `WorkspaceOptions.swift`
 - Native chapter grid: `ViewTheWord/AppKit/ChapterGridController.swift`
 - Book, bookmark, and history rows: `ViewTheWord/AppKit/NativeSidebar.swift`
@@ -91,7 +97,7 @@ This document is the current source of truth for this repo.
 
 ### Non-negotiable state ownership
 - `verseTargetModel.verseQuery` is the current selected verse source of truth across views.
-- projected content ownership is `MainWorkspaceController` + `ProjectorViewModel.project(_:owner:)`; do not directly assign projector payload from child views.
+- projected content ownership is shared `LiveProjectionController` + `ProjectorViewModel.project(_:owner:)`; do not directly assign projector payload from child views.
 - Keep projector window title centralized: `AppWindowTitle.projector`.
 - Keep cross-view notifications centralized in `Notification.Name` extensions (`.focusSearchField`, `.toggleKeyboardShortcuts`, `.closeProjectorRequested`).
 
@@ -148,4 +154,4 @@ This document is the current source of truth for this repo.
 - In sandboxed environments, unrestricted build may be required because Xcode/SwiftPM cache paths are outside workspace.
 
 ### Remaining architectural debt to watch
-- Keep projector lifecycle ownership in `MainWorkspaceController`. The user explicitly excluded introducing a projector `NSWindowController`; the main window has its own controller.
+- Keep projector lifecycle ownership in shared `LiveProjectionController`. The user explicitly excluded introducing a projector `NSWindowController`; passage windows have their own controllers.

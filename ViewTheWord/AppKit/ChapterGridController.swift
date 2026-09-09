@@ -10,6 +10,7 @@ final class ChapterGridController: NSViewController, NSCollectionViewDataSource,
     private var applying = false
     private var revealTask: Task<Void, Never>?
     var onActivate: (VerseReference) -> Void = { _ in }
+    var onOpenInNewTab: (VerseReference) -> Void = { _ in }
     var onMoveFocus: (Int) -> Void = { _ in }
     var onCancel: () -> Void = {}
     deinit { revealTask?.cancel() }
@@ -88,6 +89,16 @@ final class ChapterGridController: NSViewController, NSCollectionViewDataSource,
             guard let self, let index = self.references.firstIndex(of: reference) else { return }
             self.activate(index)
         }
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.command("Open in New Tab") { [weak self] in self?.onOpenInNewTab(reference) }
+        item.button.menu = menu
+        item.button.setAccessibilityCustomActions([
+            NSAccessibilityCustomAction(name: "Open in New Tab") { [weak self] in
+                self?.onOpenInNewTab(reference)
+                return self != nil
+            }
+        ])
         return item
     }
     func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) {

@@ -132,6 +132,12 @@ final class BibleLibrary: ObservableObject {
     private let importService = BibleImportService()
 
     init() { refresh() }
+    /// A supplied catalog lets native fixtures use repository data without
+    /// discovering translations in the operator's Documents directory.
+    init(preloadedURLs: [URL]) {
+        urls = preloadedURLs.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        revision = 1
+    }
     func refresh() {
         BibleUrl.invalidateAvailableBibleUrlCache()
         urls = BibleUrl().getAvailableBibleUrls().sorted { $0.lastPathComponent < $1.lastPathComponent }
