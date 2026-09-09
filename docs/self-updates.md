@@ -1,7 +1,6 @@
 # Self-updates
 
-ViewTheWord uses Sparkle 2.9.6 to install releases from GitHub. Eucaly's update
-button and GitHub distribution were the UX reference. ViewTheWord keeps App
+ViewTheWord uses Sparkle 2.9.6 to install releases from GitHub. It keeps App
 Sandbox enabled and uses Sparkle's installer and downloader XPC services, so the
 app does not need general outgoing network access or a user-data migration.
 
@@ -30,7 +29,7 @@ and relaunch.
 
 ## Signing key
 
-The initial update key was generated in the maintainer's macOS login Keychain
+The update signing key is stored in the maintainer's macOS login Keychain
 under the Sparkle account **suku.ViewTheWord**. The private key is not in this
 repository. Preserve it when moving to another release machine. Use Sparkle's
 documented export/import procedure and store any backup securely outside the
@@ -64,9 +63,9 @@ rejects build numbers that would prevent installed copies from seeing the update
 Current releases require macOS 26.0 or later; the feed takes this minimum from
 the built app's `LSMinimumSystemVersion`.
 
-Sparkle compares `CFBundleVersion`. Release builds now default to a numeric UTC
-timestamp (`YYYYMMDDHHMMSS`) instead of the old constant `3`. An explicit
-`--build-number` or tag's `+BUILD` suffix must be greater than all previously
+Sparkle compares `CFBundleVersion`. Release builds default to a numeric UTC
+timestamp (`YYYYMMDDHHMMSS`). An explicit `--build-number` or tag's `+BUILD`
+suffix must be greater than all previously
 published update builds. The marketing version still comes from `VERSION` and
 the release tag. Local `--current-arch` archives do not generate an update feed
 and cannot be published by the GitHub release command.
@@ -84,13 +83,7 @@ enablement, the automatic-check preference, reminders in multiple windows,
 focus preservation, and shared live output when a window closes. Python
 regressions reject older builds and feed/archive metadata mismatches.
 
-Verified on 2026-09-10: all 64 Swift and 5 Python regressions passed; Debug and
-universal Release builds succeeded; the built app's signatures and sandbox
-entitlements were checked. Local feed generation and cryptographic verification
-accepted the original archive/feed and rejected tampered copies. A native menu
-check reached GitHub and received the expected 404 for the not-yet-published feed.
-
-Before shipping the first release, use a signed and notarized pair of builds in
+Before publishing a release, use a signed and notarized pair of builds in
 a disposable installation to check the complete download/install/relaunch flow,
 including a read-only install location, a corrupted download, a disconnected
 network, and updates while live projection is active. Verify bookmarks, history,

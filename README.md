@@ -4,7 +4,7 @@ A local macOS app for browsing and projecting Bible verses in one or two transla
 
 ## Getting started
 
-1. Choose a book and chapter, or enter `John 3:16` in **Ref** mode and press Return. A submitted reference projects immediately; browsing a chapter or opening a bookmark/history entry only navigates.
+1. Choose a book and chapter, or enter `John 3:16` in **Ref** mode and press Return. A submitted reference projects immediately; browsing a book or chapter only navigates. Activating a bookmark or history entry loads and projects its verse.
 2. Click a verse to project it. In the verse list, Up/Down projects the previous/next verse; Option-Up/Down loads the previous/next chapter. Space toggles the selected verse's projection.
 3. Select the output display in the projection controls. A disconnected preferred display stays saved and is restored when it reconnects. Auto uses an available display, so select an explicit display when using several screens.
 4. Watch the **Live** reference and output display above the verse list. **Preview** shows the output layout; **Blank** hides the content while keeping the window open; **Stop** or Escape closes projection and cancels pending projection requests. With a transparent background, Blank reveals the underlying screen content.
@@ -20,7 +20,7 @@ the update and install it when you are ready to restart. You can turn automatic
 checks off in the app menu. Existing users install the first version with this
 feature manually. See [self-updates and release signing](docs/self-updates.md).
 
-In the chapter list, Up/Down opens the previous/next chapter and keeps focus there. Return or Space opens the selected chapter again. In the verse list, Command-Up/Down jumps five verses, Page Up/Down jumps ten, and Home/End selects the first/last verse. Outside the search field, Left/Right moves between columns and search.
+In the chapter grid, arrow keys follow the current arrangement and keep focus there. Return or Space opens the selected chapter again; Command-Left/Right moves between workspace columns. In the verse list, Command-Up/Down jumps five verses, Page Up/Down jumps ten, and Home/End selects the first/last verse. Left/Right moves from the verse list to another column or search.
 
 Bookmarks are available from verse actions and appear with history beneath the chapter list. Only direct reference submissions are added to history. Adding, removing, and clearing bookmarks support Undo/Redo. If a stored history/bookmark file is unreadable, the app preserves a recovery copy and shows a message.
 
@@ -68,7 +68,7 @@ The Swift package tests the same parser, database, import, navigation, projectio
 
 The layered VTW app icon is editable in Icon Composer. See [the icon source and rendering guide](docs/app-icon.md) for appearance previews and build integration.
 
-The main workspace uses AppKit throughout: a native toolbar and search field, a book sidebar, an adaptive chapter-number grid, separate Bookmarks and History panes, and native verse/search-result tables. AppKit owns first responder, selection, scrolling, and row reuse. Settings, help, preview, and projected output remain isolated SwiftUI screens. `VerseTargetModel` commits selected references, chapter rows, and translation identities together; `MainWorkspaceController` owns each tab’s navigation; shared `LiveProjectionController` alone publishes projected content and owns projector lifecycle. `PassageTabsController` retains the native passage windows and shared services. Database connections open lazily on private queues. See [the native workspace migration](docs/native-workspace-2026-09-09.md).
+The passage workspace uses native AppKit controls and an independent navigation model for each tab. One shared `LiveProjectionController` publishes output and owns the projector window. Settings, help, preview, and projected content are separate SwiftUI screens. See [the architecture guide](docs/architecture.md) for state ownership, navigation, data access, and validation boundaries.
 
 ## Release and notarize
 

@@ -13,7 +13,7 @@ This document is the current source of truth for this repo.
 - `Core/Persistence.swift` contains history/bookmark stores, recovery copies for unreadable data, visible errors, and undoable bookmark clearing. Defaults and projector types live in AppConstants/Core.
 - Preserve preferred display IDs when disconnected. LiveProjectionController owns the single projector window reference. Blank hides the content; preview uses display proportions. Text fitting uses AppKit measurement followed by SwiftUI natural-height checks; do not reintroduce a fixed ten-line cap.
 - Xcode's ordinary version comes from `Config/Version.xcconfig`, generated with `scripts/set-version.sh` from VERSION. Release preflight requires a clean tree and matching tag/HEAD; publication additionally verifies GitHub's tag and refuses to overwrite a release.
-- Regression commands: `swift test --scratch-path build/SwiftPM` and `python3 scripts/test-review-regressions.py`. Offscreen projector checks: `scripts/render-projector-review.sh`. See `docs/review-implementation-2026-09-07.md` and `docs/manual-validation.md` for coverage and remaining manual checks.
+- Regression commands: `swift test --scratch-path build/SwiftPM` and `python3 scripts/test-review-regressions.py`. Offscreen projector checks: `scripts/render-projector-review.sh`. See `docs/architecture.md` for state ownership and automated coverage, and `docs/manual-validation.md` for manual checks.
 
 ### Session handoff note (latest)
 - The app requires macOS 26.0 or later in both the Xcode project and Swift package. CI uses `macos-26` with Xcode 26.5 selected through `DEVELOPER_DIR`; keep the toolchain explicit.
@@ -36,7 +36,7 @@ This document is the current source of truth for this repo.
 - Native tab checks launch a fixture app through LaunchServices and inject its BibleLibrary catalog, avoiding macOS activation races and unrelated Documents discovery. The app still runs a real event loop; projector windows are suppressed. Test viewport restoration by visible verse and offset because automatic row measurements can change absolute scroll coordinates.
 - First-click validation now runs in `scripts/render-navigation-review.sh` with a real `NSApplication.run()` loop and key `NSWindow`. It dispatches book-to-chapter clicks through `window.sendEvent`, checks four books, spatial grid arrows, toolbar command routing, adaptive widths, and bilingual rendering. The old mocked-key-window/direct-table-mouse regression was removed.
 - Physical OS-delivered clicks, VoiceOver, and external-display checks still require the manual checks in `docs/manual-validation.md`. Computer-use permissions were unavailable during this migration; do not describe window-dispatched synthetic events as physical clicks. Native macOS glass is not fully captured by offscreen view caching.
-- See `docs/native-workspace-2026-09-09.md` for the migration and review boundary.
+- See `docs/architecture.md` for the current workspace architecture and validation boundaries.
 - Projection ownership is now explicit and centralized:
   - `LiveProjectionController` is the only place that sets projected content. Passage workspaces submit globally ordered intents before asynchronous preparation begins.
   - `ProjectorViewModel` projection writes go through `project(_:owner:)` and clear through `clearProjection()`.
