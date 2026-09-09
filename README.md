@@ -14,6 +14,12 @@ Use **Command-T** to keep another passage ready in a native tab. **Open in New T
 
 The verse and chapter highlights show your current selection, including after projection stops. **Live** shows which reference is being projected when you browse elsewhere.
 
+Use **View The Word → Check for Updates…** to download and install new releases.
+Automatic checks show an **Update** button without interrupting your work; choose
+the update and install it when you are ready to restart. You can turn automatic
+checks off in the app menu. Existing users install the first version with this
+feature manually. See [self-updates and release signing](docs/self-updates.md).
+
 In the chapter list, Up/Down opens the previous/next chapter and keeps focus there. Return or Space opens the selected chapter again. In the verse list, Command-Up/Down jumps five verses, Page Up/Down jumps ten, and Home/End selects the first/last verse. Outside the search field, Left/Right moves between columns and search.
 
 Bookmarks are available from verse actions and appear with history beneath the chapter list. Only direct reference submissions are added to history. Adding, removing, and clearing bookmarks support Undo/Redo. If a stored history/bookmark file is unreadable, the app preserves a recovery copy and shows a message.
@@ -89,4 +95,4 @@ To publish, push that exact tag to the destination repository first, then run:
 make release-github NOTARY_PROFILE=ViewTheWordNotary GH_REPO=sukujgrg/ViewTheWord TAG=v3.1.0
 ```
 
-The script verifies a clean tree, HEAD equal to the tag, version consistency, and the matching GitHub tag before publishing. Existing releases are not overwritten. Artifacts in `build/release` include the app, notarized zip, checksum, and source-commit metadata. Signing, notarization, and publishing require the appropriate local credentials.
+The script verifies a clean tree, HEAD equal to the tag, version consistency, and the matching GitHub tag before publishing. Existing releases are not overwritten. Artifacts in `build/release` include the universal app, notarized zip, checksum, source-commit metadata, and signed `appcast.xml` for in-app updates. Signing, notarization, and publishing require the appropriate local credentials, including the existing Sparkle key in Keychain. Release build numbers default to an increasing UTC timestamp; explicit build numbers must exceed previous update builds. See [self-update release requirements](docs/self-updates.md).

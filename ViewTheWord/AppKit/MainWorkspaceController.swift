@@ -14,6 +14,7 @@ final class MainWorkspaceController: NSViewController {
     let bookmarks: BookmarkStore
     let library: BibleLibrary
     let defaults: UserDefaults
+    let updates: AppUpdateController?
 
     let books = NativeSidebarController(label: "Bible books")
     let savedBookmarks = NativeSidebarController(label: "Bookmarks")
@@ -60,7 +61,8 @@ final class MainWorkspaceController: NSViewController {
     init(navigation: VerseTargetModel? = nil, projector: ProjectorViewModel? = nil,
          history: HistoryStore? = nil, bookmarks: BookmarkStore? = nil,
          library: BibleLibrary? = nil, defaults: UserDefaults = .standard,
-         sourceResolver: ((Bool) -> BibleSources)? = nil, liveProjection: LiveProjectionController? = nil) {
+         sourceResolver: ((Bool) -> BibleSources)? = nil, liveProjection: LiveProjectionController? = nil,
+         updates: AppUpdateController? = nil) {
         self.navigation = navigation ?? VerseTargetModel()
         let liveProjection = liveProjection ?? LiveProjectionController(projector: projector, library: library, defaults: defaults, sourceResolver: sourceResolver)
         self.liveProjection = liveProjection
@@ -68,6 +70,7 @@ final class MainWorkspaceController: NSViewController {
         self.bookmarks = bookmarks ?? .shared
         self.library = liveProjection.library
         self.defaults = liveProjection.defaults
+        self.updates = updates
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -92,6 +95,8 @@ final class MainWorkspaceController: NSViewController {
             publisher.sink { [weak self] _ in self?.scheduleRender() }.store(in: &subscriptions)
         }
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification, object: defaults)
+            .sink { [weak self] _ in self?.scheduleRender() }.store(in: &subscriptions)
+        updates?.objectWillChange
             .sink { [weak self] _ in self?.scheduleRender() }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
             .sink { [weak self] _ in self?.scheduleRender() }.store(in: &subscriptions)
@@ -230,6 +235,7 @@ final class MainWorkspaceController: NSViewController {
         view.window?.tab.toolTip = navigation.searchPage.map { "Search: " + $0.request.text } ?? title
         emptyLabel.isHidden = !verses.rows.isEmpty
         renderStatus()
+        renderUpdateToolbar()
         rebuildOptionMenus()
         let messages = [navigation.message, liveProjection.message, bookmarks.issue, history.issue].compactMap { $0 }
         messageLabel.stringValue = messages.joined(separator: "  ")

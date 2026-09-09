@@ -81,18 +81,20 @@ final class PassageTabsController {
     let history: HistoryStore
     let bookmarks: BookmarkStore
     let bookmarkUndo = UndoManager()
+    let updates: AppUpdateController?
     private let navigationFactory: () -> VerseTargetModel
     private let savesFrames: Bool
     private(set) var windows: [MainWindowController] = []
     private weak var lastSelected: MainWindowController?
 
     init(liveProjection: LiveProjectionController? = nil, history: HistoryStore? = nil,
-         bookmarks: BookmarkStore? = nil, savesFrames: Bool = true,
+         bookmarks: BookmarkStore? = nil, savesFrames: Bool = true, updates: AppUpdateController? = nil,
          navigationFactory: @escaping () -> VerseTargetModel = { VerseTargetModel() }) {
         self.liveProjection = liveProjection ?? LiveProjectionController()
         self.history = history ?? .shared
         self.bookmarks = bookmarks ?? .shared
         self.savesFrames = savesFrames
+        self.updates = updates
         self.navigationFactory = navigationFactory
     }
     var selected: MainWindowController? {
@@ -105,7 +107,7 @@ final class PassageTabsController {
     @discardableResult
     func open(reference: VerseReference? = nil, after origin: MainWindowController? = nil) -> MainWindowController {
         let workspace = MainWorkspaceController(navigation: navigationFactory(), history: history, bookmarks: bookmarks,
-                                                liveProjection: liveProjection)
+                                                liveProjection: liveProjection, updates: updates)
         let controller = MainWindowController(workspace: workspace, savesFrame: savesFrames, bookmarkUndo: bookmarkUndo)
         controller.passages = self
         windows.append(controller)
@@ -145,10 +147,20 @@ final class PassageTabsController {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private lazy var passages = PassageTabsController()
+    private lazy var passages = PassageTabsController(updates: updates)
+    private let updates: AppUpdateController?
     private var settingsWindow: NSWindowController?
     private var helpWindow: NSWindowController?
     private var subscriptions = Set<AnyCancellable>()
+
+    override init() {
+        #if SWIFT_PACKAGE || VTW_REVIEW
+        updates = nil
+        #else
+        updates = AppUpdateController(driver: SparkleUpdateDriver())
+        #endif
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = false
@@ -169,6 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in self?.showHelp(nil) }.store(in: &subscriptions)
         showMainWindow()
         NSApplication.shared.activate(ignoringOtherApps: true)
+        updates?.start()
     }
     private func applyAppearance() {
         let name: NSAppearance.Name = UserDefaults.standard.bool(forKey: AppDefaultsKey.preferDarkMode) ? .darkAqua : .aqua
@@ -226,6 +239,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let app = menu("View The Word")
         item(app, "About View The Word", #selector(NSApplication.orderFrontStandardAboutPanel(_:)))
+        if let updates {
+            item(app, "Check for Updates…", #selector(AppUpdateController.checkForUpdates(_:)), target: updates)
+            item(app, "Automatically Check for Updates", #selector(AppUpdateController.toggleAutomaticChecks(_:)), target: updates)
+        }
         app.addItem(.separator())
         item(app, "Settings…", #selector(showSettings(_:)), ",", target: self)
         app.addItem(.separator())

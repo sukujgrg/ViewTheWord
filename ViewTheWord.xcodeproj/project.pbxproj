@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        C0DE09130000000000000001 /* AppUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE09130000000000000002 /* AppUpdateController.swift */; };
+        C0DE09130000000000000003 /* SparkleUpdateDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE09130000000000000004 /* SparkleUpdateDriver.swift */; };
+        C0DE09130000000000000005 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = C0DE09130000000000000006 /* Sparkle */; };
 		C0DE09120000000000000001 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = C0DE09120000000000000002 /* AppIcon.icon */; };
 		033226F42876258700336EDD /* ENG_UKJV.bible in Resources */ = {isa = PBXBuildFile; fileRef = 033226F22876258700336EDD /* ENG_UKJV.bible */; };
 		033226F52876258700336EDD /* MAL_BSI.bible in Resources */ = {isa = PBXBuildFile; fileRef = 033226F32876258700336EDD /* MAL_BSI.bible */; };
@@ -40,6 +43,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        C0DE09130000000000000002 /* AppUpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppKit/AppUpdateController.swift; sourceTree = "<group>"; };
+        C0DE09130000000000000004 /* SparkleUpdateDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SparkleUpdateDriver.swift; sourceTree = "<group>"; };
 		C0DE09120000000000000002 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		033226F22876258700336EDD /* ENG_UKJV.bible */ = {isa = PBXFileReference; lastKnownFileType = file; path = ENG_UKJV.bible; sourceTree = "<group>"; };
 		033226F32876258700336EDD /* MAL_BSI.bible */ = {isa = PBXFileReference; lastKnownFileType = file; path = MAL_BSI.bible; sourceTree = "<group>"; };
@@ -83,6 +88,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+                C0DE09130000000000000005 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -122,6 +128,8 @@
 		03A1D26228672D1700511E73 /* ViewTheWord */ = {
 			isa = PBXGroup;
 			children = (
+                C0DE09130000000000000002 /* AppUpdateController.swift */,
+                C0DE09130000000000000004 /* SparkleUpdateDriver.swift */,
 				B2B7BDE52BE4A13B00A1CB41 /* ViewTheWordRelease.entitlements */,
 				033226FB2876908800336EDD /* Resources */,
 				C09E00000000000000000001 /* Core */,
@@ -188,6 +196,7 @@
 			);
 			name = ViewTheWord;
 			packageProductDependencies = (
+                C0DE09130000000000000006 /* Sparkle */,
 			);
 			productName = PresentV;
 			productReference = 03A1D26028672D1700511E73 /* ViewTheWord.app */;
@@ -218,6 +227,7 @@
 			);
 			mainGroup = 03A1D25728672D1700511E73;
 			packageReferences = (
+                C0DE09130000000000000007 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			productRefGroup = 03A1D26128672D1700511E73 /* Products */;
 			projectDirPath = "";
@@ -249,6 +259,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+                C0DE09130000000000000001 /* AppUpdateController.swift in Sources */,
+                C0DE09130000000000000003 /* SparkleUpdateDriver.swift in Sources */,
 				425D5E8CF7710C3EF352B6C4 /* BibleImportService.swift in Sources */,
 				11606E72E498CF972D530B4F /* BibleLibrary.swift in Sources */,
 				4FF390C24CF7315072551796 /* Persistence.swift in Sources */,
@@ -526,6 +538,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+        C0DE09130000000000000007 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+            isa = XCRemoteSwiftPackageReference;
+            repositoryURL = "https://github.com/sparkle-project/Sparkle";
+            requirement = {
+                kind = exactVersion;
+                version = 2.9.6;
+            };
+        };
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+        C0DE09130000000000000006 /* Sparkle */ = {
+            isa = XCSwiftPackageProductDependency;
+            package = C0DE09130000000000000007 /* XCRemoteSwiftPackageReference "Sparkle" */;
+            productName = Sparkle;
+        };
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 03A1D25828672D1700511E73 /* Project object */;
 }

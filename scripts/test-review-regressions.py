@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run converter and release-preflight regressions entirely in temporary directories."""
 import importlib.util
+import base64
 import re
 import sqlite3
 import subprocess
@@ -12,6 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("converter", ROOT / "scripts/xml-to-bible.py")
 converter = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(converter)
+update_spec = importlib.util.spec_from_file_location("update_feed", ROOT / "scripts/update-feed.py")
+update_feed = importlib.util.module_from_spec(update_spec)
+update_spec.loader.exec_module(update_feed)
 
 
 class ConverterTests(unittest.TestCase):
@@ -62,6 +66,44 @@ class ReleasePreflightTests(unittest.TestCase):
             path.write_text("new commit")
             git("add", "."); git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "newer")
             self.assertNotEqual(verify().returncode, 0)
+
+
+class UpdateFeedTests(unittest.TestCase):
+    def test_rejects_older_builds_even_if_marketing_version_is_newer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            feed = Path(directory) / "appcast.xml"
+            feed.write_text('''<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+                <channel><item><sparkle:version>20260909010101</sparkle:version>
+                <sparkle:shortVersionString>3.0.5</sparkle:shortVersionString></item></channel></rss>''')
+            for build in ["3", "20260909010101"]:
+                with self.assertRaises(ValueError):
+                    update_feed.verify_advancing_version({"CFBundleVersion": build, "CFBundleShortVersionString": "3.1.0"}, feed)
+            info = {"CFBundleVersion": "20260910010101", "CFBundleShortVersionString": "3.1.0"}
+            update_feed.verify_advancing_version(info, feed)
+            info["CFBundleShortVersionString"] = "3.0.4"
+            with self.assertRaises(ValueError):
+                update_feed.verify_advancing_version(info, feed)
+
+    def test_feed_must_match_signed_archive_version_url_length_and_minimum_os(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "ViewTheWord.zip"
+            archive.write_bytes(b"fixture")
+            feed = Path(directory) / "appcast.xml"
+            signature = base64.b64encode(b"s" * 64).decode()
+            url = "https://github.com/sukujgrg/ViewTheWord/releases/download/v3.1.0/ViewTheWord.zip"
+            xml = f'''<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item>
+                <sparkle:version>20260910</sparkle:version><sparkle:shortVersionString>3.1.0</sparkle:shortVersionString>
+                <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+                <enclosure url="{url}" sparkle:edSignature="{signature}" length="7" type="application/octet-stream"/>
+                </item></channel></rss>'''
+            info = {"CFBundleVersion": "20260910", "CFBundleShortVersionString": "3.1.0", "LSMinimumSystemVersion": "14.0"}
+            feed.write_text(xml)
+            self.assertEqual(update_feed.verify_feed(feed, info, archive, url), signature)
+            for before, after in [(url, "https://example.invalid/other.zip"), ('length="7"', 'length="8"'),
+                                  ("14.0", "13.0"), ("3.1.0</", "3.0.5</"), (signature, "")]:
+                feed.write_text(xml.replace(before, after))
+                with self.assertRaises(ValueError):
+                    update_feed.verify_feed(feed, info, archive, url)
 
 
 if __name__ == "__main__":

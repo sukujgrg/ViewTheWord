@@ -5,6 +5,7 @@ extension NSToolbarItem.Identifier {
     static let workspaceSearchMode = Self("workspace-search-mode")
     static let workspaceView = Self("workspace-view")
     static let workspaceProjection = Self("workspace-projection")
+    static let workspaceUpdate = Self("workspace-update")
 }
 
 extension MainWorkspaceController: NSToolbarDelegate {
@@ -140,8 +141,12 @@ extension MainWorkspaceController: NSToolbarDelegate {
     }
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .flexibleSpace, .workspaceSearch, .workspaceSearchMode, .flexibleSpace, .workspaceView, .workspaceProjection]
+            + (updates?.state.availableVersion == nil ? [] : [.workspaceUpdate])
     }
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        let items = toolbarDefaultItemIdentifiers(toolbar)
+        return items.contains(.workspaceUpdate) ? items : items + [.workspaceUpdate]
+    }
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar: Bool) -> NSToolbarItem? {
         if identifier == .workspaceSearch {
             let item = NSSearchToolbarItem(itemIdentifier: identifier)
@@ -158,9 +163,33 @@ extension MainWorkspaceController: NSToolbarDelegate {
         case .workspaceSearchMode: item.label = "Search mode"; item.view = searchModeControl; item.visibilityPriority = .high
         case .workspaceView: item.label = "View"; item.view = viewOptions
         case .workspaceProjection: item.label = "Projection"; item.view = projectionOptions
+        case .workspaceUpdate:
+            item.label = "Update"
+            item.visibilityPriority = .high
+            let button = NSButton(title: "Update", image: NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: nil)!,
+                                  target: updates, action: #selector(AppUpdateController.checkForUpdates(_:)))
+            button.bezelStyle = .rounded
+            button.contentTintColor = .controlAccentColor
+            button.isEnabled = updates?.state.canCheckForUpdates == true
+            button.toolTip = updates?.state.availableVersion.map { "View The Word \($0) is available" }
+            button.setAccessibilityLabel("Update View The Word")
+            item.view = button
         default: return nil
         }
         return item
+    }
+
+    func renderUpdateToolbar() {
+        guard let toolbar = view.window?.toolbar else { return }
+        let index = toolbar.items.firstIndex { $0.itemIdentifier == .workspaceUpdate }
+        guard let version = updates?.state.availableVersion else {
+            if let index { toolbar.removeItem(at: index) }
+            return
+        }
+        if index == nil { toolbar.insertItem(withItemIdentifier: .workspaceUpdate, at: toolbar.items.count) }
+        let button = toolbar.items.first { $0.itemIdentifier == .workspaceUpdate }?.view as? NSButton
+        button?.isEnabled = updates?.state.canCheckForUpdates == true
+        button?.toolTip = "View The Word \(version) is available"
     }
 
     func renderSearchField() {

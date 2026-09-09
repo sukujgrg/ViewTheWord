@@ -32,3 +32,11 @@ Regenerate the offscreen layout fixtures with `scripts/render-projector-review.s
 Run `scripts/render-navigation-review.sh` for the current AppKit workspace fixtures in `build/review/navigation`. The script launches a fixture app through LaunchServices with a repository translation catalog. The executable runs a real `NSApplication` event loop and dispatches synthetic events through a key `NSWindow`: one book click followed by one chapter-number click for Exodus, Leviticus, John, and Psalm, then spatial grid arrows and toolbar search responder commands. Bookmark and history clicks verify that navigation, row selection, and projection publication agree, including same-row reactivation after stopping or projecting another verse. The fixture suppresses projector window creation. It renders Malayalam/English at different widths and checks that chapter columns adapt, the selected chapter is visible, and the toolbar search field remains present. Native macOS glass is not fully captured by offscreen view caching, so the book sidebar appearance requires an onscreen check. Unit tests cover snapshot silence, editor/caret preservation, search activation, bookmark Undo, and deferred projection cleanup. OS-delivered mouse/keyboard events and VoiceOver still require the interactive checks above; computer-use permissions were unavailable during the migration.
 
 Passage-tab regression coverage also lives in `Tests/PassageProjectionTests.swift` and the native event harness, including noncooperative canceled database work. Tab dragging/detaching, physical input, VoiceOver, and real projector display behavior still require the interactive checks above.
+## Self-update release checks
+
+Check the update menu, automatic-check toggle, and shared toolbar reminder in
+multiple passage tabs. A scheduled update must preserve the search editor and
+live projection without opening a dialog. Check offline/error and up-to-date
+responses. With a disposable signed/notarized installation, verify installing a
+newer release, rejecting a corrupted archive, relaunching, and retaining Bible
+imports, bookmarks, history, and settings. See [self-updates](self-updates.md).

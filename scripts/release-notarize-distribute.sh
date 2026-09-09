@@ -15,12 +15,12 @@ Optional:
   --scheme NAME              Xcode scheme (default: ViewTheWord)
   --configuration NAME       Build configuration (default: Release)
   --version VERSION          Release version (default: derived from Git tag, else VERSION file)
-  --build-number NUMBER      Build number for CURRENT_PROJECT_VERSION (default: from tag +BUILD suffix, else Xcode project default)
+  --build-number NUMBER      Increasing build number (default: tag +BUILD suffix, else UTC timestamp)
   --skip-version-file-check  Do not require VERSION file to match release version.
   --output-dir DIR           Output directory (default: build/release)
   --team-id TEAM_ID          Apple Developer Team ID for export signing.
   --signing-identity NAME    Override CODE_SIGN_IDENTITY at archive time.
-  --current-arch             Build only current machine architecture.
+  --current-arch             Local archive only; no self-update feed or GitHub publication.
   --allow-provisioning       Pass -allowProvisioningUpdates to xcodebuild.
 
 GitHub distribution:
@@ -240,9 +240,17 @@ if [[ "$PUBLISH_GITHUB" == true ]]; then
   [[ -n "$TAG" ]] || TAG="v$VERSION"
 fi
 
-if [[ -z "$BUILD_NUMBER" && -n "$TAG" ]]; then
-  BUILD_NUMBER="$(derive_build_from_tag "$TAG" || true)"
+if [[ -n "$TAG" ]]; then
+  TAG_BUILD="$(derive_build_from_tag "$TAG" || true)"
+  if [[ -n "$TAG_BUILD" ]]; then
+    [[ -z "$BUILD_NUMBER" || "$BUILD_NUMBER" == "$TAG_BUILD" ]] || fail "--build-number differs from the tag's +BUILD suffix."
+    BUILD_NUMBER="$TAG_BUILD"
+  fi
 fi
+
+# Sparkle compares CFBundleVersion, not the marketing version. The old Xcode
+# default (3) was shared by all releases and cannot order self-updates.
+[[ -n "$BUILD_NUMBER" ]] || BUILD_NUMBER="$(date -u +%Y%m%d%H%M%S)"
 
 if [[ -n "$BUILD_NUMBER" && ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
   fail "--build-number must be numeric."
@@ -263,6 +271,15 @@ require_command xcodebuild
 require_command xcrun
 require_command ditto
 require_command shasum
+require_command python3
+require_command lipo
+
+if [[ "$PUBLISH_GITHUB" == true && "$CURRENT_ARCH_ONLY" == true ]]; then
+  fail "GitHub self-updates must include both Apple silicon and Intel. Remove --current-arch."
+fi
+
+[[ -n "$REPO" ]] || REPO="$(derive_repo_from_origin || true)"
+[[ -n "$REPO" ]] || fail "Set a GitHub origin or pass --repo for the update feed."
 
 if [[ "$PUBLISH_GITHUB" == true ]]; then
   require_command gh
@@ -286,6 +303,32 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$OUTPUT_DIR" "$EXPORT_PATH"
+
+SPARKLE_BIN="$ROOT_DIR/build/DerivedData/SourcePackages/artifacts/sparkle/Sparkle/bin"
+PREVIOUS_FEED=""
+LATEST_TAG=""
+if [[ "$CURRENT_ARCH_ONLY" == false ]]; then
+  EXPECTED_FEED_URL="$(/usr/libexec/PlistBuddy -c 'Print SUFeedURL' ViewTheWord/Info.plist)"
+  [[ "$EXPECTED_FEED_URL" == "https://github.com/$REPO/releases/latest/download/appcast.xml" ]] || fail "The app's update feed does not point to the destination repository."
+  xcodebuild -resolvePackageDependencies -project "$PROJECT" -scheme "$SCHEME" -derivedDataPath build/DerivedData
+  [[ -x "$SPARKLE_BIN/generate_appcast" ]] || fail "Sparkle signing tools were not resolved."
+  # Check the app-specific signing identity before starting the expensive archive.
+  UPDATE_PUBLIC_KEY="$("$SPARKLE_BIN/generate_keys" --account suku.ViewTheWord -p)" || fail "Set up the update signing key; see docs/self-updates.md."
+  EXPECTED_UPDATE_KEY="$(/usr/libexec/PlistBuddy -c 'Print SUPublicEDKey' ViewTheWord/Info.plist)"
+  [[ "$UPDATE_PUBLIC_KEY" == "$EXPECTED_UPDATE_KEY" ]] || fail "The update signing key differs from the public key in Info.plist."
+  if [[ "$PUBLISH_GITHUB" == true ]]; then
+    ANY_RELEASE="$(gh release list --repo "$REPO" --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // empty')"
+    if [[ -n "$ANY_RELEASE" ]]; then
+      LATEST_TAG="$(gh release view --repo "$REPO" --json tagName --jq .tagName)"
+      PREVIOUS_FEED_NAME="$(gh release view "$LATEST_TAG" --repo "$REPO" --json assets --jq '.assets[] | select(.name == "appcast.xml") | .name')"
+      if [[ -n "$PREVIOUS_FEED_NAME" ]]; then
+        mkdir -p "$TMP_DIR/previous"
+        gh release download "$LATEST_TAG" --repo "$REPO" --pattern appcast.xml --dir "$TMP_DIR/previous"
+        PREVIOUS_FEED="$TMP_DIR/previous/appcast.xml"
+      fi
+    fi
+  fi
+fi
 
 {
   echo '<?xml version="1.0" encoding="UTF-8"?>'
@@ -311,6 +354,8 @@ if [[ "$CURRENT_ARCH_ONLY" == true ]]; then
     "ARCHS=$CURRENT_ARCH"
     "ONLY_ACTIVE_ARCH=YES"
   )
+else
+  BUILD_ARGS+=("ARCHS=arm64 x86_64" "ONLY_ACTIVE_ARCH=NO")
 fi
 
 if [[ -n "$SIGNING_IDENTITY" ]]; then
@@ -328,6 +373,7 @@ ARCHIVE_CMD=(
   -project "$PROJECT"
   -scheme "$SCHEME"
   -configuration "$CONFIGURATION"
+  -derivedDataPath build/DerivedData
   -archivePath "$ARCHIVE_PATH"
   archive
   SKIP_INSTALL=NO
@@ -364,6 +410,7 @@ NOTARIZE_ZIP="$TMP_DIR/$APP_NAME-$VERSION-notary.zip"
 FINAL_ZIP="$OUTPUT_DIR/$APP_NAME-$VERSION-notarized.zip"
 FINAL_SHA="$FINAL_ZIP.sha256"
 FINAL_SOURCE="$FINAL_ZIP.source.txt"
+FINAL_FEED="$OUTPUT_DIR/appcast.xml"
 FINAL_APP="$OUTPUT_DIR/$APP_NAME.app"
 
 echo "==> Creating zip for notarization"
@@ -392,15 +439,30 @@ ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$FINAL_ZIP"
 shasum -a 256 "$FINAL_ZIP" > "$FINAL_SHA"
 printf 'source_commit=%s\ntag=%s\nversion=%s\n' "$SOURCE_COMMIT" "$TAG" "$VERSION" > "$FINAL_SOURCE"
 
+if [[ "$CURRENT_ARCH_ONLY" == false ]]; then
+  APP_EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$APP_PATH/Contents/Info.plist")"
+  lipo "$APP_PATH/Contents/MacOS/$APP_EXECUTABLE" -verify_arch arm64 x86_64
+  FEED_CMD=(python3 scripts/update-feed.py --app "$APP_PATH" --archive "$FINAL_ZIP" --output "$FINAL_FEED"
+    --repo "$REPO" --tag "$TAG" --sparkle-bin "$SPARKLE_BIN")
+  if [[ -n "$PREVIOUS_FEED" ]]; then FEED_CMD+=(--previous "$PREVIOUS_FEED"); fi
+  "${FEED_CMD[@]}"
+fi
+
 if [[ "$PUBLISH_GITHUB" == true ]]; then
   echo "==> Publishing to GitHub release: $REPO ($TAG)"
   VERIFIED_COMMIT="$("$(dirname "$0")/verify-release-source.sh" "$TAG")" || fail "Source changed during the release build."
   [[ "$VERIFIED_COMMIT" == "$SOURCE_COMMIT" ]] || fail "Source commit changed during the release build."
   REMOTE_TAG_COMMIT="$(gh api "repos/$REPO/commits/tags/$TAG" --jq .sha)" || fail "Could not recheck the GitHub tag."
   [[ "$REMOTE_TAG_COMMIT" == "$SOURCE_COMMIT" ]] || fail "GitHub tag changed during the release build."
+  ANY_RELEASE="$(gh release list --repo "$REPO" --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // empty')"
+  CURRENT_LATEST_TAG=""
+  if [[ -n "$ANY_RELEASE" ]]; then
+    CURRENT_LATEST_TAG="$(gh release view --repo "$REPO" --json tagName --jq .tagName)"
+  fi
+  [[ "$CURRENT_LATEST_TAG" == "$LATEST_TAG" ]] || fail "The latest GitHub release changed during the build. Rebuild with its current update feed."
   CREATE_ARGS=(
-    gh release create "$TAG" "$FINAL_ZIP" "$FINAL_SHA" "$FINAL_SOURCE"
-    --repo "$REPO" --verify-tag --title "$APP_NAME $VERSION"
+    gh release create "$TAG" "$FINAL_ZIP" "$FINAL_SHA" "$FINAL_SOURCE" "$FINAL_FEED"
+    --repo "$REPO" --verify-tag --latest --title "$APP_NAME $VERSION"
   )
   if [[ -n "$NOTES_FILE" ]]; then
     CREATE_ARGS+=(--notes-file "$NOTES_FILE")
@@ -415,3 +477,4 @@ echo "Release complete."
 echo "App: $FINAL_APP"
 echo "Zip: $FINAL_ZIP"
 echo "SHA: $FINAL_SHA"
+if [[ "$CURRENT_ARCH_ONLY" == false ]]; then echo "Update feed: $FINAL_FEED"; fi
