@@ -16,7 +16,8 @@ final class MainWorkspaceController: NSViewController {
     let defaults: UserDefaults
     let updates: AppUpdateController?
 
-    let books = NativeSidebarController(label: "Bible books")
+    let testamentControl = NSSegmentedControl(labels: BibleTestament.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
+    lazy var books = NativeSidebarController(label: "Bible books", header: testamentControl)
     let savedBookmarks = NativeSidebarController(label: "Bookmarks")
     let savedHistory = NativeSidebarController(label: "History")
     let chapters = ChapterGridController()
@@ -48,7 +49,12 @@ final class MainWorkspaceController: NSViewController {
     let preview = NSPopover()
     var searchToolbarItem: NSSearchToolbarItem?
 
-    private(set) var browsedBook: String?
+    private(set) var browsedBook: String? {
+        didSet {
+            if let browsedBook { browsedTestament = BibleTestament(book: browsedBook) }
+        }
+    }
+    private(set) var browsedTestament = BibleTestament.oldTestament
     private(set) var searchMode = SearchMode.verseReference
     private(set) var draft = ""
     private var searchSelection: VerseReference?
@@ -183,14 +189,12 @@ final class MainWorkspaceController: NSViewController {
             self.previousSources = sources
             refreshSources()
         }
-        books.apply([
-            SidebarNode(id: "old-testament", title: "Old Testament", children: bibleBookNames.prefix(39).map {
-                SidebarNode(id: "book-\($0)", title: $0, book: $0)
-            }),
-            SidebarNode(id: "new-testament", title: "New Testament", children: bibleBookNames.suffix(27).map {
-                SidebarNode(id: "book-\($0)", title: $0, book: $0)
-            })
-        ], selectionID: browsedBook.map { "book-\($0)" })
+        let bookNames = browsedTestament.bookNames
+        let testamentChanged = books.nodes.first?.book != bookNames.first
+        testamentControl.selectedSegment = browsedTestament.rawValue
+        books.apply(bookNames.map { SidebarNode(id: "book-\($0)", title: $0, book: $0) },
+                    selectionID: browsedBook.map { "book-\($0)" })
+        if testamentChanged && books.outline.selectedRow < 0 { books.outline.scrollRowToVisible(0) }
         let current = navigation.refreshReference
         let selectedChapter = current.flatMap { reference in
             reference.book == browsedBook ? VerseReference(book: reference.book, chapter: reference.chapter, verse: 1) : nil
@@ -276,6 +280,13 @@ final class MainWorkspaceController: NSViewController {
         navigation.cancelLoading(clearSearch: true)
         browsedBook = book
         searchSelection = nil
+        render()
+    }
+
+    @objc func changeTestament(_ sender: NSSegmentedControl) {
+        guard let testament = BibleTestament(rawValue: sender.selectedSegment), testament != browsedTestament else { return }
+        // Filtering books leaves the prepared passage and shared live output alone.
+        browsedTestament = testament
         render()
     }
 

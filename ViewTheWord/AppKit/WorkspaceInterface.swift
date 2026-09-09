@@ -13,8 +13,17 @@ extension MainWorkspaceController: NSToolbarDelegate {
         addChild(split)
         split.splitView.isVertical = true
         split.splitView.autosaveName = "nativeWorkspaceColumns"
+        testamentControl.controlSize = .small
+        testamentControl.segmentDistribution = .fillEqually
+        testamentControl.target = self
+        testamentControl.action = #selector(changeTestament(_:))
+        testamentControl.setAccessibilityLabel("Testament")
+        testamentControl.setAccessibilityIdentifier("workspace-testament")
+        for testament in BibleTestament.allCases {
+            testamentControl.setToolTip("Show \(testament.title) books", forSegment: testament.rawValue)
+        }
         let bookItem = NSSplitViewItem(sidebarWithViewController: books)
-        bookItem.minimumThickness = 160
+        bookItem.minimumThickness = max(160, testamentControl.intrinsicContentSize.width + 24)
         bookItem.maximumThickness = 280
         bookItem.preferredThicknessFraction = 0.17
         split.addSplitViewItem(bookItem)

@@ -1,5 +1,18 @@
 import AppKit
 
+enum BibleTestament: Int, CaseIterable {
+    case oldTestament, newTestament
+
+    var title: String { self == .oldTestament ? "Old Testament" : "New Testament" }
+    var bookNames: [String] {
+        self == .oldTestament ? Array(bibleBookNames.prefix(39)) : Array(bibleBookNames.suffix(27))
+    }
+
+    init(book: String) {
+        self = bibleBookNames.prefix(39).contains(book) ? .oldTestament : .newTestament
+    }
+}
+
 /// Stable identities are shared by selection, accessibility, and menu actions.
 final class SidebarNode: NSObject {
     let id: String
@@ -29,6 +42,7 @@ final class NativeSidebarController: NSViewController, NSOutlineViewDataSource, 
     private(set) var nodes: [SidebarNode] = []
     private var applying = false
     private let label: String
+    private let header: NSView?
     private let emptyLabel = NSTextField(wrappingLabelWithString: "")
     var onActivate: (SidebarNode) -> Void = { _ in }
     var onMoveFocus: (Int) -> Void = { _ in }
@@ -36,8 +50,9 @@ final class NativeSidebarController: NSViewController, NSOutlineViewDataSource, 
     var onContextMenu: (SidebarNode) -> NSMenu? = { _ in nil }
     var onRemove: ((SidebarNode) -> Void)?
 
-    init(label: String) {
+    init(label: String, header: NSView? = nil) {
         self.label = label
+        self.header = header
         super.init(nibName: nil, bundle: nil)
         outline.owner = self
         outline.setAccessibilityLabel(label)
@@ -67,7 +82,25 @@ final class NativeSidebarController: NSViewController, NSOutlineViewDataSource, 
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
         view = NSView()
-        pin(scrollView, to: view)
+        if let header {
+            header.translatesAutoresizingMaskIntoConstraints = false
+            scrollView.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(header)
+            view.addSubview(scrollView)
+            header.setContentHuggingPriority(.required, for: .vertical)
+            header.setContentCompressionResistancePriority(.required, for: .vertical)
+            NSLayoutConstraint.activate([
+                header.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+                header.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+                header.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
+                scrollView.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 8),
+                scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            ])
+        } else {
+            pin(scrollView, to: view)
+        }
         emptyLabel.stringValue = label == "Bookmarks" ? "Bookmark verses to find them here." : "Submitted references appear here."
         emptyLabel.font = .systemFont(ofSize: 12)
         emptyLabel.textColor = .secondaryLabelColor

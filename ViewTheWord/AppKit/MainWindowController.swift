@@ -82,14 +82,14 @@ final class PassageTabsController {
     let bookmarks: BookmarkStore
     let bookmarkUndo = UndoManager()
     let updates: AppUpdateController?
-    private let navigationFactory: () -> VerseTargetModel
+    private let navigationFactory: @MainActor () -> VerseTargetModel
     private let savesFrames: Bool
     private(set) var windows: [MainWindowController] = []
     private weak var lastSelected: MainWindowController?
 
     init(liveProjection: LiveProjectionController? = nil, history: HistoryStore? = nil,
          bookmarks: BookmarkStore? = nil, savesFrames: Bool = true, updates: AppUpdateController? = nil,
-         navigationFactory: @escaping () -> VerseTargetModel = { VerseTargetModel() }) {
+         navigationFactory: @escaping @MainActor () -> VerseTargetModel = { VerseTargetModel() }) {
         self.liveProjection = liveProjection ?? LiveProjectionController()
         self.history = history ?? .shared
         self.bookmarks = bookmarks ?? .shared

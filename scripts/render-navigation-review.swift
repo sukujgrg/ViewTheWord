@@ -68,6 +68,7 @@ struct NativeWorkspaceReview {
         }
         precondition(NSApp.isRunning && NSApp.isActive && window.isKeyWindow,
                      "Window-event checks require a running AppKit application: running=\(NSApp.isRunning), active=\(NSApp.isActive), key=\(NSApp.keyWindow?.title ?? "nil"), visible=\(window.isVisible)")
+        try await checkTestamentSwitch(workspace, window: window)
         try await checkNavigation(workspace, window: window)
         try await checkSavedActivation(workspace, window: window)
         try await checkBookmarkRemoval(workspace, window: window)
@@ -116,6 +117,12 @@ struct NativeWorkspaceReview {
             let paneBitmap = savedPane.bitmapImageRepForCachingDisplay(in: savedPane.bounds)!
             savedPane.cacheDisplay(in: savedPane.bounds, to: paneBitmap)
             try paneBitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(name + "-saved.png"))
+            // Cache the sidebar itself; the outer floating glass surface omits
+            // its child content when caching the complete window offscreen.
+            let bookPane = workspace.books.view
+            let bookBitmap = bookPane.bitmapImageRepForCachingDisplay(in: bookPane.bounds)!
+            bookPane.cacheDisplay(in: bookPane.bounds, to: bookBitmap)
+            try bookBitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(name + "-books.png"))
             counts.insert(workspace.chapters.columnCount)
             reviewLog("PASS \(name): \(workspace.chapters.columnCount) chapter columns, native toolbar, Psalm 119:53, bilingual text")
         }
@@ -166,6 +173,8 @@ struct NativeWorkspaceReview {
         precondition(firstWindow.tabGroup?.windows.count == 2)
         precondition(second.workspace.navigation.navigation.reference == psalm)
         precondition(first.navigation.navigation.reference == john && first.verses.rows == rows)
+        precondition(first.testamentControl.selectedSegment == 1 && second.workspace.testamentControl.selectedSegment == 0,
+                     "Passage tabs must keep independent testament filters")
         precondition(live.projector.revision == revision, "Open in New Tab only prepares the passage")
         precondition(first.history === second.workspace.history && first.bookmarks === second.workspace.bookmarks)
         precondition(first.library === second.workspace.library && first.defaults === second.workspace.defaults)
@@ -181,6 +190,8 @@ struct NativeWorkspaceReview {
         precondition(tabs.selected === original && firstWindow.isKeyWindow,
                      "Previous tab must become key: selected=\(tabs.selected?.window?.title ?? "nil"), key=\(NSApp.keyWindow?.title ?? "nil"), group=\(firstWindow.tabGroup?.selectedWindow?.title ?? "nil")")
         precondition(first.draft == "John draft for later" && first.search.field.stringValue == first.draft)
+        precondition(first.testamentControl.selectedSegment == 1 && first.books.selectedNode?.book == "John",
+                     "Switching tabs must restore its testament and book selection")
         let restoredScroll = first.verses.scrollView.contentView.bounds.origin
         let restoredTop = first.verses.table.row(at: NSPoint(x: 20, y: restoredScroll.y + 1))
         let restoredOffset = restoredScroll.y - first.verses.table.rect(ofRow: restoredTop).minY
@@ -398,6 +409,8 @@ struct NativeWorkspaceReview {
                 click(outline, rect: outline.rect(ofRow: row), window: window)
                 try await settle(workspace)
                 precondition(workspace.navigation.navigation.reference == reference, "Saved activation must load its reference")
+                precondition(workspace.books.selectedNode?.book == reference.book,
+                             "Saved activation must reveal its book in the correct testament")
                 precondition(workspace.verses.selectedReference == reference, "Saved activation must select its verse row")
                 precondition(workspace.projector.projectionOwner?.reference == reference, "Saved activation must also project on this click")
                 precondition(workspace.projector.projectorViewData.title == reference.verseQuery.title)
@@ -486,10 +499,62 @@ struct NativeWorkspaceReview {
         try await Task.sleep(nanoseconds: 100_000_000)
         workspace.view.layoutSubtreeIfNeeded()
     }
+    @MainActor static func selectTestament(_ segment: Int, workspace: MainWorkspaceController, window: NSWindow) async throws {
+        let control = workspace.testamentControl
+        guard control.selectedSegment != segment else { return }
+        let width = control.bounds.width / 2
+        click(control, rect: NSRect(x: CGFloat(segment) * width, y: 0, width: width, height: control.bounds.height), window: window)
+        try await settle(workspace)
+        precondition(control.selectedSegment == segment, "One segment click must switch testaments")
+    }
+    @MainActor static func checkTestamentSwitch(_ workspace: MainWorkspaceController, window: NSWindow) async throws {
+        let control = workspace.testamentControl
+        let outline = workspace.books.outline
+        precondition(control.selectedSegment == 0 && outline.numberOfRows == 39)
+        precondition(workspace.books.nodes.first?.book == "Genesis" && workspace.books.nodes.last?.book == "Malachi")
+        let frame = control.convert(control.bounds, to: nil)
+        outline.scrollRowToVisible(38)
+        window.contentView?.layoutSubtreeIfNeeded()
+        precondition(workspace.books.scrollView.contentView.bounds.minY > 0, "Book fixture must exercise scrolling")
+        precondition(control.convert(control.bounds, to: nil) == frame, "Testament control must stay pinned while books scroll")
+
+        let john = VerseReference(book: "John", chapter: 3, verse: 16)!
+        workspace.navigate(to: john, project: true, focusVerses: false)
+        try await settle(workspace)
+        precondition(control.selectedSegment == 1 && outline.numberOfRows == 27)
+        precondition(workspace.books.nodes.first?.book == "Matthew" && workspace.books.nodes.last?.book == "Revelation")
+        precondition(workspace.books.selectedNode?.book == "John", "Reference navigation must reveal the correct testament")
+        let revision = workspace.projector.revision
+        let history = workspace.history.entries
+        try await selectTestament(0, workspace: workspace, window: window)
+        precondition(outline.numberOfRows == 39 && outline.selectedRow == -1)
+        precondition(outline.rows(in: outline.visibleRect).contains(0), "Switching to an unselected testament starts at its first book")
+        precondition(workspace.navigation.navigation.reference == john && workspace.browsedBook == "John")
+        precondition(workspace.projector.revision == revision && workspace.history.entries == history,
+                     "Filtering books must preserve the passage, live output, and history")
+        workspace.focusSearch(nil)
+        let responder = window.firstResponder
+        workspace.render()
+        precondition(control.selectedSegment == 0 && window.firstResponder === responder,
+                     "Snapshot refresh must preserve the chosen filter and keyboard focus")
+        try await selectTestament(1, workspace: workspace, window: window)
+        precondition(workspace.books.selectedNode?.book == "John")
+        workspace.focusSearch(nil)
+        let editor = window.firstResponder
+        workspace.navigate(to: VerseReference(book: "Psalm", chapter: 23, verse: 1)!, focusVerses: false)
+        try await settle(workspace)
+        precondition(control.selectedSegment == 0 && workspace.books.selectedNode?.book == "Psalm")
+        precondition(window.firstResponder === editor && workspace.projector.revision == revision,
+                     "Automatic testament reveal must not steal focus or change live output")
+        workspace.closeProjector()
+        try await settle(workspace)
+        reviewLog("PASS testament switch: pinned control, 39/27 books, silent filtering, automatic reference reveal, stable focus/output")
+    }
     @MainActor static func checkNavigation(_ workspace: MainWorkspaceController, window: NSWindow) async throws {
         for (book, firstKey, code) in [("Exodus", "\u{F703}", UInt16(124)), ("Leviticus", "\u{F701}", 125),
                                        ("John", "\u{F702}", 123), ("Psalm", "\u{F700}", 126),
                                        ("Luke", "\r", 36), ("Romans", " ", 49)] {
+            try await selectTestament(["John", "Luke", "Romans"].contains(book) ? 1 : 0, workspace: workspace, window: window)
             let bookRow = (0..<workspace.books.outline.numberOfRows).first {
                 (workspace.books.outline.item(atRow: $0) as? SidebarNode)?.book == book
             }!
