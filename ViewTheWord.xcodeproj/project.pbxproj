@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C0DE09120000000000000001 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = C0DE09120000000000000002 /* AppIcon.icon */; };
 		033226F42876258700336EDD /* ENG_UKJV.bible in Resources */ = {isa = PBXBuildFile; fileRef = 033226F22876258700336EDD /* ENG_UKJV.bible */; };
 		033226F52876258700336EDD /* MAL_BSI.bible in Resources */ = {isa = PBXBuildFile; fileRef = 033226F32876258700336EDD /* MAL_BSI.bible */; };
 		039A40972872325E00A672BD /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 039A40962872325E00A672BD /* SettingsView.swift */; };
@@ -39,6 +40,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		C0DE09120000000000000002 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		033226F22876258700336EDD /* ENG_UKJV.bible */ = {isa = PBXFileReference; lastKnownFileType = file; path = ENG_UKJV.bible; sourceTree = "<group>"; };
 		033226F32876258700336EDD /* MAL_BSI.bible */ = {isa = PBXFileReference; lastKnownFileType = file; path = MAL_BSI.bible; sourceTree = "<group>"; };
 		038BC61F287410DA005B8728 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -90,6 +92,7 @@
 		033226FB2876908800336EDD /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				C0DE09120000000000000002 /* AppIcon.icon */,
 				03A1D26728672D1800511E73 /* Assets.xcassets */,
 				033226F32876258700336EDD /* MAL_BSI.bible */,
 				033226F22876258700336EDD /* ENG_UKJV.bible */,
@@ -230,6 +233,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C0DE09120000000000000001 /* AppIcon.icon in Resources */,
 				033226F52876258700336EDD /* MAL_BSI.bible in Resources */,
 				033226F42876258700336EDD /* ENG_UKJV.bible in Resources */,
 				03A1D26B28672D1800511E73 /* Preview Assets.xcassets in Resources */,

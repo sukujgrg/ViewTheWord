@@ -26,8 +26,8 @@ extension MainWorkspaceController: NSToolbarDelegate {
         chapterItem.minimumThickness = 120
         chapterItem.preferredThicknessFraction = 0.42
         chapterSplit.addSplitViewItem(chapterItem)
-        for (title, saved, actions) in [("Bookmarks", savedBookmarks, savedActions), ("History", savedHistory, historyActions)] {
-            let pane = WorkspacePaneController(title: title, content: saved.view, accessory: actions)
+        for (title, saved, button) in [("Bookmarks", savedBookmarks, clearBookmarksButton), ("History", savedHistory, clearHistoryButton)] {
+            let pane = WorkspacePaneController(title: title, content: saved.view, accessory: button)
             pane.addChild(saved)
             let item = NSSplitViewItem(viewController: pane)
             item.minimumThickness = 100
@@ -66,10 +66,16 @@ extension MainWorkspaceController: NSToolbarDelegate {
         blankButton.action = #selector(toggleBlank(_:))
         stopButton.action = #selector(stopProjection(_:))
         loadMoreButton.action = #selector(loadMore(_:))
-        savedActions.bezelStyle = .accessoryBarAction
-        historyActions.bezelStyle = .accessoryBarAction
-        historyActions.setAccessibilityLabel("History actions")
-        savedActions.setAccessibilityLabel("Saved reference actions")
+        for (button, label) in [(clearBookmarksButton, "Clear bookmarks"), (clearHistoryButton, "Clear history")] {
+            button.bezelStyle = .accessoryBar
+            button.controlSize = .small
+            button.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            button.target = self
+            button.toolTip = label
+            button.setAccessibilityLabel(label)
+        }
+        clearBookmarksButton.action = #selector(clearBookmarks(_:))
+        clearHistoryButton.action = #selector(clearHistory(_:))
         viewOptions.setAccessibilityLabel("View options")
         projectionOptions.setAccessibilityLabel("Projection options")
     }

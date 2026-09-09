@@ -76,22 +76,14 @@ extension MainWorkspaceController {
             }
         }
         projectionOptions.menu = projectionMenu
+    }
 
-        let savedMenu = NSMenu(title: "Saved")
-        savedMenu.autoenablesItems = false
-        let first = savedMenu.addItem(withTitle: "", action: nil, keyEquivalent: "")
-        first.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "Saved reference actions")
-        savedMenu.command("Clear bookmarks", enabled: !bookmarks.entries.isEmpty) { [weak self] in
-            guard let self else { return }
-            self.bookmarks.clear(undoManager: self.view.window?.undoManager)
-        }
-        savedActions.menu = savedMenu
-        let historyMenu = NSMenu(title: "History")
-        historyMenu.autoenablesItems = false
-        let historyTitle = historyMenu.addItem(withTitle: "", action: nil, keyEquivalent: "")
-        historyTitle.image = first.image
-        historyMenu.command("Clear history", enabled: !history.groupedSections.isEmpty) { [weak self] in self?.history.clear() }
-        historyActions.menu = historyMenu
+    @objc func clearBookmarks(_ sender: Any?) {
+        bookmarks.clear(undoManager: view.window?.undoManager)
+    }
+
+    @objc func clearHistory(_ sender: Any?) {
+        history.clear()
     }
 
     func passageMenu(for reference: VerseReference) -> NSMenu {

@@ -50,7 +50,7 @@ The app validates and indexes a private copy of each import. Translation numberi
 
 ## Build and test
 
-Open `ViewTheWord.xcodeproj` in Xcode, choose the ViewTheWord scheme, and configure your signing team. For a local build without a configured signing certificate:
+Open `ViewTheWord.xcodeproj` in Xcode 26 or later, choose the ViewTheWord scheme, and configure your signing team. For a local build without a configured signing certificate:
 
 ```bash
 xcodebuild -project ViewTheWord.xcodeproj -scheme ViewTheWord -configuration Debug -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build
@@ -59,6 +59,8 @@ python3 scripts/test-review-regressions.py
 ```
 
 The Swift package tests the same parser, database, import, navigation, projection preparation, persistence, text fitting, and native reference-table sources used by the app. Native tests exercise keyboard events, focus, scroll restoration, and row actions. CI runs these checks plus Debug and Release builds. [Manual checks](docs/manual-validation.md) cover physical keyboard/VoiceOver behavior and displays.
+
+The layered VTW app icon is editable in Icon Composer. See [the icon source and rendering guide](docs/app-icon.md) for appearance previews and build integration.
 
 The main workspace uses AppKit throughout: a native toolbar and search field, a book sidebar, an adaptive chapter-number grid, separate Bookmarks and History panes, and native verse/search-result tables. AppKit owns first responder, selection, scrolling, and row reuse. Settings, help, preview, and projected output remain isolated SwiftUI screens. `VerseTargetModel` commits selected references, chapter rows, and translation identities together; `MainWorkspaceController` owns each tab’s navigation; shared `LiveProjectionController` alone publishes projected content and owns projector lifecycle. `PassageTabsController` retains the native passage windows and shared services. Database connections open lazily on private queues. See [the native workspace migration](docs/native-workspace-2026-09-09.md).
 

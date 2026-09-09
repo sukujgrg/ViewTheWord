@@ -125,7 +125,7 @@ final class ChapterCollectionView: NSCollectionView {
     }
     override func cancelOperation(_ sender: Any?) { owner?.onCancel() }
     override func insertNewline(_ sender: Any?) {
-        if let item = selectionIndexPaths.first?.item { owner?.activate(item) }
+        owner?.activate(selectionIndexPaths.first?.item ?? 0)
     }
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 49 || event.keyCode == 36 { insertNewline(nil); return }
@@ -134,6 +134,14 @@ final class ChapterCollectionView: NSCollectionView {
         // ordinary arrows keep NSCollectionView's spatial grid navigation.
         if event.modifierFlags.contains(.command), event.keyCode == 123 || event.keyCode == 124 {
             owner?.onMoveFocus(event.keyCode == 123 ? -1 : 1)
+            return
+        }
+        // Browsing a new book intentionally leaves its chapters unselected.
+        // NSCollectionView needs a starting selection for spatial arrow movement.
+        // Establish it on the first arrow, keeping Tab itself free of navigation.
+        if selectionIndexPaths.isEmpty, (123...126).contains(event.keyCode),
+           event.modifierFlags.intersection([.shift, .control, .option, .command]).isEmpty {
+            owner?.activate(0)
             return
         }
         super.keyDown(with: event)

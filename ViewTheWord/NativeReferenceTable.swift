@@ -297,6 +297,9 @@ final class ReferenceNSTableView: NSTableView, NSMenuItemValidation {
             controller.onToggle(reference)
             return
         }
+        // NSTableView handles Tab/Shift-Tab traversal itself. Interpreting these
+        // as editing commands bypasses AppKit's key-view loop and traps focus.
+        if event.keyCode == 48 { super.keyDown(with: event); return }
         let isCommand = !modifiers.intersection([.control, .command]).isEmpty
             || characters.unicodeScalars.contains {
                 CharacterSet.controlCharacters.contains($0) || (0xF700...0xF8FF).contains($0.value)

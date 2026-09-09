@@ -70,6 +70,7 @@ struct NativeWorkspaceReview {
                      "Window-event checks require a running AppKit application: running=\(NSApp.isRunning), active=\(NSApp.isActive), key=\(NSApp.keyWindow?.title ?? "nil"), visible=\(window.isVisible)")
         try await checkNavigation(workspace, window: window)
         try await checkSavedActivation(workspace, window: window)
+        try await checkBookmarkRemoval(workspace, window: window)
         defer { tabs.shutdown(); for tab in tabs.windows { tab.close() }; defaults.removePersistentDomain(forName: "ViewTheWord.NativeWorkspaceReview") }
         try await checkPassageTabs(tabs, original: controller, output: output, outputCreations: { outputCreations })
         try await checkTabCancellation(output: output)
@@ -350,8 +351,8 @@ struct NativeWorkspaceReview {
         }
         preconditionFailure("Native asynchronous event did not complete")
     }
-    @MainActor static func sendKey(_ key: String, code: UInt16, window: NSWindow) {
-        let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+    @MainActor static func sendKey(_ key: String, code: UInt16, modifiers: NSEvent.ModifierFlags = [], window: NSWindow) {
+        let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
             windowNumber: window.windowNumber, context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: code)!
         window.sendEvent(event)
     }
@@ -410,6 +411,41 @@ struct NativeWorkspaceReview {
         try await settle(workspace)
         workspace.changeSearchMode(.verseReference)
     }
+    @MainActor static func checkBookmarkRemoval(_ workspace: MainWorkspaceController, window: NSWindow) async throws {
+        let saved = workspace.savedBookmarks
+        let original = workspace.bookmarks.entries
+        let first = saved.nodes[0]
+        let second = saved.nodes[1]
+        workspace.navigate(to: VerseReference(book: "John", chapter: 3, verse: 16)!, project: true, focusVerses: false)
+        try await settle(workspace)
+        let referenceBefore = workspace.navigation.navigation.reference
+        let revisionBefore = workspace.projector.revision
+        let historyBefore = workspace.history.entries
+        for node in [second, first] {
+            saved.apply(saved.nodes, selectionID: first.id)
+            let row = saved.outline.row(forItem: saved.nodes.first { $0.id == node.id }!)
+            saved.outline.scrollRowToVisible(row)
+            window.contentView?.layoutSubtreeIfNeeded()
+            let cell = saved.outline.view(atColumn: 0, row: row, makeIfNecessary: true) as! NSTableCellView
+            let button = cell.subviews.compactMap { $0 as? NSButton }.first!
+            click(button, rect: button.bounds, window: window)
+            try await settle(workspace)
+            precondition(workspace.bookmarks.entries == original.filter { $0.reference != node.reference },
+                         "Minus must remove only the clicked bookmark")
+            precondition(saved.selectedNode?.id == (node.id == first.id ? nil : first.id),
+                         "Removing a bookmark must not select another reference")
+            precondition(workspace.navigation.navigation.reference == referenceBefore && workspace.projector.revision == revisionBefore,
+                         "Removing selected or unselected bookmarks must not navigate or publish")
+            precondition(workspace.history.entries == historyBefore)
+            command("z", modifiers: .command, code: 6, window: window)
+            try await settle(workspace)
+            precondition(workspace.bookmarks.entries == original, "Command-Z must restore the removed bookmark")
+            precondition(workspace.projector.revision == revisionBefore, "Bookmark Undo must leave live output unchanged")
+        }
+        workspace.closeProjector()
+        try await settle(workspace)
+        reviewLog("PASS bookmark minus buttons: selected and unselected removal, stable navigation/output, Command-Z restoration")
+    }
     @MainActor static func checkSavedPane(_ saved: NativeSidebarController, in column: NSView) -> CGFloat {
         let frame = saved.view.convert(saved.view.bounds, to: column)
         precondition(abs(frame.minX - column.bounds.minX) < 1 && abs(frame.width - column.bounds.width) < 1,
@@ -451,7 +487,9 @@ struct NativeWorkspaceReview {
         workspace.view.layoutSubtreeIfNeeded()
     }
     @MainActor static func checkNavigation(_ workspace: MainWorkspaceController, window: NSWindow) async throws {
-        for book in ["Exodus", "Leviticus", "John", "Psalm"] {
+        for (book, firstKey, code) in [("Exodus", "\u{F703}", UInt16(124)), ("Leviticus", "\u{F701}", 125),
+                                       ("John", "\u{F702}", 123), ("Psalm", "\u{F700}", 126),
+                                       ("Luke", "\r", 36), ("Romans", " ", 49)] {
             let bookRow = (0..<workspace.books.outline.numberOfRows).first {
                 (workspace.books.outline.item(atRow: $0) as? SidebarNode)?.book == book
             }!
@@ -460,6 +498,26 @@ struct NativeWorkspaceReview {
             click(workspace.books.outline, rect: workspace.books.outline.rect(ofRow: bookRow), window: window)
             precondition(workspace.browsedBook == book, "First book click must browse \(book)")
             try await settle(workspace)
+            let navigationBeforeTab = workspace.navigation.navigation.reference
+            precondition(workspace.chapters.collection.selectionIndexPaths.isEmpty)
+            sendKey("\t", code: 48, window: window)
+            precondition(window.firstResponder === workspace.chapters.collection, "Tab from books must reach chapters")
+            try await settle(workspace)
+            precondition(workspace.navigation.navigation.reference == navigationBeforeTab,
+                         "Tab only moves focus; it must not load a chapter")
+            sendKey(firstKey, code: code, window: window)
+            try await settle(workspace)
+            precondition(workspace.navigation.navigation.reference == VerseReference(book: book, chapter: 1, verse: 1),
+                         "The first chapter key after book → Tab must select and load chapter 1")
+            precondition(workspace.chapters.collection.selectionIndexPaths == [IndexPath(item: 0, section: 0)])
+            sendKey("\u{F703}", code: 124, window: window)
+            try await settle(workspace)
+            precondition(workspace.navigation.navigation.reference == VerseReference(book: book, chapter: 2, verse: 1),
+                         "Subsequent arrows use native spatial chapter navigation")
+            sendKey("\u{19}", code: 48, modifiers: .shift, window: window)
+            precondition(window.firstResponder === workspace.books.outline, "Shift-Tab returns from chapters to books")
+            sendKey("\t", code: 48, window: window)
+            precondition(window.firstResponder === workspace.chapters.collection)
             let item = workspace.chapters.collection.item(at: IndexPath(item: 2, section: 0))!
             click(item.view, rect: item.view.bounds, window: window)
             try await settle(workspace)
@@ -474,8 +532,16 @@ struct NativeWorkspaceReview {
             window.sendEvent(down)
             try await settle(workspace)
             precondition(workspace.navigation.navigation.reference == VerseReference(book: book, chapter: 3 + workspace.chapters.columnCount, verse: 1), "Down arrow moves to the chapter beneath it")
-            reviewLog("PASS window-dispatched click: \(book) → 3 on the first click")
+            reviewLog("PASS \(book): book → Tab → chapter arrows, Shift-Tab return, chapter 3 on the first click")
         }
+        window.makeFirstResponder(workspace.verses.table)
+        sendKey("\t", code: 48, window: window)
+        precondition(workspace.search.field.currentEditor() === window.firstResponder,
+                     "Tab must leave the verse table and reach the toolbar search")
+        sendKey("\u{19}", code: 48, modifiers: .shift, window: window)
+        precondition(window.firstResponder === workspace.verses.table, "Shift-Tab from search returns to verses")
+        sendKey("\u{19}", code: 48, modifiers: .shift, window: window)
+        precondition(window.firstResponder !== workspace.verses.table, "Shift-Tab must also leave the verse table")
         precondition(NSApp.sendAction(#selector(MainWorkspaceController.focusSearch(_:)), to: nil, from: nil))
         precondition(workspace.search.field.currentEditor() != nil, "Search command must reach the toolbar editor")
         precondition(NSApp.sendAction(#selector(MainWorkspaceController.focusSearch(_:)), to: nil, from: nil), "Search command must also work while editing in the toolbar")

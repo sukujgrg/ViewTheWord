@@ -34,6 +34,7 @@ final class NativeSidebarController: NSViewController, NSOutlineViewDataSource, 
     var onMoveFocus: (Int) -> Void = { _ in }
     var onCancel: () -> Void = {}
     var onContextMenu: (SidebarNode) -> NSMenu? = { _ in nil }
+    var onRemove: ((SidebarNode) -> Void)?
 
     init(label: String) {
         self.label = label
@@ -48,7 +49,7 @@ final class NativeSidebarController: NSViewController, NSOutlineViewDataSource, 
         outline.headerView = nil
         outline.delegate = self
         outline.dataSource = self
-        outline.style = label == "Bible books" ? .sourceList : .plain
+        outline.style = label == "Bible books" ? .sourceList : .inset
         outline.backgroundColor = .controlBackgroundColor
         outline.rowSizeStyle = .medium
         outline.rowHeight = 28
@@ -135,8 +136,9 @@ final class NativeSidebarController: NSViewController, NSOutlineViewDataSource, 
     }
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         guard let node = item as? SidebarNode else { return nil }
-        let identifier = NSUserInterfaceItemIdentifier(node.children == nil ? "sidebar-item" : "sidebar-group")
-        let cell = outline.makeView(withIdentifier: identifier, owner: nil) as? NSTableCellView ?? NSTableCellView()
+        let removable = onRemove != nil && node.reference != nil && node.children == nil
+        let identifier = NSUserInterfaceItemIdentifier(removable ? "sidebar-removable-item" : node.children == nil ? "sidebar-item" : "sidebar-group")
+        let cell = outline.makeView(withIdentifier: identifier, owner: nil) as? SidebarCellView ?? SidebarCellView()
         cell.identifier = identifier
         if cell.textField == nil {
             let label = NSTextField(labelWithString: "")
@@ -144,9 +146,27 @@ final class NativeSidebarController: NSViewController, NSOutlineViewDataSource, 
             label.lineBreakMode = .byTruncatingTail
             cell.addSubview(label)
             cell.textField = label
+            if removable {
+                let button = cell.removeButton
+                button.image = NSImage(systemSymbolName: "minus", accessibilityDescription: nil)
+                button.imagePosition = .imageOnly
+                button.bezelStyle = .inline
+                button.isBordered = false
+                button.controlSize = .small
+                button.target = cell
+                button.action = #selector(SidebarCellView.remove(_:))
+                button.translatesAutoresizingMaskIntoConstraints = false
+                cell.addSubview(button)
+                NSLayoutConstraint.activate([
+                    button.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+                    button.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                    button.widthAnchor.constraint(equalToConstant: 22),
+                    button.heightAnchor.constraint(equalToConstant: 22)
+                ])
+            }
             NSLayoutConstraint.activate([
                 label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: node.systemImage == nil ? 4 : 25),
-                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
+                label.trailingAnchor.constraint(equalTo: removable ? cell.removeButton.leadingAnchor : cell.trailingAnchor, constant: -8),
                 label.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
             ])
             if let symbol = node.systemImage {
@@ -169,6 +189,13 @@ final class NativeSidebarController: NSViewController, NSOutlineViewDataSource, 
         cell.textField?.textColor = node.children == nil ? .labelColor : .secondaryLabelColor
         cell.setAccessibilityLabel(node.title)
         cell.setAccessibilityIdentifier(node.id)
+        if removable {
+            cell.onRemove = { [weak self] in self?.onRemove?(node) }
+            let description = "Remove \(node.title) from bookmarks"
+            cell.removeButton.toolTip = description
+            cell.removeButton.setAccessibilityLabel(description)
+            cell.removeButton.setAccessibilityIdentifier("remove-" + node.id)
+        }
         return cell
     }
     func outlineView(_ outlineView: NSOutlineView, typeSelectStringFor tableColumn: NSTableColumn?, item: Any) -> String? {
@@ -177,8 +204,20 @@ final class NativeSidebarController: NSViewController, NSOutlineViewDataSource, 
 }
 
 @MainActor
+private final class SidebarCellView: NSTableCellView {
+    let removeButton = NSButton()
+    var onRemove: () -> Void = {}
+    @objc func remove(_ sender: Any?) { onRemove() }
+}
+
+@MainActor
 final class SidebarOutlineView: NSOutlineView {
     weak var owner: NativeSidebarController?
+    override func validateProposedFirstResponder(_ responder: NSResponder, for event: NSEvent?) -> Bool {
+        // Row buttons handle their own clicks without selecting/projecting the reference.
+        if responder is NSButton { return true }
+        return super.validateProposedFirstResponder(responder, for: event)
+    }
     override func mouseDown(with event: NSEvent) {
         let clicked = row(at: convert(event.locationInWindow, from: nil))
         let previous = selectedRow

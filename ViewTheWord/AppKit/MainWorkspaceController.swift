@@ -38,8 +38,8 @@ final class MainWorkspaceController: NSViewController {
     let blankButton = NSButton(title: "Blank", target: nil, action: nil)
     let stopButton = NSButton(title: "Stop", target: nil, action: nil)
     let loadMoreButton = NSButton(title: "Load more results", target: nil, action: nil)
-    let savedActions = NSPopUpButton(frame: .zero, pullsDown: true)
-    let historyActions = NSPopUpButton(frame: .zero, pullsDown: true)
+    let clearBookmarksButton = NSButton(title: "Clear", target: nil, action: nil)
+    let clearHistoryButton = NSButton(title: "Clear", target: nil, action: nil)
     let viewOptions = NSPopUpButton(frame: .zero, pullsDown: true)
     let projectionOptions = NSPopUpButton(frame: .zero, pullsDown: true)
     let resultsHeader = NSStackView()
@@ -142,6 +142,10 @@ final class MainWorkspaceController: NSViewController {
             saved.onMoveFocus = { [weak self] direction in self?.moveFocus(from: .chapters, direction: direction) }
             saved.onCancel = { [weak self] in self?.closeProjector() }
             saved.onContextMenu = { [weak self] node in self?.savedMenu(for: node) }
+        }
+        savedBookmarks.onRemove = { [weak self] node in
+            guard let self, let reference = node.reference else { return }
+            self.bookmarks.remove(reference, undoManager: self.view.window?.undoManager)
         }
         search.onTextChange = { [weak self] in self?.draft = $0 }
         search.onSubmit = { [weak self] in self?.submitSearch() }
@@ -257,6 +261,8 @@ final class MainWorkspaceController: NSViewController {
         }
         savedBookmarks.apply(bookmarkRows, preserveSelection: true)
         savedHistory.apply(weeks, preserveSelection: true)
+        clearBookmarksButton.isEnabled = !bookmarks.entries.isEmpty
+        clearHistoryButton.isEnabled = !weeks.isEmpty
     }
 
     func browse(_ book: String) {
