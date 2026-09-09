@@ -1,67 +1,11 @@
 import SwiftUI
 
-enum ProjectionOwner {
-    case textInputTarget(VerseReference)
-    case verseRowSelection(VerseReference)
-    case searchResult(VerseReference)
-}
-
-extension ProjectionOwner: Equatable {
-    static func == (lhs: ProjectionOwner, rhs: ProjectionOwner) -> Bool {
-        switch (lhs, rhs) {
-        case (.textInputTarget(let left), .textInputTarget(let right)):
-            return left == right
-        case (.verseRowSelection(let left), .verseRowSelection(let right)):
-            return left == right
-        case (.searchResult(let left), .searchResult(let right)):
-            return left == right
-        default:
-            return false
-        }
-    }
-}
-
-class ProjectorViewModel: ObservableObject {
-    @Published private(set) var projectorViewData: ProjectorViewData = .init(
-        title: "?",
-        primaryText: "?",
-        secondaryText: "?",
-        primaryTranslationName: "",
-        secondaryTranslationName: nil
-    )
-    @Published private(set) var projectionOwner: ProjectionOwner?
-
-    func project(_ data: ProjectorViewData, owner: ProjectionOwner) {
-        projectorViewData = data
-        projectionOwner = owner
-    }
-
-    func clearProjection() {
-        projectorViewData = .init(
-            title: "?",
-            primaryText: "?",
-            secondaryText: "?",
-            primaryTranslationName: "",
-            secondaryTranslationName: nil
-        )
-        projectionOwner = nil
-    }
-}
-
-struct ProjectorViewData {
-    let title: String
-    let primaryText: String
-    let secondaryText: String?
-    let primaryTranslationName: String
-    let secondaryTranslationName: String?
-}
-
 struct ProjectorView: View {
     @EnvironmentObject var projectorViewModel: ProjectorViewModel
 
-    @AppStorage("fontSizeVerse") private var fontSizeVerse = 200.0
-    @AppStorage("fontSizeVerseRef") private var fontSizeVerseRef = 36.0
-    @AppStorage("vStackPadding") private var vStackPadding = 20.0
+    @AppStorage(AppDefaultsKey.fontSizeVerse) private var fontSizeVerse = AppDefaults.verseFontSize
+    @AppStorage(AppDefaultsKey.fontSizeVerseRef) private var fontSizeVerseRef = AppDefaults.referenceFontSize
+    @AppStorage(AppDefaultsKey.projectorPadding) private var vStackPadding = AppDefaults.projectorPadding
     @AppStorage(AppDefaultsKey.projectorTextAlignment) private var projectorTextAlignmentRaw = ProjectorTextAlignmentMode.center.rawValue
     @AppStorage(AppDefaultsKey.projectorReadingDirection) private var projectorReadingDirectionRaw = ProjectorReadingDirectionMode.auto.rawValue
     @AppStorage(AppDefaultsKey.projectorDualLayoutVertical) private var projectorDualLayoutVertical = false
@@ -194,22 +138,22 @@ struct ProjectorView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            referenceLineView
-                .font(.system(size: CGFloat(fontSizeVerseRef), weight: .bold))
-                .padding(.bottom, 16)
-
-            Spacer(minLength: 0)
-
-            verseContent
-
-            Spacer(minLength: 0)
+        GeometryReader { geometry in
+            let padding = min(max(0, vStackPadding), min(geometry.size.width, geometry.size.height) * 0.22)
+            VStack(spacing: 16) {
+                referenceLineView
+                    .font(.system(size: CGFloat(fontSizeVerseRef), weight: .bold))
+                    .minimumScaleFactor(0.5)
+                    .frame(height: min(CGFloat(fontSizeVerseRef) * 1.3, geometry.size.height * 0.16))
+                verseContent
+            }
+            .padding(padding)
+            .opacity(projectorViewModel.isBlanked ? 0 : 1)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(vStackPadding)
         .preferredColorScheme(.dark)
         .environment(\.layoutDirection, resolvedLayoutDirection)
         .multilineTextAlignment(resolvedTextAlignment)
+        .accessibilityHidden(projectorViewModel.isBlanked)
     }
 
     @ViewBuilder
@@ -242,11 +186,21 @@ struct ProjectorView: View {
     }
 
     private func verseText(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: CGFloat(fontSizeVerse), weight: .heavy))
-            .minimumScaleFactor(0.1)
-            .lineLimit(10)
-            .frame(maxWidth: .infinity, alignment: resolvedFrameAlignment)
+        GeometryReader { geometry in
+            let size = ProjectorTextLayout.fontSize(for: text, in: geometry.size, preferred: fontSizeVerse)
+            // Font fallback and leading can differ between AppKit measurement
+            // and SwiftUI rendering. Verify the natural height in SwiftUI too.
+            ViewThatFits(in: .vertical) {
+                ForEach([1.0, 0.95, 0.9, 0.8, 0.65, 0.5, 0.25], id: \.self) { scale in
+                    Text(text)
+                        .font(.system(size: max(1, size * scale), weight: .heavy))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: resolvedFrameAlignment)
+            .environment(\.layoutDirection, projectorReadingDirectionMode == .auto ? inferredLayoutDirection(from: text) : resolvedLayoutDirection)
+        }
     }
 
     private func inferredLayoutDirection(from text: String) -> LayoutDirection {

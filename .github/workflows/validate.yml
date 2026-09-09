@@ -1,0 +1,19 @@
+name: Validate
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Core regressions
+        run: swift test --scratch-path build/SwiftPM -Xswiftc -strict-concurrency=complete
+      - name: Converter and release preflight regressions
+        run: python3 scripts/test-review-regressions.py
+      - name: Shell syntax
+        run: bash -n scripts/build.sh scripts/release-notarize-distribute.sh scripts/verify-release-source.sh scripts/set-version.sh scripts/render-projector-review.sh
+      - name: Debug build
+        run: xcodebuild -project ViewTheWord.xcodeproj -scheme ViewTheWord -configuration Debug -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build
+      - name: Release build
+        run: xcodebuild -project ViewTheWord.xcodeproj -scheme ViewTheWord -configuration Release -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build

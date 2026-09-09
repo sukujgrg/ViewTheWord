@@ -1,817 +1,216 @@
 import Foundation
 import SQLite3
 
-struct AVerse: Identifiable {
-    var id: Int { verseId }
-
-    let verseId: Int
-    let bookNumber: Int
-    let bookName: String
-    let chapterNumber: Int
-    let verseNumber: Int
-    let verse: String
-}
-
-class BibleUrl {
-    private static let cacheQueue = DispatchQueue(label: "com.viewtheword.bibleurl.cache")
-    private static var cachedAvailableBibleUrls: [URL]?
-
-    var primaryBibleUrl: URL
-    var secondaryBibleUrl: URL
-
-    static func invalidateAvailableBibleUrlCache() {
-        cacheQueue.sync {
-            cachedAvailableBibleUrls = nil
+enum BibleError: LocalizedError, Equatable {
+    case database(String), invalidData(String)
+    var errorDescription: String? {
+        switch self {
+        case .database(let detail): return "Could not read the Bible database: \(detail)"
+        case .invalidData(let detail): return "The Bible database is invalid: \(detail)"
         }
-    }
-
-    init() {
-        primaryBibleUrl = bundledPrimaryBibleUrl ?? URL(fileURLWithPath: "/dev/null")
-        secondaryBibleUrl = bundledSecondaryBibleUrl ?? primaryBibleUrl
-
-        let availableBibleUrls = getAvailableBibleUrls()
-
-        let fallbackURL = availableBibleUrls.first ?? URL(fileURLWithPath: "/dev/null")
-        if fallbackURL.path == "/dev/null" {
-            logger.fault("No Bible files are available; using /dev/null as a non-crashing placeholder.")
-        }
-
-        if let primary = getBibleUrl(defaultsKey: AppDefaultsKey.primaryBibleName) {
-            primaryBibleUrl = primary
-        } else if let bundledPrimary = bundledPrimaryBibleUrl {
-            primaryBibleUrl = bundledPrimary
-        } else if let firstAvailable = availableBibleUrls.first {
-            logger.warning("Bundled primary Bible missing; falling back to \(firstAvailable.lastPathComponent).")
-            primaryBibleUrl = firstAvailable
-        } else {
-            primaryBibleUrl = fallbackURL
-        }
-
-        if let secondary = getBibleUrl(defaultsKey: AppDefaultsKey.secondaryBibleName) {
-            secondaryBibleUrl = secondary
-        } else if let bundledSecondary = bundledSecondaryBibleUrl {
-            secondaryBibleUrl = bundledSecondary
-        } else if let secondaryFallback = availableBibleUrls.first(where: { $0 != primaryBibleUrl }) {
-            logger.warning("Bundled secondary Bible missing; falling back to \(secondaryFallback.lastPathComponent).")
-            secondaryBibleUrl = secondaryFallback
-        } else {
-            secondaryBibleUrl = primaryBibleUrl
-        }
-    }
-
-    func getBibleUrl(defaultsKey: String) -> URL? {
-        let availableBibleUrls = getAvailableBibleUrls()
-
-        let defaults = UserDefaults.standard
-
-        if let bibleName = defaults.string(forKey: defaultsKey), !bibleName.isEmpty {
-            let storedLastPath = URL(string: bibleName)?.lastPathComponent
-                ?? URL(fileURLWithPath: bibleName).lastPathComponent
-
-            for url in availableBibleUrls where url.lastPathComponent == storedLastPath {
-                return url
-            }
-        }
-        return nil
-    }
-
-    func getAvailableBibleUrls(forceRefresh: Bool = false) -> [URL] {
-        if !forceRefresh {
-            let cachedUrls = Self.cacheQueue.sync { Self.cachedAvailableBibleUrls }
-            if let cachedUrls {
-                return cachedUrls
-            }
-        }
-
-        let scannedUrls = scanAvailableBibleUrls()
-        Self.cacheQueue.sync {
-            Self.cachedAvailableBibleUrls = scannedUrls
-        }
-        return scannedUrls
-    }
-
-    private func scanAvailableBibleUrls() -> [URL] {
-        var availableBibleUrls: [URL] = []
-
-        if let primary = bundledPrimaryBibleUrl {
-            availableBibleUrls.append(primary)
-        }
-        if let secondary = bundledSecondaryBibleUrl {
-            availableBibleUrls.append(secondary)
-        }
-
-        let fileManager = FileManager.default
-        guard let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            logger.error("Could not access documents directory")
-            return availableBibleUrls
-        }
-
-        do {
-            let fileURLs = try fileManager.contentsOfDirectory(at: documentsURL, includingPropertiesForKeys: nil)
-            let bibleDbUrls = fileURLs.filter {
-                $0.pathExtension.lowercased() == BibleFileRule.fileExtension
-                    && BibleFileRule.isValidFileName($0.lastPathComponent)
-            }
-            availableBibleUrls += bibleDbUrls
-        } catch {
-            logger.error("\(documentsURL.path): \(error.localizedDescription)")
-        }
-        var dedupedByFileName: [String: URL] = [:]
-        for url in availableBibleUrls {
-            dedupedByFileName[url.lastPathComponent] = url
-        }
-
-        return Array(dedupedByFileName.values)
     }
 }
 
-final class Bible: @unchecked Sendable {
+protocol BibleReading: Sendable {
+    func chapter(_ reference: VerseReference) async throws -> [AVerse]
+    func verses(_ references: [VerseReference]) async throws -> [AVerse]
+    func search(_ request: TextSearchRequest, after: VerseCoordinate?, limit: Int) async throws -> [AVerse]
+}
+
+/// Every SQLite pointer and statement is confined to dbQueue, including open and close.
+final class Bible: BibleReading, @unchecked Sendable {
     let dbUrl: URL
-    private var db: OpaquePointer?
     private let dbQueue = DispatchQueue(label: "com.viewtheword.database", qos: .userInitiated)
-    private var pickVerseStatement: OpaquePointer?
-    private var pickChapterStatement: OpaquePointer?
-    private var searchTextStatement: OpaquePointer?
-
-    private let pickVerseQuery = """
-        SELECT id, bnumber, cnumber, vnumber, verse
-        FROM bible
-        WHERE bnumber = ? AND cnumber = ? AND vnumber = ?
-        LIMIT 1;
-    """
-
-    private let pickChapterQuery = """
-        SELECT id, bnumber, cnumber, vnumber, verse
-        FROM bible
-        WHERE bnumber = ? AND cnumber = ?
-        ORDER BY vnumber;
-    """
-
-    private let searchTextQuery = """
-        SELECT id, bnumber, cnumber, vnumber, verse
-        FROM bible
-        WHERE verse LIKE ?
-        ORDER BY bnumber, cnumber, vnumber
-        LIMIT ?;
-    """
-
-    // Cache for O(1) book number to name lookups
-    internal static let bookNumberToName: [Int: String] = {
-        var cache: [Int: String] = [:]
-        for (name, details) in bibleBooks {
-            cache[details[0]] = name
-        }
-        return cache
-    }()
+    private let queueKey = DispatchSpecificKey<Bool>()
+    private var db: OpaquePointer?
+    private var chapterStatement: OpaquePointer?
+    private static let columns = "bnumber, cnumber, vnumber, verse"
+    private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     init(dbUrl: URL) {
         self.dbUrl = dbUrl
-        db = openDb()
+        dbQueue.setSpecific(key: queueKey, value: true)
     }
 
     deinit {
-        self.closeDb()
+        let close = {
+            sqlite3_finalize(self.chapterStatement)
+            if let db = self.db { sqlite3_close_v2(db) }
+        }
+        if DispatchQueue.getSpecific(key: queueKey) == true { close() }
+        else { dbQueue.sync(execute: close) }
     }
 
-    func closeDb() {
-        dbQueue.sync {
-            finalizeStatement(&pickVerseStatement)
-            finalizeStatement(&pickChapterStatement)
-            finalizeStatement(&searchTextStatement)
-
-            if let db = db, sqlite3_close_v2(db) != SQLITE_OK {
-                logger.error("Error closing \(self.dbUrl.absoluteString).")
+    private func connection() throws -> OpaquePointer {
+        if let db { return db }
+        var handle: OpaquePointer?
+        guard sqlite3_open_v2(dbUrl.path, &handle, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK,
+              let opened = handle else {
+            let detail = handle.map { String(cString: sqlite3_errmsg($0)) } ?? "File cannot be opened."
+            if let handle { sqlite3_close_v2(handle) }
+            throw BibleError.database(detail)
+        }
+        sqlite3_busy_timeout(opened, 3_000)
+        let status = sqlite3_create_function_v2(opened, "word_matches", 2, SQLITE_UTF8 | SQLITE_DETERMINISTIC, nil, { context, count, values in
+            guard let context, count == 2, let values,
+                  let rawText = sqlite3_value_text(values[0]), let rawTerm = sqlite3_value_text(values[1]) else {
+                sqlite3_result_int(context, 0)
+                return
             }
-            db = nil
-        }
-    }
-
-    /// Get a single verse by book/chapter/verse coordinates
-    func getVerse(bookNumber: Int, chapterNumber: Int, verseNumber: Int) -> AVerse? {
-        return dbQueue.sync {
-            guard let db = db else { return nil }
-
-            let query = """
-                SELECT id, bnumber, cnumber, vnumber, verse
-                FROM bible
-                WHERE bnumber = ? AND cnumber = ? AND vnumber = ?
-                LIMIT 1;
-            """
-
-            var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else {
-                return nil
+            let matcher: WordMatcher
+            if let cached = sqlite3_get_auxdata(context, 1) {
+                matcher = Unmanaged<WordMatcher>.fromOpaque(cached).takeUnretainedValue()
+            } else {
+                do { matcher = try WordMatcher(term: String(cString: rawTerm)) }
+                catch { sqlite3_result_error(context, "Invalid word matcher", -1); return }
+                sqlite3_set_auxdata(context, 1, Unmanaged.passRetained(matcher).toOpaque(), { pointer in
+                    if let pointer { Unmanaged<WordMatcher>.fromOpaque(pointer).release() }
+                })
             }
-
-            defer { sqlite3_finalize(statement) }
-
-            sqlite3_bind_int(statement, 1, Int32(bookNumber))
-            sqlite3_bind_int(statement, 2, Int32(chapterNumber))
-            sqlite3_bind_int(statement, 3, Int32(verseNumber))
-
-            guard sqlite3_step(statement) == SQLITE_ROW else {
-                return nil
-            }
-
-            let verseId = Int(sqlite3_column_int(statement, 0))
-            let bnumber = Int(sqlite3_column_int(statement, 1))
-            let cnumber = Int(sqlite3_column_int(statement, 2))
-            let vnumber = Int(sqlite3_column_int(statement, 3))
-
-            guard let verseText = sqlite3_column_text(statement, 4) else {
-                return nil
-            }
-
-            let verse = String(cString: verseText)
-            let bookName = Bible.bookNumberToName[bnumber] ?? "Unknown"
-
-            return AVerse(
-                verseId: verseId,
-                bookNumber: bnumber,
-                bookName: bookName,
-                chapterNumber: cnumber,
-                verseNumber: vnumber,
-                verse: verse
-            )
+            sqlite3_result_int(context, matcher.matches(String(cString: rawText)) ? 1 : 0)
+        }, nil, nil, nil)
+        guard status == SQLITE_OK else {
+            sqlite3_close_v2(opened)
+            throw BibleError.database("Could not initialize word search.")
         }
+        db = opened
+        return opened
     }
 
-    func getVerses(for coordinates: [(bookNumber: Int, chapterNumber: Int, verseNumber: Int)]) -> [AVerse] {
-        dbQueue.sync {
-            getVersesUnlocked(for: coordinates)
+    private func perform<T: Sendable>(_ work: @escaping @Sendable (Bible) throws -> T) async throws -> T {
+        try Task.checkCancellation()
+        let result: T = try await withCheckedThrowingContinuation { continuation in
+            dbQueue.async { [self] in continuation.resume(with: Result { try work(self) }) }
         }
+        try Task.checkCancellation()
+        return result
     }
 
-    func getVersesAsync(for coordinates: [(bookNumber: Int, chapterNumber: Int, verseNumber: Int)]) async -> [AVerse] {
-        await withCheckedContinuation { continuation in
-            dbQueue.async { [weak self] in
-                guard let self = self else {
-                    continuation.resume(returning: [])
-                    return
-                }
-                continuation.resume(returning: self.getVersesUnlocked(for: coordinates))
-            }
-        }
-    }
-
-    func openDb() -> OpaquePointer? {
-        var db: OpaquePointer?
-        if sqlite3_open_v2(dbUrl.path, &db, SQLite3.SQLITE_OPEN_READONLY, nil) != SQLITE_OK {
-            let errmsg = String(cString: sqlite3_errmsg(db))
-            logger.error("\(errmsg)")
-            closeDb()
-            return nil
-        } else {
-            return db
-        }
-    }
-    func bookNumber(bookName: String) -> Int? {
-        return bibleBooks[bookName]?.first
-    }
-
-    func getChapterCount(bookName: String) -> Int32? {
-        dbQueue.sync {
-            getChapterCountUnlocked(bookName: bookName)
-        }
-    }
-
-    func getChapterCountAsync(bookName: String) async -> Int32? {
-        await withCheckedContinuation { continuation in
-            dbQueue.async { [weak self] in
-                continuation.resume(returning: self?.getChapterCountUnlocked(bookName: bookName))
-            }
-        }
-    }
-
-    func pickAVerse(verseQuery: VerseQuery) -> AVerse? {
-        dbQueue.sync {
-            pickAVerseUnlocked(verseQuery: verseQuery)
-        }
-    }
-
-    func pickAVerseAsync(verseQuery: VerseQuery) async -> AVerse? {
-        await withCheckedContinuation { continuation in
-            dbQueue.async { [weak self] in
-                continuation.resume(returning: self?.pickAVerseUnlocked(verseQuery: verseQuery))
-            }
-        }
-    }
-
-    func pickAChapter(verseQuery: VerseQuery) -> [AVerse]? {
-        dbQueue.sync {
-            pickAChapterUnlocked(verseQuery: verseQuery)
-        }
-    }
-
-    func pickAChapterAsync(verseQuery: VerseQuery) async -> [AVerse]? {
-        await withCheckedContinuation { continuation in
-            dbQueue.async { [weak self] in
-                continuation.resume(returning: self?.pickAChapterUnlocked(verseQuery: verseQuery))
-            }
-        }
-    }
-
-    func searchText(searchQuery: String, limit: Int = 100) -> [AVerse]? {
-        dbQueue.sync {
-            searchTextUnlocked(searchQuery: searchQuery, limit: limit)
-        }
-    }
-
-    func searchTextAsync(searchQuery: String, limit: Int = 100) async -> [AVerse]? {
-        await withCheckedContinuation { continuation in
-            dbQueue.async { [weak self] in
-                continuation.resume(returning: self?.searchTextUnlocked(searchQuery: searchQuery, limit: limit))
-            }
-        }
-    }
-
-    func searchTextWithFilter(searchQuery: String, filter: SearchFilter, limit: Int = 100) -> [AVerse]? {
-        dbQueue.sync {
-            searchTextWithFilterUnlocked(searchQuery: searchQuery, filter: filter, limit: limit)
-        }
-    }
-
-    func searchTextWithFilterAsync(searchQuery: String, filter: SearchFilter, limit: Int = 100) async -> [AVerse]? {
-        await withCheckedContinuation { continuation in
-            dbQueue.async { [weak self] in
-                continuation.resume(returning: self?.searchTextWithFilterUnlocked(searchQuery: searchQuery, filter: filter, limit: limit))
-            }
-        }
-    }
-
-    func searchWithExpression(expression: SearchExpression, filter: SearchFilter, limit: Int = 100) -> [AVerse]? {
-        dbQueue.sync {
-            searchWithExpressionUnlocked(expression: expression, filter: filter, limit: limit)
-        }
-    }
-
-    func searchWithExpressionAsync(expression: SearchExpression, filter: SearchFilter, limit: Int = 100) async -> [AVerse]? {
-        let sql = expression.toSQL()
-        let baseWhereClause = sql.whereClause
-        let searchTerms = sql.terms
-        let bookNumbers = filter.bookNumbers()
-
-        return await withCheckedContinuation { continuation in
-            dbQueue.async { [weak self] in
-                continuation.resume(returning: self?.searchWithExpressionComponentsUnlocked(
-                    baseWhereClause: baseWhereClause,
-                    searchTerms: searchTerms,
-                    bookNumbers: bookNumbers,
-                    limit: limit
-                ))
-            }
-        }
-    }
-
-    private func getChapterCountUnlocked(bookName: String) -> Int32? {
-        guard let bookNumber = bookNumber(bookName: bookName) else {
-            return nil
-        }
-        let q = "SELECT COUNT(DISTINCT cnumber) FROM bible WHERE bnumber = ?;"
-        return runChapterCountQuery(queryStatementString: q, bookNumber: bookNumber)
-    }
-
-    private func pickAVerseUnlocked(verseQuery: VerseQuery) -> AVerse? {
-        guard let bookNumber = bookNumber(bookName: verseQuery.bookName) else {
-            return nil
-        }
-
-        guard let statement = cachedStatement(
-            statement: &pickVerseStatement,
-            query: pickVerseQuery,
-            context: "pick verse query"
-        ) else {
-            return nil
-        }
-
-        sqlite3_reset(statement)
-        sqlite3_clear_bindings(statement)
-        sqlite3_bind_int(statement, 1, Int32(bookNumber))
-        sqlite3_bind_int(statement, 2, Int32(verseQuery.chapterNumber))
-        sqlite3_bind_int(statement, 3, Int32(verseQuery.verseNumber))
-
-        guard sqlite3_step(statement) == SQLITE_ROW else {
-            return nil
-        }
-
-        return makeVerse(from: statement, fallbackBookName: verseQuery.bookName)
-    }
-
-    private func pickAChapterUnlocked(verseQuery: VerseQuery) -> [AVerse]? {
-        guard let bookNumber = bookNumber(bookName: verseQuery.bookName) else {
-            return nil
-        }
-
-        guard let statement = cachedStatement(
-            statement: &pickChapterStatement,
-            query: pickChapterQuery,
-            context: "pick chapter query"
-        ) else {
-            return nil
-        }
-
-        sqlite3_reset(statement)
-        sqlite3_clear_bindings(statement)
-        sqlite3_bind_int(statement, 1, Int32(bookNumber))
-        sqlite3_bind_int(statement, 2, Int32(verseQuery.chapterNumber))
-
-        var verses: [AVerse] = []
-        while sqlite3_step(statement) == SQLITE_ROW {
-            guard let verse = makeVerse(from: statement, fallbackBookName: verseQuery.bookName) else {
-                continue
-            }
-            verses.append(verse)
-        }
-
-        return verses.isEmpty ? nil : verses
-    }
-
-    private func searchTextUnlocked(searchQuery: String, limit: Int) -> [AVerse]? {
-        guard let statement = cachedStatement(
-            statement: &searchTextStatement,
-            query: searchTextQuery,
-            context: "search text query"
-        ) else {
-            return nil
-        }
-
-        let pattern = "%\(searchQuery)%"
-        let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-
-        sqlite3_reset(statement)
-        sqlite3_clear_bindings(statement)
-        sqlite3_bind_text(statement, 1, (pattern as NSString).utf8String, -1, sqliteTransient)
-        sqlite3_bind_int(statement, 2, Int32(limit))
-
-        var verses: [AVerse] = []
-        while sqlite3_step(statement) == SQLITE_ROW {
-            guard let verse = makeVerse(from: statement, fallbackBookName: nil) else {
-                continue
-            }
-            verses.append(verse)
-        }
-
-        return verses.isEmpty ? nil : verses
-    }
-
-    private func searchTextWithFilterUnlocked(searchQuery: String, filter: SearchFilter, limit: Int) -> [AVerse]? {
-        var whereClause = "verse LIKE ?"
-        var bookNumbers: [Int]? = nil
-
-        if let numbers = filter.bookNumbers() {
-            bookNumbers = numbers
-            let placeholders = numbers.map { _ in "?" }.joined(separator: ",")
-            whereClause = "(\(whereClause)) AND bnumber IN (\(placeholders))"
-        }
-
-        let queryStatementString = """
-            SELECT * FROM bible
-                WHERE \(whereClause)
-                ORDER BY bnumber, cnumber, vnumber
-                LIMIT ?;
-        """
-        return runSearchQueryWithFilter(
-            queryStatementString: queryStatementString,
-            searchPattern: "%\(searchQuery)%",
-            bookNumbers: bookNumbers,
-            limit: limit
-        )
-    }
-
-    private func searchWithExpressionUnlocked(expression: SearchExpression, filter: SearchFilter, limit: Int) -> [AVerse]? {
-        let sql = expression.toSQL()
-        return searchWithExpressionComponentsUnlocked(
-            baseWhereClause: sql.whereClause,
-            searchTerms: sql.terms,
-            bookNumbers: filter.bookNumbers(),
-            limit: limit
-        )
-    }
-
-    private func searchWithExpressionComponentsUnlocked(
-        baseWhereClause: String,
-        searchTerms: [String],
-        bookNumbers: [Int]?,
-        limit: Int
-    ) -> [AVerse]? {
-        var whereClause = baseWhereClause
-
-        if let numbers = bookNumbers {
-            let placeholders = numbers.map { _ in "?" }.joined(separator: ",")
-            whereClause = "(\(whereClause)) AND bnumber IN (\(placeholders))"
-        }
-
-        let queryStatementString = """
-            SELECT * FROM bible
-                WHERE \(whereClause)
-                ORDER BY bnumber, cnumber, vnumber
-                LIMIT ?;
-        """
-
-        return runSearchQueryWithExpressionAndFilter(
-            queryStatementString: queryStatementString,
-            searchTerms: searchTerms,
-            bookNumbers: bookNumbers,
-            limit: limit
-        )
-    }
-
-    private func cachedStatement(
-        statement: inout OpaquePointer?,
-        query: String,
-        context: String
-    ) -> OpaquePointer? {
-        guard let db else {
-            return nil
-        }
-
-        if let statement {
-            return statement
-        }
-
-        var newStatement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, query, -1, &newStatement, nil) == SQLITE_OK else {
-            let errmsg = String(cString: sqlite3_errmsg(db))
-            logger.error("Failed to prepare \(context): \(errmsg)")
-            return nil
-        }
-
-        statement = newStatement
-        return newStatement
-    }
-
-    private func finalizeStatement(_ statement: inout OpaquePointer?) {
-        guard let currentStatement = statement else {
-            return
-        }
-
-        sqlite3_finalize(currentStatement)
-        statement = nil
-    }
-
-    private func makeVerse(from statement: OpaquePointer?, fallbackBookName: String?) -> AVerse? {
-        guard let statement else {
-            return nil
-        }
-
-        guard let verseText = sqlite3_column_text(statement, 4) else {
-            return nil
-        }
-
-        let bookNumber = Int(sqlite3_column_int(statement, 1))
-        let bookName = fallbackBookName ?? Bible.bookNumberToName[bookNumber] ?? "Unknown"
-
-        return AVerse(
-            verseId: Int(sqlite3_column_int(statement, 0)),
-            bookNumber: bookNumber,
-            bookName: bookName,
-            chapterNumber: Int(sqlite3_column_int(statement, 2)),
-            verseNumber: Int(sqlite3_column_int(statement, 3)),
-            verse: String(cString: verseText)
-        )
-    }
-
-    private func runChapterCountQuery(queryStatementString: String, bookNumber: Int) -> Int32? {
-        guard db != nil else {
-            return nil
-        }
-        var count: Int32?
-        var queryStatement: OpaquePointer?
-
-        guard sqlite3_prepare_v2(db, queryStatementString, -1, &queryStatement, nil) == SQLITE_OK else {
-            let errmsg = String(cString: sqlite3_errmsg(db))
-            logger.error("Failed to prepare chapter count query: \(errmsg)")
-            return nil
-        }
-
-        // Bind the book number parameter
-        sqlite3_bind_int(queryStatement, 1, Int32(bookNumber))
-
-        if sqlite3_step(queryStatement) == SQLITE_ROW {
-            count = sqlite3_column_int(queryStatement, 0)
-        }
-
-        sqlite3_finalize(queryStatement)
-        return count
-    }
-
-    private func runSearchQuery(queryStatementString: String, searchPattern: String, limit: Int) -> [AVerse]? {
-        guard db != nil else {
-            return nil
-        }
-        var verses: [AVerse] = []
-        var queryStatement: OpaquePointer?
-
-        guard sqlite3_prepare_v2(db, queryStatementString, -1, &queryStatement, nil) == SQLITE_OK else {
-            let errmsg = String(cString: sqlite3_errmsg(db))
-            logger.error("Failed to prepare search query: \(errmsg)")
-            return nil
-        }
-
-        // Bind parameters: search pattern and limit
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        sqlite3_bind_text(queryStatement, 1, (searchPattern as NSString).utf8String, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_int(queryStatement, 2, Int32(limit))
-
-        while sqlite3_step(queryStatement) == SQLITE_ROW {
-            let verseId = sqlite3_column_int(queryStatement, 0)
-            let bookNumber = sqlite3_column_int(queryStatement, 1)
-            let chapterNumber = sqlite3_column_int(queryStatement, 2)
-            let verseNumber = sqlite3_column_int(queryStatement, 3)
-
-            guard let verseText = sqlite3_column_text(queryStatement, 4) else {
-                continue
-            }
-            let verse = String(cString: verseText)
-
-            // Look up book name from number using cached mapping
-            let bookName = Bible.bookNumberToName[Int(bookNumber)] ?? "Unknown"
-
-            verses.append(AVerse(
-                verseId: Int(verseId),
-                bookNumber: Int(bookNumber),
-                bookName: bookName,
-                chapterNumber: Int(chapterNumber),
-                verseNumber: Int(verseNumber),
-                verse: verse
-            ))
-        }
-
-        sqlite3_finalize(queryStatement)
-        return verses.isEmpty ? nil : verses
-    }
-
-    private func runSearchQueryWithFilter(
-        queryStatementString: String,
-        searchPattern: String,
-        bookNumbers: [Int]?,
-        limit: Int
-    ) -> [AVerse]? {
-        guard db != nil else {
-            return nil
-        }
-        var verses: [AVerse] = []
-        var queryStatement: OpaquePointer?
-
-        guard sqlite3_prepare_v2(db, queryStatementString, -1, &queryStatement, nil) == SQLITE_OK else {
-            let errmsg = String(cString: sqlite3_errmsg(db))
-            logger.error("Failed to prepare search query: \(errmsg)")
-            return nil
-        }
-
-        // Bind parameters: search pattern, book numbers (if any), and limit
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        var paramIndex: Int32 = 1
-
-        // Bind search pattern
-        sqlite3_bind_text(queryStatement, paramIndex, (searchPattern as NSString).utf8String, -1, SQLITE_TRANSIENT)
-        paramIndex += 1
-
-        // Bind book numbers if present
-        if let bookNumbers = bookNumbers {
-            for bookNum in bookNumbers {
-                sqlite3_bind_int(queryStatement, paramIndex, Int32(bookNum))
-                paramIndex += 1
-            }
-        }
-
-        // Bind limit
-        sqlite3_bind_int(queryStatement, paramIndex, Int32(limit))
-
-        while sqlite3_step(queryStatement) == SQLITE_ROW {
-            let verseId = sqlite3_column_int(queryStatement, 0)
-            let bookNumber = sqlite3_column_int(queryStatement, 1)
-            let chapterNumber = sqlite3_column_int(queryStatement, 2)
-            let verseNumber = sqlite3_column_int(queryStatement, 3)
-
-            guard let verseText = sqlite3_column_text(queryStatement, 4) else {
-                continue
-            }
-            let verse = String(cString: verseText)
-
-            // Look up book name from number using cached mapping
-            let bookName = Bible.bookNumberToName[Int(bookNumber)] ?? "Unknown"
-
-            verses.append(AVerse(
-                verseId: Int(verseId),
-                bookNumber: Int(bookNumber),
-                bookName: bookName,
-                chapterNumber: Int(chapterNumber),
-                verseNumber: Int(verseNumber),
-                verse: verse
-            ))
-        }
-
-        sqlite3_finalize(queryStatement)
-        return verses.isEmpty ? nil : verses
-    }
-
-    private func runSearchQueryWithExpressionAndFilter(
-        queryStatementString: String,
-        searchTerms: [String],
-        bookNumbers: [Int]?,
-        limit: Int
-    ) -> [AVerse]? {
-        guard db != nil else {
-            return nil
-        }
-        var verses: [AVerse] = []
-        var queryStatement: OpaquePointer?
-
-        guard sqlite3_prepare_v2(db, queryStatementString, -1, &queryStatement, nil) == SQLITE_OK else {
-            let errmsg = String(cString: sqlite3_errmsg(db))
-            logger.error("Failed to prepare search query: \(errmsg)")
-            return nil
-        }
-
-        // Bind search terms
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        var paramIndex: Int32 = 1
-
-        for term in searchTerms {
-            sqlite3_bind_text(queryStatement, paramIndex, (term as NSString).utf8String, -1, SQLITE_TRANSIENT)
-            paramIndex += 1
-        }
-
-        // Bind book numbers if present
-        if let bookNumbers = bookNumbers {
-            for bookNum in bookNumbers {
-                sqlite3_bind_int(queryStatement, paramIndex, Int32(bookNum))
-                paramIndex += 1
-            }
-        }
-
-        // Bind limit
-        sqlite3_bind_int(queryStatement, paramIndex, Int32(limit))
-
-        while sqlite3_step(queryStatement) == SQLITE_ROW {
-            let verseId = sqlite3_column_int(queryStatement, 0)
-            let bookNumber = sqlite3_column_int(queryStatement, 1)
-            let chapterNumber = sqlite3_column_int(queryStatement, 2)
-            let verseNumber = sqlite3_column_int(queryStatement, 3)
-
-            guard let verseText = sqlite3_column_text(queryStatement, 4) else {
-                continue
-            }
-            let verse = String(cString: verseText)
-
-            // Look up book name from number using cached mapping
-            let bookName = Bible.bookNumberToName[Int(bookNumber)] ?? "Unknown"
-
-            verses.append(AVerse(
-                verseId: Int(verseId),
-                bookNumber: Int(bookNumber),
-                bookName: bookName,
-                chapterNumber: Int(chapterNumber),
-                verseNumber: Int(verseNumber),
-                verse: verse
-            ))
-        }
-
-        sqlite3_finalize(queryStatement)
-        return verses.isEmpty ? nil : verses
-    }
-
-    private func getVersesUnlocked(for coordinates: [(bookNumber: Int, chapterNumber: Int, verseNumber: Int)]) -> [AVerse] {
-        guard let db = db, !coordinates.isEmpty else { return [] }
-
-        let query = """
-            SELECT id, bnumber, cnumber, vnumber, verse
-            FROM bible
-            WHERE bnumber = ? AND cnumber = ? AND vnumber = ?
-            LIMIT 1;
-        """
-
+    private func prepare(_ sql: String) throws -> OpaquePointer {
+        let db = try connection()
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else {
-            return []
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw BibleError.database(String(cString: sqlite3_errmsg(db)))
         }
-        defer { sqlite3_finalize(statement) }
+        return statement
+    }
 
-        var verses: [AVerse] = []
-        verses.reserveCapacity(coordinates.count)
-
-        for coordinate in coordinates {
-            sqlite3_reset(statement)
-            sqlite3_clear_bindings(statement)
-            sqlite3_bind_int(statement, 1, Int32(coordinate.bookNumber))
-            sqlite3_bind_int(statement, 2, Int32(coordinate.chapterNumber))
-            sqlite3_bind_int(statement, 3, Int32(coordinate.verseNumber))
-
-            guard sqlite3_step(statement) == SQLITE_ROW else { continue }
-            guard let verseText = sqlite3_column_text(statement, 4) else { continue }
-
-            let bnumber = Int(sqlite3_column_int(statement, 1))
-            verses.append(AVerse(
-                verseId: Int(sqlite3_column_int(statement, 0)),
-                bookNumber: bnumber,
-                bookName: Bible.bookNumberToName[bnumber] ?? "Unknown",
-                chapterNumber: Int(sqlite3_column_int(statement, 2)),
-                verseNumber: Int(sqlite3_column_int(statement, 3)),
-                verse: String(cString: verseText)
-            ))
+    private func bind(_ number: Int, at index: Int32, to statement: OpaquePointer) throws {
+        guard let checked = Int32(exactly: number), sqlite3_bind_int(statement, index, checked) == SQLITE_OK else {
+            throw BibleError.invalidData("Coordinate or result limit is out of range.")
         }
+    }
+    private func bind(_ text: String, at index: Int32, to statement: OpaquePointer) throws {
+        guard sqlite3_bind_text(statement, index, text, -1, Self.transient) == SQLITE_OK else {
+            throw BibleError.database("Could not bind search text.")
+        }
+    }
 
-        return verses
+    private func read(_ statement: OpaquePointer) throws -> [AVerse] {
+        var result: [AVerse] = []
+        var status = sqlite3_step(statement)
+        while status == SQLITE_ROW {
+            guard (0...2).allSatisfy({ sqlite3_column_type(statement, Int32($0)) == SQLITE_INTEGER }),
+                  sqlite3_column_type(statement, 3) == SQLITE_TEXT else {
+                throw BibleError.invalidData("Verse coordinates must be integers and verse text must be text.")
+            }
+            let book = sqlite3_column_int64(statement, 0)
+            let chapter = sqlite3_column_int64(statement, 1)
+            let verse = sqlite3_column_int64(statement, 2)
+            guard let metadata = bibleBookMetadata.first(where: { $0.number == book }),
+                  let chapterNumber = Int(exactly: chapter), let verseNumber = Int(exactly: verse),
+                  let reference = VerseReference(book: metadata.name, chapter: chapterNumber, verse: verseNumber),
+                  let raw = sqlite3_column_text(statement, 3) else {
+                throw BibleError.invalidData("A verse has invalid coordinates or missing text.")
+            }
+            result.append(AVerse(reference: reference, verse: String(cString: raw)))
+            status = sqlite3_step(statement)
+        }
+        guard status == SQLITE_DONE else {
+            throw BibleError.database(db.map { String(cString: sqlite3_errmsg($0)) } ?? "Query failed.")
+        }
+        return result
+    }
+
+    func chapter(_ reference: VerseReference) async throws -> [AVerse] {
+        try await perform { reader in
+            if reader.chapterStatement == nil {
+                reader.chapterStatement = try reader.prepare("SELECT \(Self.columns) FROM bible WHERE bnumber = ? AND cnumber = ? ORDER BY vnumber")
+            }
+            let statement = reader.chapterStatement!
+            defer { sqlite3_reset(statement); sqlite3_clear_bindings(statement) }
+            try reader.bind(reference.coordinate.book, at: 1, to: statement)
+            try reader.bind(reference.chapter, at: 2, to: statement)
+            return try reader.read(statement)
+        }
+    }
+
+    func verses(_ references: [VerseReference]) async throws -> [AVerse] {
+        guard !references.isEmpty else { return [] }
+        return try await perform { reader in
+            var results: [AVerse] = []
+            for start in stride(from: 0, to: references.count, by: 100) {
+                let batch = Array(references[start..<min(start + 100, references.count)])
+                let conditions = Array(repeating: "(bnumber = ? AND cnumber = ? AND vnumber = ?)", count: batch.count).joined(separator: " OR ")
+                let statement = try reader.prepare("SELECT \(Self.columns) FROM bible WHERE \(conditions) ORDER BY bnumber, cnumber, vnumber")
+                defer { sqlite3_finalize(statement) }
+                for (index, reference) in batch.enumerated() {
+                    try reader.bind(reference.coordinate.book, at: Int32(index * 3 + 1), to: statement)
+                    try reader.bind(reference.chapter, at: Int32(index * 3 + 2), to: statement)
+                    try reader.bind(reference.verse, at: Int32(index * 3 + 3), to: statement)
+                }
+                results += try reader.read(statement)
+            }
+            return results
+        }
+    }
+
+    func search(_ request: TextSearchRequest, after: VerseCoordinate? = nil, limit: Int = 101) async throws -> [AVerse] {
+        guard (1...10_000).contains(limit) else { throw BibleError.invalidData("Result limit is out of range.") }
+        return try await perform { reader in
+            var condition: String
+            var terms: [String]
+            switch request.kind {
+            case .phrase(let text):
+                condition = "verse LIKE ? ESCAPE '\\'"
+                terms = ["%" + Self.escapeLike(text) + "%"]
+            case .words(let expression): (condition, terms) = expression.toSQL()
+            }
+            var numbers: [Int] = []
+            if let books = request.filter.bookNumbers() {
+                condition = "(\(condition)) AND bnumber IN (\(Array(repeating: "?", count: books.count).joined(separator: ",")))"
+                numbers += books
+            }
+            if let after {
+                condition = "(\(condition)) AND (bnumber, cnumber, vnumber) > (?, ?, ?)"
+                numbers += [after.book, after.chapter, after.verse]
+            }
+            let statement = try reader.prepare("SELECT \(Self.columns) FROM bible WHERE \(condition) ORDER BY bnumber, cnumber, vnumber LIMIT ?")
+            defer { sqlite3_finalize(statement) }
+            for (index, term) in terms.enumerated() { try reader.bind(term, at: Int32(index + 1), to: statement) }
+            numbers.append(limit)
+            for (index, number) in numbers.enumerated() { try reader.bind(number, at: Int32(terms.count + index + 1), to: statement) }
+            return try reader.read(statement)
+        }
+    }
+
+    static func escapeLike(_ text: String) -> String {
+        text.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
+    }
+}
+
+/// Combining marks and joiners are part of a word, including Malayalam conjuncts.
+final class WordMatcher {
+    private let expression: NSRegularExpression
+    init(term: String) throws {
+        let literal = NSRegularExpression.escapedPattern(for: term.precomposedStringWithCanonicalMapping)
+        let word = #"[\p{L}\p{M}\p{N}_\x{200C}\x{200D}]"#
+        expression = try NSRegularExpression(pattern: "(?<!\(word))\(literal)(?!\(word))", options: .caseInsensitive)
+    }
+    func matches(_ text: String) -> Bool {
+        let normalized = text.precomposedStringWithCanonicalMapping
+        return expression.firstMatch(in: normalized, range: NSRange(normalized.startIndex..., in: normalized)) != nil
     }
 }

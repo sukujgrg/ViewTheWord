@@ -60,9 +60,6 @@ func resolveProjectorTargetScreen(preferredDisplayID: Int = 0) -> NSScreen? {
        let match = screens.first(where: { $0.displayID == preferredDisplayID }) {
         return match
     }
-    if preferredDisplayID != 0 {
-        logger.warning("Preferred projector screen (displayID \(preferredDisplayID)) not found, falling back")
-    }
     return screens.last ?? NSScreen.main
 }
 
@@ -102,10 +99,10 @@ extension View {
         return window
     }
 
-    func openNewWindow(with title: String = "new Window") {
+    func openNewWindow(with title: String = "new Window") -> NSWindow? {
         guard let window = newWindowInternal(with: title) else {
             logger.error("Failed to create projector window")
-            return
+            return nil
         }
         let priorKeyWindow = NSApplication.shared.keyWindow
         let hostView = NSHostingView(rootView: self)
@@ -129,5 +126,6 @@ extension View {
         if let priorKeyWindow, priorKeyWindow != window {
             priorKeyWindow.makeKey()
         }
+        return window
     }
 }

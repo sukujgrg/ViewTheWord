@@ -1,25 +1,46 @@
 # ViewTheWord - Agent Guide (Current)
 
-## ViewTheWord Working Memory (2026-02-19)
+## ViewTheWord Working Memory (2026-09-09)
 
 This document is the current source of truth for this repo.
 
+### Review implementation (2026-09-07)
+- `Core/VerseTargetModel.swift` owns lazy database readers, cancellable navigation/search work, and projection preparation through `BibleReading`. It never opens a window or publishes live content.
+- `verseTargetModel.verseQuery` is computed from one published navigation snapshot containing the selected reference, complete chapter rows, and `BibleSources`. Verse rows emit full `VerseReference` intents; Option-Up/Down delegates chapter loading to MainWorkspaceController.
+- Browsing/search and live projection refresh are independent. Only a newer projection intent or close invalidates projection work; canceling a verse submission also cancels its own pending projection. `MainWorkspaceController` remains the sole publisher and lifecycle owner. Keep the deferred close cleanup and its revision/window-identity guard.
+- Text searches merge by coordinates across both translations, fetch counterpart text, and use cursor pagination (100 results plus a lookahead). SQL selects four named columns; imported `id` and column order are irrelevant. Words use Unicode boundaries and NOT > AND > OR, with implicit AND and strict syntax errors.
+- `Core/BibleLibrary.swift` provides one shared observable import/translation library. Imports snapshot committed SQLite/WAL data, normalize to standalone journal mode, validate coordinates and canonical coverage, create a unique coordinate index, and atomically install. Replacement is explicit; removal uses Trash.
+- `Core/Persistence.swift` contains history/bookmark stores, recovery copies for unreadable data, visible errors, and undoable bookmark clearing. Defaults and projector types live in AppConstants/Core.
+- Preserve preferred display IDs when disconnected. MainWorkspaceController owns the projector window reference. Blank hides the content; preview uses display proportions. Text fitting uses AppKit measurement followed by SwiftUI natural-height checks; do not reintroduce a fixed ten-line cap.
+- Xcode's ordinary version comes from `Config/Version.xcconfig`, generated with `scripts/set-version.sh` from VERSION. Release preflight requires a clean tree and matching tag/HEAD; publication additionally verifies GitHub's tag and refuses to overwrite a release.
+- Regression commands: `swift test --scratch-path build/SwiftPM` and `python3 scripts/test-review-regressions.py`. Offscreen projector checks: `scripts/render-projector-review.sh`. See `docs/review-implementation-2026-09-07.md` and `docs/manual-validation.md` for coverage and remaining manual checks.
+
 ### Session handoff note (latest)
+- The main workspace is entirely AppKit. `ViewTheWordApp` starts `NSApplication`; `MainWindowController` owns the main window and `MainWorkspaceController` owns navigation orchestration and live projection. Settings, help, preview, and projected content remain isolated SwiftUI screens.
+- `AppKit/NativeSidebar.swift` provides native book, bookmark, and history rows. Bookmarks and History have separate, resizable panes. Same-row mouse activation remains explicit.
+- `AppKit/ChapterGridController.swift` provides an adaptive `NSCollectionView` of chapter-number buttons. Column count follows available width, with no fixed three-column layout. Arrow keys use native spatial navigation; Command-Left/Right changes workspace columns.
+- `NativeReferenceTable.swift` provides native verse and search-result tables. `NativeSearchField.swift` supplies the real `NSSearchToolbarItem` field. There are no SwiftUI representables or focus bindings in the workspace.
+- Applying snapshots is silent. Native controls own focus; model updates never request first responder. Explicit navigation commands may request focus when their navigation completes. Keep complete `VerseReference` identities and direct chapter navigation without parsing.
+- Vertical pane stacks use explicit cross-axis width constraints. `NSStackView.alignment = .width` is invalid and can leave saved-reference content floating within a resized pane. `WorkspaceColumnStack` restores its width constraints when hidden rows reattach.
+- Native table rows use automatic heights from constrained `NSTextField`s. Do not query/reconfigure row views inside selection delegates. Coalesce resize-driven height invalidation after `Task.yield()` and disable implicit height animation.
+- A new chapter-data UUID reveals a resubmitted verse; bookmark-only refreshes preserve scroll. Grid reveal runs after collection layout, uses `.nearestHorizontalEdge` for vertical scrolling, and preserves a visible selected chapter when column count changes.
+- Ordinary verse selection projects; search-result arrow selection does not project until Return/Space or a click. Space compares the actual projected reference. Book and chapter browsing do not project. Activating a bookmark or history entry loads, selects, and projects that reference in one action, including same-row reactivation. Replaying saved references does not capture history.
+- First-click validation now runs in `scripts/render-navigation-review.sh` with a real `NSApplication.run()` loop and key `NSWindow`. It dispatches book-to-chapter clicks through `window.sendEvent`, checks four books, spatial grid arrows, toolbar command routing, adaptive widths, and bilingual rendering. The old mocked-key-window/direct-table-mouse regression was removed.
+- Physical OS-delivered clicks, VoiceOver, and external-display checks still require the manual checks in `docs/manual-validation.md`. Computer-use permissions were unavailable during this migration; do not describe window-dispatched synthetic events as physical clicks. Native macOS glass is not fully captured by offscreen view caching.
+- See `docs/native-workspace-2026-09-09.md` for the migration and review boundary.
 - Projection ownership is now explicit and centralized:
-  - `MainView` is the only place that sets projected content.
+  - `MainWorkspaceController` is the only place that sets projected content.
   - `ProjectorViewModel` projection writes go through `project(_:owner:)` and clear through `clearProjection()`.
   - Ownership is typed as `ProjectionOwner` (`textInputTarget`, `verseRowSelection`, `searchResult`).
-- `VerseRowView` no longer mutates projector state/window directly:
-  - It emits intents only (`onProjectVerse`, `onStopProjection`).
-  - Parent (`MainView`) performs project/open/close actions.
+- Workspace controls emit navigation/projection intents to the root controller. Do not publish projection from a row, sidebar, grid item, or settings screen.
 - Book/Chapter/Verse boundaries are explicit:
   - `VerseBoundary` and `VerseReference` validate/normalize references.
-  - Row projection rejects out-of-range verse indices for current chapter.
+  - Row projection rejects references that are absent from the current chapter.
 - ESC close for projection uses a dual-path deferred flow:
-  - **Main window key (normal case):** ESC → SwiftUI `onExitCommand` on `MainView` → `closeProjector()` → `window.close()` → `willCloseNotification` → deferred state cleanup.
-  - **Projector window key (rare):** ESC → `ProjectorWindow.cancelOperation` → deferred `DispatchQueue.main.async` posts `.closeProjectorRequested` notification → `MainView` receives → `closeProjector()` → same path.
+  - **Main window key (normal case):** ESC → native responder close intent → `MainWorkspaceController.closeProjector()` → `window.close()` → `willCloseNotification` → deferred state cleanup.
+  - **Projector window key (rare):** ESC → `ProjectorWindow.cancelOperation` → deferred `DispatchQueue.main.async` posts `.closeProjectorRequested` notification → `MainWorkspaceController` receives → `closeProjector()` → same path.
   - State cleanup (`clearProjection`, `windowOpened = false`) is always deferred via `DispatchQueue.main.async` in `handleProjectorWindowClosed()` to avoid re-entrant SwiftUI/AppKit constraint updates during window teardown.
-  - `ProjectorView` has no `onDisappear` teardown and no `@Binding windowOpened` — all projector lifecycle is owned by `MainView`.
+  - `ProjectorView` has no `onDisappear` teardown and no `@Binding windowOpened` — all projector lifecycle is owned by `MainWorkspaceController`.
   - Do not use `performClose(nil)` on the projector window — it silently fails on borderless windows (no visible close button). Use `close()` instead.
   - Do not call `close()` directly from `ProjectorWindow.keyDown`/`cancelOperation` — this causes AppKit/SwiftUI constraint crashes during event handling. Always defer to next runloop tick.
 - HDMI/screen-change projection hardening (learned from `eucaly` patterns):
@@ -33,13 +54,10 @@ This document is the current source of truth for this repo.
   - Verse list always auto-scrolls to the targeted verse (for text-field verse queries like `Psalm 119:53`).
 - History flow has explicit boundaries now:
   - Removed history from right-click context menu.
-  - History UI is a collapsible section in the chapter column (below chapters).
+  - History has its own resizable native pane below the chapter grid and bookmarks.
   - History persistence is file-backed (`HistoryStore`) instead of `@AppStorage([String])`.
   - History capture is source-gated: only direct text-field submit records verse history.
-  - Bookmark/History row activation is explicit and consistent:
-    - rows use explicit `Button` activation for mouse clicks (single click always navigates)
-    - `List(selection:)` remains for keyboard navigation
-    - tap-activation dedupe state (`bookmarkTapActivatedID`, `historyTapActivatedID`) prevents double-dispatch when selection `onChange` also fires
+  - Bookmark/History row selection handles keyboard navigation; explicit same-row mouse activation handles returning to the selected reference.
 - Semantic/AI search has been removed:
   - No embeddings/OpenAI pipeline remains in runtime, parser, or settings.
   - Search supports verse lookup and SQLite-backed text search (`s:` phrase / `m:` multi-term) only.
@@ -58,8 +76,14 @@ This document is the current source of truth for this repo.
 
 ### Current app structure (actual code)
 - Entry: `ViewTheWord/ViewTheWordApp.swift`
-- Main orchestration: `ViewTheWord/ContentView.swift` (`MainView`)
-- Verse list + keyboard navigation + projector trigger: `ViewTheWord/VerseRowView.swift`
+- Main window and commands: `ViewTheWord/AppKit/MainWindowController.swift`
+- Main orchestration: `ViewTheWord/AppKit/MainWorkspaceController.swift`
+- Native layout, toolbar, and options: `ViewTheWord/AppKit/WorkspaceInterface.swift`, `WorkspaceOptions.swift`
+- Native chapter grid: `ViewTheWord/AppKit/ChapterGridController.swift`
+- Book, bookmark, and history rows: `ViewTheWord/AppKit/NativeSidebar.swift`
+- Verse/results rows: `ViewTheWord/NativeReferenceTable.swift`
+- Projector lifecycle and preview: `ViewTheWord/AppKit/WorkspaceProjection.swift`
+- Native query editing, recents, and search commands: `ViewTheWord/NativeSearchField.swift`
 - Projected output view: `ViewTheWord/ProjectorView.swift`
 - Search parsing: `ViewTheWord/RxVerse.swift`
 - Bible DB access: `ViewTheWord/Db.swift`
@@ -67,15 +91,17 @@ This document is the current source of truth for this repo.
 
 ### Non-negotiable state ownership
 - `verseTargetModel.verseQuery` is the current selected verse source of truth across views.
-- projected content ownership is `MainView` + `ProjectorViewModel.project(_:owner:)`; do not directly assign projector payload from child views.
+- projected content ownership is `MainWorkspaceController` + `ProjectorViewModel.project(_:owner:)`; do not directly assign projector payload from child views.
 - Keep projector window title centralized: `AppWindowTitle.projector`.
 - Keep cross-view notifications centralized in `Notification.Name` extensions (`.focusSearchField`, `.toggleKeyboardShortcuts`, `.closeProjectorRequested`).
 
 ### Query/search flow lessons
+- Verse rows and scrolling anchors must use complete verse coordinates as identity. Positional `.id(index)` can leave stale row content and highlights after changing chapters or books.
+- Verse and current-chapter highlights follow the selected navigation reference, independently of projection and keyboard focus. Space checks the projected reference when deciding whether to stop or project.
 - Do not use bool toggling for validation animation triggers.
 - Use monotonic token (`queryValidationToken`) for deterministic invalid-query feedback.
 - Do not use “flag + async reset” hacks for sidebar sync.
-- Use explicit programmatic guard (`programmaticChapterSelection`) to prevent onChange feedback loops.
+- Use the native controllers' snapshot guards to prevent programmatic selection feedback loops. Do not restore chapter selection `onChange` navigation in SwiftUI.
 - Chapter selection must not round-trip through text parsing:
   - chapter click should navigate directly via `VerseReference(book, chapter, verse: 1)`
   - avoid parser involvement in this flow to prevent stale/ambiguous selection state
@@ -84,14 +110,14 @@ This document is the current source of truth for this repo.
 ### SwiftUI safety lessons
 - Avoid hidden controls for keyboard shortcuts.
 - Avoid `DispatchQueue.main.async` as a generic fix for publish-during-update warnings. The one justified use is `handleProjectorWindowClosed()` where `willCloseNotification` fires synchronously during `close()` and SwiftUI state mutation would re-enter the update cycle.
-- For verse auto-scroll, defer one render pass with `Task.yield()` and scroll intentionally.
+- Verse auto-scroll belongs to the native table. Reveal explicit navigation requests; coalesce resize-driven height updates after one layout pass with `Task.yield()`.
 - Break complex `body` expressions into small subviews when type-checking slows down (e.g., `SearchResultRowView`).
-- `List(selection:)` `onChange` does not fire when clicking an already selected row; for deterministic activation, use explicit row `Button` handlers and keep selection `onChange` for keyboard paths.
 - Do not place continuously dragged `Slider` controls inside `List` rows for this app's settings screen; prefer `VStack`/`GroupBox` layout with draft state + commit-on-edit-end to avoid sticky drag and heavy re-layout.
 
 ### Styling/HIG lessons
 - Never hardcode blue for selection/highlight.
 - Use accent-aware styling (`.accentColor` / `.foregroundColor(.accentColor)`).
+- Keep loading feedback in the existing Live/Preview/Blank/Stop row with space reserved while idle. Use a static label; conditional spinners or extra progress rows above the verse table cause distracting layout shifts.
 
 ### Database/concurrency constraints
 - `Bible` is queue-confined and marked `@unchecked Sendable`.
@@ -122,4 +148,4 @@ This document is the current source of truth for this repo.
 - In sandboxed environments, unrestricted build may be required because Xcode/SwiftPM cache paths are outside workspace.
 
 ### Remaining architectural debt to watch
-- Keep projector lifecycle ownership in `MainView`; do not reintroduce direct projector window/state mutation in `VerseRowView`.
+- Keep projector lifecycle ownership in `MainWorkspaceController`. The user explicitly excluded introducing a projector `NSWindowController`; the main window has its own controller.

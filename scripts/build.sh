@@ -32,7 +32,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-TMP="$(mktemp -d "${TMPDIR%/}/ViewTheWord.XXXXXX")"
+cd "$(dirname "$0")/.."
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/ViewTheWord.XXXXXX")"
+trap 'rm -rf "$TMP"' EXIT
 ARCHIVE_PATH="$TMP/ViewTheWord.xcarchive"
 EXPORT_PLIST="$TMP/ViewTheWord-export.plist"
 EXPORT_PATH="$HOME/Applications"

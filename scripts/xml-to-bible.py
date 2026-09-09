@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import argparse
+import os
+import tempfile
 import re
 import sqlite3
 import sys
@@ -328,7 +330,14 @@ def validate_output_file_name(output_path: Path) -> None:
 
 def validate_parsed_for_import(verses: Sequence[Tuple[int, int, int, str]]) -> None:
     by_book: Dict[int, set] = {}
-    for book, chapter, _, _ in verses:
+    coordinates = set()
+    for book, chapter, verse, text in verses:
+        if not all(type(value) is int and 1 <= value <= 2147483647 for value in (book, chapter, verse)) or not isinstance(text, str):
+            raise ValueError("Verse coordinates must be positive 32-bit integers and verse text must be a string.")
+        key = (book, chapter, verse)
+        if key in coordinates:
+            raise ValueError(f"Duplicate verse coordinates: {key}")
+        coordinates.add(key)
         by_book.setdefault(book, set()).add(chapter)
 
     actual_book_numbers = set(by_book.keys())
@@ -362,12 +371,14 @@ def write_sqlite(
     title: str,
     overwrite: bool,
 ) -> None:
-    if output_path.exists():
-        if not overwrite:
-            raise FileExistsError(f"{output_path} already exists. Use --overwrite to replace.")
-        output_path.unlink()
-
-    connection = sqlite3.connect(output_path)
+    validate_parsed_for_import(verses)
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(f"{output_path} already exists. Use --overwrite to replace.")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".bible-", dir=output_path.parent)
+    os.close(descriptor)
+    temporary_path = Path(temporary_name)
+    connection = sqlite3.connect(temporary_path)
     try:
         cursor = connection.cursor()
         cursor.execute(
@@ -413,9 +424,18 @@ def write_sqlite(
             "INSERT INTO meta (biblename, title, source, rights) VALUES (?, ?, ?, ?)",
             (title, title, "", ""),
         )
+        cursor.execute("CREATE UNIQUE INDEX vtw_verse_coordinates ON bible(bnumber, cnumber, vnumber)")
         connection.commit()
+        connection.close()
+        validate_sqlite_for_import(temporary_path)
+        if overwrite:
+            os.replace(temporary_path, output_path)
+        else:
+            # Atomic no-replace publication, even if another process created the output.
+            os.link(temporary_path, output_path)
     finally:
         connection.close()
+        temporary_path.unlink(missing_ok=True)
 
 
 def validate_sqlite_for_import(output_path: Path) -> None:

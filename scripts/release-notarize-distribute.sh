@@ -205,6 +205,7 @@ if [[ -z "$NOTARY_PROFILE" ]]; then
   fail "--notary-profile is required"
 fi
 
+TAG="${TAG#refs/tags/}"
 if [[ -n "$TAG" ]]; then
   TAG_VERSION="$(derive_version_from_tag "$TAG" || true)"
   [[ -n "$TAG_VERSION" ]] || fail "Tag '$TAG' is not a valid release tag. Use vX.Y.Z or vX.Y.Z+BUILD."
@@ -254,6 +255,10 @@ if [[ "$SKIP_VERSION_FILE_CHECK" == false ]]; then
   [[ "$VERSION_FILE_VALUE" == "$VERSION" ]] || fail "VERSION file ($VERSION_FILE_VALUE) does not match release version ($VERSION). Update VERSION first."
 fi
 
+require_command git
+[[ -n "$TAG" ]] || TAG="v$VERSION"
+SOURCE_COMMIT="$("$(dirname "$0")/verify-release-source.sh" "$TAG")" || fail "Source verification failed."
+
 require_command xcodebuild
 require_command xcrun
 require_command ditto
@@ -261,9 +266,15 @@ require_command shasum
 
 if [[ "$PUBLISH_GITHUB" == true ]]; then
   require_command gh
+  [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "Invalid GitHub repository slug."
+  REMOTE_TAG_COMMIT="$(gh api "repos/$REPO/commits/tags/$TAG" --jq .sha)" || fail "Release tag must already exist on GitHub."
+  [[ "$REMOTE_TAG_COMMIT" == "$SOURCE_COMMIT" ]] || fail "GitHub tag does not match the verified local source."
+  if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+    fail "A release already exists for $TAG. Existing release artifacts will not be overwritten."
+  fi
 fi
 
-TMP_DIR="$(mktemp -d "${TMPDIR%/}/ViewTheWordRelease.XXXXXX")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ViewTheWordRelease.XXXXXX")"
 ARCHIVE_PATH="$TMP_DIR/$SCHEME.xcarchive"
 EXPORT_PATH="$TMP_DIR/export"
 EXPORT_PLIST="$TMP_DIR/exportOptions.plist"
@@ -306,7 +317,7 @@ if [[ -n "$SIGNING_IDENTITY" ]]; then
   BUILD_ARGS+=("CODE_SIGN_IDENTITY=$SIGNING_IDENTITY")
 fi
 
-BUILD_ARGS+=("MARKETING_VERSION=$VERSION")
+BUILD_ARGS+=("MARKETING_VERSION=$VERSION" "VTW_SOURCE_COMMIT=$SOURCE_COMMIT")
 
 if [[ -n "$BUILD_NUMBER" ]]; then
   BUILD_ARGS+=("CURRENT_PROJECT_VERSION=$BUILD_NUMBER")
@@ -335,6 +346,9 @@ fi
 echo "==> Archiving ($SCHEME $CONFIGURATION)"
 "${ARCHIVE_CMD[@]}"
 
+VERIFIED_COMMIT="$("$(dirname "$0")/verify-release-source.sh" "$TAG")" || fail "Source changed during the archive build."
+[[ "$VERIFIED_COMMIT" == "$SOURCE_COMMIT" ]] || fail "Source commit changed during the archive build."
+
 echo "==> Exporting signed app"
 xcodebuild \
   -exportArchive \
@@ -349,6 +363,7 @@ APP_NAME="$(basename "$APP_PATH" .app)"
 NOTARIZE_ZIP="$TMP_DIR/$APP_NAME-$VERSION-notary.zip"
 FINAL_ZIP="$OUTPUT_DIR/$APP_NAME-$VERSION-notarized.zip"
 FINAL_SHA="$FINAL_ZIP.sha256"
+FINAL_SOURCE="$FINAL_ZIP.source.txt"
 FINAL_APP="$OUTPUT_DIR/$APP_NAME.app"
 
 echo "==> Creating zip for notarization"
@@ -375,24 +390,24 @@ rm -rf "$FINAL_APP"
 cp -R "$APP_PATH" "$FINAL_APP"
 ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$FINAL_ZIP"
 shasum -a 256 "$FINAL_ZIP" > "$FINAL_SHA"
+printf 'source_commit=%s\ntag=%s\nversion=%s\n' "$SOURCE_COMMIT" "$TAG" "$VERSION" > "$FINAL_SOURCE"
 
 if [[ "$PUBLISH_GITHUB" == true ]]; then
   echo "==> Publishing to GitHub release: $REPO ($TAG)"
-  if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
-    gh release upload "$TAG" "$FINAL_ZIP" "$FINAL_SHA" --repo "$REPO" --clobber
+  VERIFIED_COMMIT="$("$(dirname "$0")/verify-release-source.sh" "$TAG")" || fail "Source changed during the release build."
+  [[ "$VERIFIED_COMMIT" == "$SOURCE_COMMIT" ]] || fail "Source commit changed during the release build."
+  REMOTE_TAG_COMMIT="$(gh api "repos/$REPO/commits/tags/$TAG" --jq .sha)" || fail "Could not recheck the GitHub tag."
+  [[ "$REMOTE_TAG_COMMIT" == "$SOURCE_COMMIT" ]] || fail "GitHub tag changed during the release build."
+  CREATE_ARGS=(
+    gh release create "$TAG" "$FINAL_ZIP" "$FINAL_SHA" "$FINAL_SOURCE"
+    --repo "$REPO" --verify-tag --title "$APP_NAME $VERSION"
+  )
+  if [[ -n "$NOTES_FILE" ]]; then
+    CREATE_ARGS+=(--notes-file "$NOTES_FILE")
   else
-    CREATE_ARGS=(
-      gh release create "$TAG" "$FINAL_ZIP" "$FINAL_SHA"
-      --repo "$REPO"
-      --title "$APP_NAME $VERSION"
-    )
-    if [[ -n "$NOTES_FILE" ]]; then
-      CREATE_ARGS+=(--notes-file "$NOTES_FILE")
-    else
-      CREATE_ARGS+=(--notes "Automated notarized release $VERSION")
-    fi
-    "${CREATE_ARGS[@]}"
+    CREATE_ARGS+=(--notes "Notarized release $VERSION from source commit $SOURCE_COMMIT")
   fi
+  "${CREATE_ARGS[@]}"
 fi
 
 echo

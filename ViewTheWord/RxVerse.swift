@@ -1,326 +1,227 @@
 import Foundation
 
-enum SearchMode: String, CaseIterable {
-    case verseReference
-    case wordSearch
-    case phraseSearch
+enum SearchMode: String, CaseIterable, Sendable {
+    case verseReference, wordSearch, phraseSearch
 }
 
-enum SearchType {
+enum SearchType: Sendable {
     case verse(VerseQuery)
-    case phrase(String, filter: SearchFilter)  // Phrase mode - exact phrase search
-    case multiTerm(String, filter: SearchFilter)  // Words mode - search with AND/OR/NOT
+    case text(TextSearchRequest)
 }
 
-enum SearchFilter: Sendable {
-    case all
-    case oldTestament
-    case newTestament
-    case book(String)
+enum SearchFilter: Equatable, Sendable {
+    case all, oldTestament, newTestament, book(String)
 
     func bookNumbers() -> [Int]? {
         switch self {
-        case .all:
-            return nil
-        case .oldTestament:
-            return Array(1...39) // First 39 books
-        case .newTestament:
-            return Array(40...66) // Books 40-66
-        case .book(let bookName):
-            return bibleBooks[bookName]?.first.map { [$0] }
+        case .all: return nil
+        case .oldTestament: return Array(1...39)
+        case .newTestament: return Array(40...66)
+        case .book(let name): return bibleBooks[name]?.first.map { [$0] }
         }
     }
 }
 
-// Search expression tree for parsing complex queries
-indirect enum SearchExpression {
-    case term(String)
-    case and([SearchExpression])
-    case or([SearchExpression])
-    case not(SearchExpression)
+enum QueryError: LocalizedError, Equatable {
+    case invalidReference, unknownBook, invalidExpression(String), tooLong
+    var errorDescription: String? {
+        switch self {
+        case .invalidReference: return "Check the reference and try again, for example John 3:16."
+        case .unknownBook: return "That book name wasn't recognized. Try its full name."
+        case .invalidExpression(let detail): return "Words search: \(detail)"
+        case .tooLong: return "The search is too complex. Use at most 4,096 characters, 256 terms/operators, and 32 nested groups."
+        }
+    }
+}
+
+struct TextSearchRequest: Equatable, Sendable {
+    enum Kind: Equatable, Sendable {
+        case phrase(String), words(SearchExpression)
+    }
+    let text: String
+    let filter: SearchFilter
+    let kind: Kind
+}
+
+indirect enum SearchExpression: Equatable, Sendable {
+    case term(String), and([SearchExpression]), or([SearchExpression]), not(SearchExpression)
 
     func toSQL() -> (whereClause: String, terms: [String]) {
         switch self {
-        case .term(let word):
-            // Match whole words only by checking for word boundaries
-            // Checks for: word at start, word at end, word in middle, or word with punctuation
-            let clauses = [
-                "verse LIKE ?",  // word at start followed by space or punctuation
-                "verse LIKE ?",  // word at end preceded by space or punctuation
-                "verse LIKE ?",  // word in middle surrounded by spaces
-                "verse LIKE ?",  // word followed by punctuation
-                "verse LIKE ?",  // word preceded by punctuation
-                "verse LIKE ?"   // word surrounded by punctuation
-            ]
-            let clause = "(" + clauses.joined(separator: " OR ") + ")"
-
-            let terms = [
-                "\(word) %",     // at start
-                "% \(word)",     // at end
-                "% \(word) %",   // in middle
-                "% \(word),%",   // before comma
-                "% \(word).%",   // before period
-                "% \(word);%"    // before semicolon
-            ]
-
-            return (clause, terms)
-
-        case .and(let expressions):
-            let sqlParts = expressions.map { $0.toSQL() }
-            let clauses = sqlParts.map { "(\($0.whereClause))" }.joined(separator: " AND ")
-            let terms = sqlParts.flatMap { $0.terms }
-            return (clauses, terms)
-
-        case .or(let expressions):
-            let sqlParts = expressions.map { $0.toSQL() }
-            let clauses = sqlParts.map { "(\($0.whereClause))" }.joined(separator: " OR ")
-            let terms = sqlParts.flatMap { $0.terms }
-            return (clauses, terms)
-
-        case .not(let expression):
-            let sql = expression.toSQL()
-            return ("NOT (\(sql.whereClause))", sql.terms)
+        case .term(let word): return ("word_matches(verse, ?) = 1", [word])
+        case .and(let children), .or(let children):
+            let parts = children.map { $0.toSQL() }
+            let separator: String
+            if case .and = self { separator = " AND " } else { separator = " OR " }
+            return (parts.map { "(\($0.whereClause))" }.joined(separator: separator), parts.flatMap(\.terms))
+        case .not(let child):
+            let part = child.toSQL()
+            return ("NOT (\(part.whereClause))", part.terms)
         }
     }
 }
 
-class SearchParser {
-    private let query: String
-    private var tokens: [String] = []
-    private var currentIndex = 0
+/// NOT binds before AND (including adjacent words), which binds before OR.
+struct SearchParser {
+    private enum Token: Equatable { case word(String), and, or, not, open, close }
+    let query: String
+    private var tokens: [Token] = []
+    private var index = 0
 
-    init(query: String) {
-        self.query = query
-        self.tokenize()
+    init(query: String) { self.query = query }
+
+    func parse() throws -> SearchExpression {
+        guard query.count <= 4_096 else { throw QueryError.tooLong }
+        var parser = self
+        parser.tokens = try Self.tokenize(query)
+        guard !parser.tokens.isEmpty else { throw QueryError.invalidExpression("enter at least one word.") }
+        let result = try parser.parseOr(depth: 0)
+        guard parser.index == parser.tokens.count else { throw QueryError.invalidExpression("unexpected closing parenthesis.") }
+        return result
     }
 
-    private func tokenize() {
-        // Split by spaces but respect parentheses
-        var currentToken = ""
+    private static func tokenize(_ text: String) throws -> [Token] {
+        var result: [Token] = []
+        var word = ""
+        var quoted = false
+        func flush(literal: Bool = false) {
+            guard !word.isEmpty else { return }
+            if literal { result.append(.word(word)) }
+            else {
+                switch word.uppercased() {
+                case "AND": result.append(.and)
+                case "OR": result.append(.or)
+                case "NOT": result.append(.not)
+                default: result.append(.word(word))
+                }
+            }
+            word = ""
+        }
+        for character in text {
+            if character == "\"" {
+                if quoted {
+                    guard !word.isEmpty else { throw QueryError.invalidExpression("empty quoted term.") }
+                    flush(literal: true)
+                } else { flush() }
+                quoted.toggle()
+            } else if quoted { word.append(character) }
+            else if character.isWhitespace { flush() }
+            else if character == "(" || character == ")" {
+                flush()
+                result.append(character == "(" ? .open : .close)
+            } else { word.append(character) }
+            guard result.count <= 256 else { throw QueryError.tooLong }
+        }
+        guard !quoted else { throw QueryError.invalidExpression("close the quotation mark.") }
+        flush()
+        guard result.count <= 256 else { throw QueryError.tooLong }
+        return result
+    }
 
-        for char in query {
-            if char == "(" || char == ")" {
-                if !currentToken.isEmpty {
-                    tokens.append(currentToken.trimmingCharacters(in: .whitespaces))
-                    currentToken = ""
-                }
-                tokens.append(String(char))
-            } else if char == " " {
-                if !currentToken.isEmpty {
-                    tokens.append(currentToken.trimmingCharacters(in: .whitespaces))
-                    currentToken = ""
-                }
-            } else {
-                currentToken.append(char)
+    private mutating func consume(_ token: Token) -> Bool {
+        guard index < tokens.count, tokens[index] == token else { return false }
+        index += 1
+        return true
+    }
+
+    private mutating func parseOr(depth: Int) throws -> SearchExpression {
+        var children = [try parseAnd(depth: depth)]
+        while consume(.or) { children.append(try parseAnd(depth: depth)) }
+        return children.count == 1 ? children[0] : .or(children)
+    }
+
+    private mutating func parseAnd(depth: Int) throws -> SearchExpression {
+        var children = [try parseUnary(depth: depth)]
+        while index < tokens.count {
+            if consume(.and) { children.append(try parseUnary(depth: depth)); continue }
+            switch tokens[index] {
+            case .word, .open, .not: children.append(try parseUnary(depth: depth))
+            default: return children.count == 1 ? children[0] : .and(children)
             }
         }
-
-        if !currentToken.isEmpty {
-            tokens.append(currentToken.trimmingCharacters(in: .whitespaces))
-        }
+        return children.count == 1 ? children[0] : .and(children)
     }
 
-    func parse() -> SearchExpression? {
-        guard !tokens.isEmpty else { return nil }
-        currentIndex = 0
-        return parseExpression()
-    }
-
-    private func parseExpression() -> SearchExpression? {
-        var left = parseTerm()
-
-        while currentIndex < tokens.count {
-            let token = tokens[currentIndex].uppercased()
-
-            if token == "AND" {
-                currentIndex += 1
-                guard let right = parseTerm() else { return left }
-                if case .and(var expressions) = left {
-                    expressions.append(right)
-                    left = .and(expressions)
-                } else if let leftExpr = left {
-                    left = .and([leftExpr, right])
-                } else {
-                    left = right
-                }
-            } else if token == "OR" {
-                currentIndex += 1
-                guard let right = parseTerm() else { return left }
-                if case .or(var expressions) = left {
-                    expressions.append(right)
-                    left = .or(expressions)
-                } else if let leftExpr = left {
-                    left = .or([leftExpr, right])
-                } else {
-                    left = right
-                }
-            } else {
-                break
-            }
+    private mutating func parseUnary(depth: Int) throws -> SearchExpression {
+        guard depth < 32 else { throw QueryError.tooLong }
+        if consume(.not) { return .not(try parseUnary(depth: depth + 1)) }
+        if consume(.open) {
+            let value = try parseOr(depth: depth + 1)
+            guard consume(.close) else { throw QueryError.invalidExpression("close the parenthesis.") }
+            return value
         }
-
-        return left
-    }
-
-    private func parseTerm() -> SearchExpression? {
-        guard currentIndex < tokens.count else { return nil }
-
-        let token = tokens[currentIndex]
-
-        // Handle NOT operator
-        if token.uppercased() == "NOT" {
-            currentIndex += 1
-            guard let expr = parseTerm() else { return nil }
-            return .not(expr)
+        guard index < tokens.count, case .word(let word) = tokens[index] else {
+            throw QueryError.invalidExpression("an operator or group is missing a word.")
         }
-
-        // Handle parentheses
-        if token == "(" {
-            currentIndex += 1
-            let expr = parseExpression()
-            if currentIndex < tokens.count && tokens[currentIndex] == ")" {
-                currentIndex += 1
-            }
-            return expr
-        }
-
-        // Handle regular term
-        if token != ")" && !["AND", "OR", "NOT"].contains(token.uppercased()) {
-            currentIndex += 1
-            return .term(token)
-        }
-
-        return nil
+        index += 1
+        return .term(word)
     }
 }
 
-class SearchQuery {
+struct SearchQuery {
     let ask: String
-    private static let verseAskRegexPattern =
-        #"(?<series>[1-3])?[^a-zA-Z0-9]*"#
-        + #"(?<book>[a-zA-Z]+)\D*"#
-        + #"(?<chapter>\d+)?"#
-        + #"((?:\D+)(?<verse>\d+))?"#
-    private static let verseAskRegex = try? NSRegularExpression(pattern: verseAskRegexPattern, options: [])
+    private static let referenceRegex = try! NSRegularExpression(
+        pattern: #"^\s*(?<series>[1-3])?\s*(?<book>[a-zA-Z]+(?:\s+[a-zA-Z]+)*?)\s*(?<chapter>[0-9]+)?(?:(?:\s*[:.]\s*|\s+)(?<verse>[0-9]+))?\s*$"#
+    )
 
-    init(ask: String) {
-        self.ask = ask
-    }
-
-    func searchType(mode: SearchMode) -> SearchType? {
-        switch mode {
-        case .verseReference:
-            guard let verseQuery = verseQuery() else { return nil }
-            return .verse(verseQuery)
-        case .wordSearch:
-            let normalized = normalizedSearchTextForMode()
-            guard !normalized.isEmpty else { return nil }
-            let (filter, query) = parseSearchFilter(searchText: normalized)
-            guard !query.isEmpty else { return nil }
-            return .multiTerm(query, filter: filter)
-        case .phraseSearch:
-            let normalized = normalizedSearchTextForMode()
-            guard !normalized.isEmpty else { return nil }
-            let (filter, query) = parseSearchFilter(searchText: normalized)
-            guard !query.isEmpty else { return nil }
-            return .phrase(query, filter: filter)
+    func searchType(mode: SearchMode) throws -> SearchType {
+        guard ask.count <= 4_096 else { throw QueryError.tooLong }
+        if mode == .verseReference { return .verse(try validatedVerseQuery()) }
+        var text = ask.trimmingCharacters(in: .whitespacesAndNewlines)
+        if ["s:", "v:", "m:"].contains(where: { text.lowercased().hasPrefix($0) }) {
+            text = String(text.dropFirst(2)).trimmingCharacters(in: .whitespacesAndNewlines)
         }
-    }
-
-    private func normalizedSearchTextForMode() -> String {
-        let trimmed = ask.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lowered = trimmed.lowercased()
-        if lowered.hasPrefix("s:") || lowered.hasPrefix("v:") || lowered.hasPrefix("m:") {
-            return String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        return trimmed
-    }
-
-    private func parseSearchFilter(searchText: String) -> (SearchFilter, String) {
-        let lowercased = searchText.lowercased()
-
-        // Check for testament filters
-        if lowercased.hasPrefix("ot:") {
-            let query = searchText.dropFirst(3).trimmingCharacters(in: .whitespaces)
-            return (.oldTestament, query)
-        }
-
-        if lowercased.hasPrefix("nt:") {
-            let query = searchText.dropFirst(3).trimmingCharacters(in: .whitespaces)
-            return (.newTestament, query)
-        }
-
-        // Check for book filter (e.g., "john: light")
-        if let colonIndex = searchText.firstIndex(of: ":") {
-            let bookPart = String(searchText[..<colonIndex]).trimmingCharacters(in: .whitespaces)
-            let queryPart = String(searchText[searchText.index(after: colonIndex)...]).trimmingCharacters(in: .whitespaces)
-
-            // Try to match book name
-            if let bookName = matchAsk(bookName: bookPart) {
-                return (.book(bookName), queryPart)
+        var filter: SearchFilter = .all
+        if let colon = text.firstIndex(of: ":") {
+            let prefix = String(text[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let selected: SearchFilter?
+            if prefix.lowercased() == "ot" { selected = .oldTestament }
+            else if prefix.lowercased() == "nt" { selected = .newTestament }
+            else { selected = matchAsk(bookName: prefix).map(SearchFilter.book) }
+            if let selected {
+                filter = selected
+                text = String(text[text.index(after: colon)...]).trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
-
-        return (.all, searchText)
+        guard !text.isEmpty else { throw QueryError.invalidExpression("enter some text to search.") }
+        let kind: TextSearchRequest.Kind = mode == .phraseSearch
+            ? .phrase(text) : .words(try SearchParser(query: text).parse())
+        return .text(TextSearchRequest(text: text, filter: filter, kind: kind))
     }
 
-    func verseQuery() -> VerseQuery? {
-        guard let formattedAsk = formatVerseAsk() else { return nil }
-        guard let bookName = matchAsk(bookName: formattedAsk.bookName) else { return nil }
-        return VerseQuery(
-            bookName: bookName, chapterNumber: formattedAsk.chapterNumber, verseNumber: formattedAsk.verseNumber
-        )
+    func verseQuery() -> VerseQuery? { try? validatedVerseQuery() }
+
+    func validatedVerseQuery() throws -> VerseQuery {
+        guard ask.count <= 4_096 else { throw QueryError.tooLong }
+        guard let match = Self.referenceRegex.firstMatch(in: ask, range: NSRange(ask.startIndex..., in: ask)) else {
+            throw QueryError.invalidReference
+        }
+        func capture(_ name: String) -> String? {
+            Range(match.range(withName: name), in: ask).map { String(ask[$0]) }
+        }
+        let rawBook = [capture("series"), capture("book")].compactMap { $0 }.joined(separator: " ")
+        guard let book = matchAsk(bookName: rawBook) else { throw QueryError.unknownBook }
+        func number(_ name: String) throws -> Int {
+            guard let raw = capture(name) else { return 1 }
+            guard let value = Int(raw), VerseBoundary.isValidVerse(value) else { throw QueryError.invalidReference }
+            return value
+        }
+        guard capture("verse") == nil || capture("chapter") != nil else { throw QueryError.invalidReference }
+        let chapter = try number("chapter")
+        let verse = try number("verse")
+        guard let reference = VerseReference(book: book, chapter: chapter, verse: verse) else {
+            throw QueryError.invalidReference
+        }
+        return reference.verseQuery
     }
 
     func matchAsk(bookName: String) -> String? {
-        for book in bibleBookNames {
-            if book.range(of: bookName, options: [.anchored, .caseInsensitive]) != nil {
-                return book
-            }
-        }
-        return nil
-    }
-
-    func formatVerseAsk() -> VerseQuery? {
-        let captureGroups = ["series", "book", "chapter", "verse"]
-
-        let strRange = NSRange(ask.startIndex ..< ask.endIndex, in: ask)
-
-        guard let nameRegex = Self.verseAskRegex else {
-            logger.error("Failed to compile verse query regex")
-            return nil
-        }
-
-        let matches = nameRegex.matches(in: ask, options: [], range: strRange)
-
-        var bookName: String?
-        var bookSeries = 0
-        var chapterNum = 1
-        var verseNum = 1
-
-        for match in matches {
-            for name in captureGroups {
-                let matchRange = match.range(withName: name)
-                if let substringRange = Range(matchRange, in: ask) {
-                    let part = ask[substringRange].trimmingCharacters(in: .whitespaces)
-                    if name == "book" {
-                        bookName = String(part)
-                    } else if name == "series" {
-                        bookSeries = Int(part) ?? bookSeries
-                    } else if name == "chapter" {
-                        chapterNum = Int(part) ?? chapterNum
-                    } else if name == "verse" {
-                        verseNum = Int(part) ?? verseNum
-                    }
-                }
-            }
-        }
-        if let book = bookName {
-            if bookSeries == 0 {
-                return VerseQuery(bookName: book, chapterNumber: chapterNum, verseNumber: verseNum)
-            }
-            return VerseQuery(bookName: "\(bookSeries) \(book)", chapterNumber: chapterNum, verseNumber: verseNum)
-        }
-        return nil
+        let key = bookName.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard !key.isEmpty else { return nil }
+        let aliases = ["psalms": "Psalm", "ps": "Psalm", "jn": "John", "phil": "Philippians", "phlm": "Philemon", "song of songs": "Song of Solomon"]
+        if let alias = aliases[key] { return alias }
+        if let exact = bibleBookNames.first(where: { $0.lowercased() == key }) { return exact }
+        // Preserve shorthand by choosing the first prefix match in Bible order.
+        return bibleBookNames.first { $0.lowercased().hasPrefix(key) }
     }
 }

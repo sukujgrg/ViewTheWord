@@ -125,3 +125,6 @@ fastlane/test_output
 iOSInjectionProject/
 
 # End of https://www.toptal.com/developers/gitignore/api/swift,macos
+
+# Local Python tooling caches
+__pycache__/
