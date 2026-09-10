@@ -232,11 +232,13 @@ final class NativeReferenceTableTests: XCTestCase {
         subject.scrollView.layoutSubtreeIfNeeded()
     }
 
-    private func waitForReveal(_ subject: NativeReferenceTableController, aligned: () -> Bool) async throws {
-        for _ in 0..<50 {
+    private func waitForReveal(_ subject: NativeReferenceTableController, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        repeat {
             try await settle(subject)
-            if aligned() { return }
-        }
+            if !subject.isRevealingSelection { return }
+        } while ContinuousClock.now < deadline
+        XCTFail("The pending verse reveal did not finish", file: file, line: line)
     }
 
     func testSnapshotRefreshDoesNotStealFocus() {
@@ -267,7 +269,7 @@ final class NativeReferenceTableTests: XCTestCase {
         var rows = (1...100).map { row($0) }
         let request = UUID()
         subject.apply(rows: rows, selection: rows[0].reference, style: .verses(fontSize: 17, dual: false), scrollRequest: request)
-        try await settle(subject)
+        try await waitForReveal(subject)
         subject.table.scrollRowToVisible(70)
         try await settle(subject)
         let previousY = subject.scrollView.contentView.bounds.minY
@@ -277,10 +279,10 @@ final class NativeReferenceTableTests: XCTestCase {
         try await settle(subject)
         XCTAssertEqual(subject.scrollView.contentView.bounds.minY, previousY, accuracy: 1)
         subject.apply(rows: rows, selection: rows[0].reference, style: .verses(fontSize: 17, dual: false), scrollRequest: UUID())
-        try await settle(subject)
+        try await waitForReveal(subject)
         XCTAssertEqual(subject.scrollView.contentView.bounds.minY, 0, accuracy: 1)
         subject.apply(rows: rows, selection: rows[89].reference, style: .verses(fontSize: 17, dual: false), scrollRequest: UUID())
-        try await settle(subject)
+        try await waitForReveal(subject)
         XCTAssertTrue(subject.table.visibleRect.intersects(subject.table.rect(ofRow: 89)))
     }
 
@@ -301,11 +303,7 @@ final class NativeReferenceTableTests: XCTestCase {
             subject.apply(rows: origin, selection: origin[1].reference, style: style, scrollRequest: UUID())
             try await settle(subject)
             subject.apply(rows: destination, selection: destination[8].reference, style: style, scrollRequest: UUID())
-            try await waitForReveal(subject) {
-                let target = subject.table.rect(ofRow: 8)
-                let viewport = subject.table.visibleRect
-                return abs(dual ? target.minY - viewport.minY : target.midY - viewport.midY) <= 1
-            }
+            try await waitForReveal(subject)
             let target = subject.table.rect(ofRow: 8)
             let viewport = subject.table.visibleRect
             if dual {
@@ -329,9 +327,7 @@ final class NativeReferenceTableTests: XCTestCase {
         let style = NativeReferenceStyle.verses(fontSize: 17, dual: false)
         subject.apply(rows: first, selection: first[89].reference, style: style, scrollRequest: UUID())
         subject.apply(rows: second, selection: second[8].reference, style: style, scrollRequest: UUID())
-        try await waitForReveal(subject) {
-            abs(subject.table.rect(ofRow: 8).midY - subject.table.visibleRect.midY) <= 1
-        }
+        try await waitForReveal(subject)
         XCTAssertEqual(subject.selectedReference, second[8].reference)
         XCTAssertEqual(subject.table.rect(ofRow: 8).midY, subject.table.visibleRect.midY, accuracy: 1)
     }
@@ -350,7 +346,7 @@ final class NativeReferenceTableTests: XCTestCase {
         let searchID = UUID()
         subject.activatesOnSelection = false
         subject.apply(rows: Array(rows.prefix(100)), selection: rows[0].reference, style: style, scrollRequest: searchID)
-        try await settle(subject)
+        try await waitForReveal(subject)
         subject.table.scrollRowToVisible(99)
         try await settle(subject)
         let top = subject.table.rows(in: subject.table.visibleRect).location
@@ -367,12 +363,47 @@ final class NativeReferenceTableTests: XCTestCase {
 
         // Even if a new query extends the old rows, its new ID must reveal the selection.
         subject.apply(rows: rows, selection: rows[0].reference, style: style, scrollRequest: UUID())
-        try await settle(subject)
+        try await waitForReveal(subject)
         XCTAssertTrue(subject.table.visibleRect.intersects(subject.table.rect(ofRow: 0)))
         subject.table.scrollRowToVisible(90)
         subject.apply(rows: Array(rows.suffix(100)), selection: rows[100].reference, style: style, scrollRequest: UUID())
-        try await settle(subject)
+        try await waitForReveal(subject)
         XCTAssertTrue(subject.table.visibleRect.intersects(subject.table.rect(ofRow: 0)))
+    }
+
+    func testUserScrollingCancelsPendingRevealAndBookmarkRefreshPreservesViewport() async throws {
+        let subject = controller()
+        let window = mountedWindow(subject)
+        defer { window.close() }
+        var rows = (1...100).map { row($0) }
+        let style = NativeReferenceStyle.verses(fontSize: 17, dual: false)
+        subject.apply(rows: rows, selection: rows[0].reference, style: style, scrollRequest: UUID())
+        try await waitForReveal(subject)
+        subject.table.scrollRowToVisible(70)
+        try await settle(subject)
+        let previousY = subject.scrollView.contentView.bounds.minY
+        XCTAssertGreaterThan(previousY, 0)
+
+        // Gesture/scrollbar tracking starts explicitly; legacy wheels only send didLiveScroll.
+        for notification in [NSScrollView.willStartLiveScrollNotification, NSScrollView.didLiveScrollNotification] {
+            let request = UUID()
+            subject.apply(rows: rows, selection: rows[0].reference, style: style, scrollRequest: request)
+            XCTAssertTrue(subject.isRevealingSelection)
+            NotificationCenter.default.post(name: notification, object: NSScrollView())
+            XCTAssertTrue(subject.isRevealingSelection, "Scrolling another passage must not cancel this reveal")
+            NotificationCenter.default.post(name: notification, object: subject.scrollView)
+            XCTAssertFalse(subject.isRevealingSelection)
+            try await settle(subject)
+            XCTAssertEqual(subject.scrollView.contentView.bounds.minY, previousY, accuracy: 1)
+
+            rows[70].bookmarked.toggle()
+            subject.apply(rows: rows, selection: rows[0].reference, style: style, scrollRequest: request)
+            try await settle(subject)
+            XCTAssertEqual(subject.scrollView.contentView.bounds.minY, previousY, accuracy: 1)
+        }
+        subject.apply(rows: rows, selection: rows[0].reference, style: style, scrollRequest: UUID())
+        try await waitForReveal(subject)
+        XCTAssertEqual(subject.scrollView.contentView.bounds.minY, 0, accuracy: 1)
     }
 
     func testCopyMenuValidationFollowsSelectionTranslationAndLoading() {

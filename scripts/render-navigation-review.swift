@@ -662,6 +662,8 @@ struct NativeWorkspaceReview {
         workspace.render()
         try await Task.sleep(nanoseconds: 100_000_000)
         workspace.view.layoutSubtreeIfNeeded()
+        try await waitUntil { !workspace.verses.isRevealingSelection }
+        workspace.view.layoutSubtreeIfNeeded()
     }
     @MainActor static func selectTestament(_ segment: Int, workspace: MainWorkspaceController, window: NSWindow) async throws {
         let control = workspace.testamentControl

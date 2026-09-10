@@ -77,9 +77,16 @@ final class NativeReferenceTableController: NSObject, NSTableViewDataSource, NST
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
+        for name in [NSScrollView.willStartLiveScrollNotification, NSScrollView.didLiveScrollNotification] {
+            NotificationCenter.default.addObserver(self, selector: #selector(userDidScroll(_:)), name: name, object: scrollView)
+        }
     }
 
-    deinit { resizeTask?.cancel(); revealTask?.cancel() }
+    deinit {
+        resizeTask?.cancel()
+        revealTask?.cancel()
+        NotificationCenter.default.removeObserver(self)
+    }
 
     func apply(rows newRows: [NativeReferenceRow], selection: VerseReference?,
                style newStyle: NativeReferenceStyle, enabled: Bool = true, scrollRequest: UUID? = nil) {
@@ -120,6 +127,8 @@ final class NativeReferenceTableController: NSObject, NSTableViewDataSource, NST
         refreshVisibleCells()
         if index != nil, !preserveViewport && (referencesChanged || revealRequested || oldSelection != selection) {
             revealSelectionAfterLayout()
+        } else if index == nil {
+            cancelPendingReveal()
         }
         if let anchor, let index = rows.firstIndex(where: { $0.reference == anchor }) {
             table.layoutSubtreeIfNeeded()
@@ -132,6 +141,8 @@ final class NativeReferenceTableController: NSObject, NSTableViewDataSource, NST
     var selectedReference: VerseReference? {
         rows.indices.contains(table.selectedRow) ? rows[table.selectedRow].reference : nil
     }
+
+    var isRevealingSelection: Bool { revealTask != nil }
 
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
@@ -181,12 +192,14 @@ final class NativeReferenceTableController: NSObject, NSTableViewDataSource, NST
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !isApplyingSnapshot, enabled, let reference = selectedReference else { return }
+        cancelPendingReveal()
         onSelection(reference)
         if activatesOnSelection { onActivate(reference) }
     }
 
     func activateSelected() {
         guard enabled, let reference = selectedReference else { return }
+        cancelPendingReveal()
         onActivate(reference)
     }
 
@@ -200,16 +213,33 @@ final class NativeReferenceTableController: NSObject, NSTableViewDataSource, NST
 
     func selectFromKeyboard(_ index: Int) {
         guard enabled, rows.indices.contains(index) else { return }
+        cancelPendingReveal()
         table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
         table.scrollRowToVisible(index)
     }
 
-    private func revealSelectionAfterLayout() {
+    @objc private func userDidScroll(_ notification: Notification) {
+        // AppKit sends didLiveScroll for legacy wheels without a matching start.
+        // Programmatic reveal/layout scrolling does not send these notifications.
+        cancelPendingReveal()
+    }
+
+    private func cancelPendingReveal() {
         revealTask?.cancel()
+        revealTask = nil
+    }
+
+    private func revealSelectionAfterLayout() {
+        cancelPendingReveal()
         guard let reference = selectedReference else { return }
         revealTask = Task { @MainActor [weak self] in
             await Task.yield()
-            guard !Task.isCancelled, let self, self.selectedReference == reference else { return }
+            guard !Task.isCancelled, let self else { return }
+            defer {
+                // A canceled task must not clear a newer reveal's completion state.
+                if !Task.isCancelled { self.revealTask = nil }
+            }
+            guard self.selectedReference == reference else { return }
             // A new chapter starts with estimated row heights. Finish width-driven
             // invalidation, then bring the target into view so AppKit measures it.
             self.scrollView.layoutSubtreeIfNeeded()
@@ -235,7 +265,6 @@ final class NativeReferenceTableController: NSObject, NSTableViewDataSource, NST
                 // Newly exposed neighbors can replace more estimated heights.
                 // Recheck after their layout, stopping as soon as the target settles.
             }
-            self.revealTask = nil
         }
     }
 
