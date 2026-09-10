@@ -313,6 +313,9 @@ final class NativeReferenceTableController: NSObject, NSTableViewDataSource, NST
 
     private func menu(for item: NativeReferenceRow, includeBookmark: Bool) -> NSMenu {
         let menu = NSMenu()
+        if includeBookmark {
+            menu.addAction(title: "Open in New Tab") { [weak self] in self?.onOpenInNewTab(item.reference) }
+        }
         if let text = item.primaryCopy {
             menu.addAction(title: style.dual ? "Copy Verse (Primary)" : "Copy Verse") {
                 NSPasteboard.general.clearContents()
@@ -326,7 +329,6 @@ final class NativeReferenceTableController: NSObject, NSTableViewDataSource, NST
             }
         }
         if includeBookmark {
-            menu.addAction(title: "Open in New Tab") { [weak self] in self?.onOpenInNewTab(item.reference) }
             if !menu.items.isEmpty { menu.addItem(.separator()) }
             menu.addAction(title: item.bookmarked ? "Remove Bookmark" : "Add Bookmark") { [weak self] in
                 self?.onBookmark(item.reference)

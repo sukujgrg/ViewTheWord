@@ -435,7 +435,7 @@ final class NativeReferenceTableTests: XCTestCase {
         subject.onOpenInNewTab = { opened = $0 }
         subject.apply(rows: [item], selection: item.reference, style: .verses(fontSize: 17, dual: true))
         let menu = subject.contextMenu(at: 0)!
-        XCTAssertEqual(menu.items.map(\.title), ["Copy Verse (Secondary)", "Open in New Tab", "", "Add Bookmark"])
+        XCTAssertEqual(menu.items.map(\.title), ["Open in New Tab", "Copy Verse (Secondary)", "", "Add Bookmark"])
         let replacement = row(1, book: "1 Peter")
         subject.apply(rows: [replacement], selection: replacement.reference, style: .verses(fontSize: 17, dual: true))
         let bookmarkItem = menu.items.last!
