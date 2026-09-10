@@ -40,7 +40,23 @@ def verify_advancing_version(info, previous_feed):
             raise ValueError("The release version must not be older than a published update.")
 
 
-def verify_feed(feed, info, archive, download_url):
+def history_metadata(items):
+    history = {}
+    for item in items:
+        enclosure = item.find("enclosure")
+        build = item.findtext(SPARKLE + "version")
+        if enclosure is not None:
+            build = build or enclosure.get(SPARKLE + "version")
+        if not build or build in history or enclosure is None:
+            raise ValueError("Feed history must have one archive enclosure per build.")
+        # Keep the archive URL/signature/length and OS/hardware/channel eligibility bound
+        # to the previously signed item, including legacy enclosure attributes.
+        history[build] = (dict(enclosure.attrib), tuple(item.findtext(SPARKLE + key) for key in (
+            "minimumSystemVersion", "maximumSystemVersion", "hardwareRequirements", "minimumUpdateVersion", "channel")))
+    return history
+
+
+def verify_feed(feed, info, archive, download_url, previous_feed=None):
     items = ET.parse(feed).findall("./channel/item")
     current = [item for item in items if item.findtext(SPARKLE + "version") == info["CFBundleVersion"]]
     if len(current) != 1:
@@ -50,6 +66,11 @@ def verify_feed(feed, info, archive, download_url):
         raise ValueError("The update feed version differs from the archived app.")
     if item.findtext(SPARKLE + "minimumSystemVersion") != info["LSMinimumSystemVersion"]:
         raise ValueError("The update feed must preserve the app's minimum macOS version.")
+    # Sparkle infers arm64 from the archive; it omits the marker on macOS 27+,
+    # where the OS requirement itself already excludes Intel Macs.
+    if (numeric_version(info["LSMinimumSystemVersion"]) < (27,)
+            and item.findtext(SPARKLE + "hardwareRequirements") != "arm64"):
+        raise ValueError("The update feed must require Apple Silicon for this archive.")
     enclosure = item.find("enclosure")
     if enclosure is None or enclosure.get("url") != download_url:
         raise ValueError("The update feed must point at this release's exact archive.")
@@ -58,6 +79,10 @@ def verify_feed(feed, info, archive, download_url):
     signature = enclosure.get(SPARKLE + "edSignature", "")
     if len(base64.b64decode(signature, validate=True)) != 64:
         raise ValueError("The update archive requires an Ed25519 signature.")
+    previous = ET.parse(previous_feed).findall("./channel/item") if previous_feed else []
+    retained = [other for other in items if other is not item]
+    if history_metadata(retained) != history_metadata(previous):
+        raise ValueError("Previously published feed items changed, disappeared, or unexpected builds were added.")
     return signature
 
 
@@ -99,7 +124,7 @@ def generate(args):
             "--full-release-notes-url", release_url, "--maximum-deltas", "0",
             "--maximum-versions", "0", "-o", str(feed), str(staging)
         ], check=True)
-        signature = verify_feed(feed, info, args.archive, download_prefix + quote(args.archive.name, safe=''))
+        signature = verify_feed(feed, info, args.archive, download_prefix + quote(args.archive.name, safe=''), args.previous)
         for paths in [[str(args.archive), signature], [str(feed)]]:
             subprocess.run([str(tools / "sign_update"), "--account", KEY_ACCOUNT, "--verify", *paths], check=True)
         args.output.parent.mkdir(parents=True, exist_ok=True)

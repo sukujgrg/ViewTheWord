@@ -1,6 +1,6 @@
 # ViewTheWord
 
-A local macOS app for browsing and projecting Bible verses in one or two translations. Requires macOS 26.0 or later. Malayalam BSI and English UKJV are included; an internet connection is not required.
+A local macOS app for browsing and projecting Bible verses in one or two translations. Requires an Apple Silicon Mac running macOS 26.0 or later. Malayalam BSI and English UKJV are included; an internet connection is not required.
 
 ## Getting started
 
@@ -67,7 +67,7 @@ python3 scripts/test-release-workflow.py
 
 The Swift package tests the same parser, database, import, navigation, projection preparation, persistence, text fitting, and native reference-table sources used by the app. Native tests exercise keyboard events, focus, scroll restoration, and row actions. CI runs these checks plus Debug and Release builds once per PR update and on pushes to `master`; feature-branch pushes and release tags do not start a second run. New commits cancel older runs for the same PR or branch. [Manual checks](docs/manual-validation.md) cover physical keyboard/VoiceOver behavior and displays.
 
-With local Xcode signing configured, `make build` exports a universal app to `~/Applications`; `make build-for-this` builds only for this Mac's architecture. Run `make` to list commands, or `make clean` to delete `build/`.
+With local Xcode signing configured, `make build` exports an Apple Silicon (arm64) app to `~/Applications`. Xcode and CI use the same architecture. Run `make` to list commands. `make clean` removes build caches while preserving saved releases and refuses to run during a release.
 
 The layered VTW app icon is editable in Icon Composer. See [the icon source and rendering guide](docs/app-icon.md) for appearance previews and build integration.
 

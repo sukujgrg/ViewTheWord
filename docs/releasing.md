@@ -16,7 +16,7 @@ after the signed artifacts are ready.
 The command requires a clean checkout and waits for the latest **Validate** push
 run on `master` for that exact commit to pass. PR validation checks the proposed
 merge; the `master` run validates the committed source used for the release.
-Preparation builds the universal app, signs with Developer ID, notarizes and
+Preparation builds the Apple Silicon (arm64) app, signs with Developer ID, notarizes and
 staples it, and generates the signed Sparkle feed. Completed work is saved so
 rerunning the command can resume. Only when the artifacts are ready does
 publication create and push `v<VERSION>` and create a GitHub draft. It uploads
@@ -29,6 +29,19 @@ an intermediate Info.plist in DerivedData, so ordinary Xcode builds and release
 builds use the same version automatically. Build numbers are automatic and
 increase beyond every build in the previous signed feed. The repository comes
 from `origin` and must match the app's update-feed URL.
+
+After export, the script checks that the main executable is arm64 only and every
+Sparkle helper contains arm64. It verifies code signatures, hardened runtime,
+the configured `DEVELOPMENT_TEAM`, and the absence of debugging entitlements on
+the supported architecture. The app must retain App Sandbox, Sparkle's Mach
+lookup entitlements, and both XPC service flags. CI checks architecture in its
+unsigned Debug and Release products; signing checks run locally.
+
+Feed generation must preserve every older enclosure's URL, signature, size,
+and OS/hardware eligibility. The new item must target the exact new archive and
+require Apple Silicon. A first release can start a feed; if a previous latest
+release exists without `appcast.xml`, preparation stops because it cannot prove
+that the new build number advances beyond the installed version.
 
 ## Set up a release Mac
 
@@ -87,7 +100,9 @@ destination. Before publishing, it verifies every remote file by GitHub's SHA-25
 digest, or by downloading and hashing it when a digest is unavailable. An
 unrelated draft, conflicting asset, changed file, or changed latest release
 stops the command. The script never force-pushes tags or overwrites uploaded
-files. Only one local release command can run at a time.
+files. Release and cleanup commands share a lock in Git's common directory,
+including across linked worktrees. Use one publisher at a time across separate
+clones or Macs: GitHub's latest-release update is not an atomic compare-and-set.
 
 ### If Apple accepted the upload but no submission ID was saved
 
@@ -120,8 +135,10 @@ Unrecorded artifacts from older versions of the script, corrupt state, and files
 whose checksums changed are preserved and rejected. Restore the original saved
 work, or move the entire version directory aside before preparing afresh. Existing
 published versions still require a new `VERSION` for new work. Local `make build`
-and `make build-for-this` preserve release directories; `make clean` deletes
-`build/`, including the artifacts and recovery records.
+preserves release directories. `make clean` removes build caches, preserves
+`build/release/` with its artifacts and recovery records, and refuses to run
+while a release command holds the shared lock. Removing `build/` manually still
+destroys saved work and is not protected by that lock.
 
 See [self-update verification](self-updates.md#verification) for automated
 coverage and manual download, installation, and relaunch checks.

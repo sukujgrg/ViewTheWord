@@ -55,15 +55,19 @@ version changes, notarization, and GitHub publication.
 `scripts/update-feed.py` checks the bundle identity, embedded feed URL and public
 key, archive signature and length, app/build versions, and minimum macOS version.
 It generates from an isolated directory containing only this release's archive.
-When publishing, it retains previous feed entries for older macOS versions and
-rejects build numbers that would prevent installed copies from seeing the update.
-Current releases require macOS 26.0 or later; the feed takes this minimum from
-the built app's `LSMinimumSystemVersion`.
+When publishing, it retains previous feed entries and checks that their archive
+URLs, signatures, sizes, and OS/hardware eligibility are unchanged. It rejects
+build numbers that would prevent installed copies from seeing the update.
+Current releases require Apple Silicon and macOS 26.0 or later. The feed takes
+the OS minimum from the built app's `LSMinimumSystemVersion`; Sparkle detects the
+arm64 executable and adds the hardware requirement. The script checks that
+marker, so an older Intel installation can keep its compatible release.
 
 Sparkle compares `CFBundleVersion`. The release command chooses a numeric UTC
 timestamp (`YYYYMMDDHHMMSS`) and raises it above prior published builds when
 needed. The previous feed is signature-verified before its build numbers are
-used. The marketing version comes only from `VERSION`; the tag is derived from
+used. A previous latest release without `appcast.xml` stops preparation instead
+of guessing its build number. The marketing version comes only from `VERSION`; the tag is derived from
 it. There are no manual version/build overrides or validation bypasses.
 
 The first release containing this feature must be installed manually by existing
@@ -77,9 +81,11 @@ The Swift package exercises the shared controller using an injected driver,
 without checking the internet or starting an installer. Native tests cover menu
 enablement, the automatic-check preference, reminders in multiple windows,
 focus preservation, and shared live output when a window closes. Python
-regressions reject older builds and feed/archive metadata mismatches.
+regressions reject older builds, feed/archive metadata mismatches, changes to
+retained feed items, and missing Apple Silicon eligibility.
 `scripts/test-release-workflow.py` exercises release ordering, interrupted
-preparation, notarization recovery, draft uploads, and lost publication responses
+preparation, signing/architecture failures, cleanup locking, notarization recovery,
+draft uploads, and lost publication responses
 using temporary Git repositories and offline command doubles; it never signs,
 notarizes, pushes to GitHub, or publishes a real release.
 

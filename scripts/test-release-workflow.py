@@ -49,6 +49,11 @@ class ReleaseFlowTests(unittest.TestCase):
         self.wrong_notary_hash = False
         self.previous_release = None
         self.previous_feed = None
+        self.signing_team = "TEAM"
+        self.signature_overrides = {}
+        self.missing_arm_binary = None
+        self.main_architectures = "arm64"
+        self.missing_binary = None
         self.remote_tag = None
         self.existing_release = False
         self.hidden_draft_reads = 0
@@ -112,7 +117,7 @@ class ReleaseFlowTests(unittest.TestCase):
         if path == "releases/42/assets?per_page=100&page=1":
             return [{key: value for key, value in item.items() if key != "data"} for item in self.assets.values()]
         if path == "releases/10/assets?per_page=100&page=1":
-            return [{"name": "appcast.xml"}]
+            return [{"name": "appcast.xml"}] if self.previous_feed is not None else []
         if path.startswith("git/ref/tags/"):
             # make release pushes an annotated tag: the ref points to a tag
             # object, whose target must be read through the Git tags API.
@@ -141,9 +146,11 @@ class ReleaseFlowTests(unittest.TestCase):
                 del self.failures[key]
                 raise subprocess.CalledProcessError(1, [stage, phase])
 
-    def tool(self, *args, capture=False, output=None):
+    def tool(self, *args, capture=False, output=None, include_stderr=False):
         args = tuple(str(arg) for arg in args)
         self.calls.append(args)
+        if args[:2] == ("codesign", "-dv"):
+            self.assertTrue(capture and include_stderr)
         if args[0] == "xcodebuild":
             stage = "archive" if "archive" in args else "export" if "-exportArchive" in args else "resolve"
         elif args[0] in ("gh", "xcrun") and len(args) > 2:
@@ -224,11 +231,29 @@ class ReleaseFlowTests(unittest.TestCase):
         if args[0] == "security":
             return '1) fixture "Developer ID Application: Fixture (TEAM)"\n1 valid identities found'
         if args[0] == "codesign":
-            self.assertTrue(Path(args[-1]).is_dir())
-            return
+            binary = Path(args[-1])
+            if "--verify" in args:
+                self.assertTrue(binary.is_dir())
+                return
+            self.assertTrue(binary.is_file())
+            arch = args[args.index("--arch") + 1]
+            override = self.signature_overrides.get((binary.name, arch), {})
+            if "-dv" in args:
+                flags = "0x10000(runtime)" if override.get("runtime", True) else "0x0(none)"
+                return f"CodeDirectory v=20500 flags={flags}\nTeamIdentifier={override.get('team', self.signing_team)}"
+            self.assertIn("--xml", args)
+            entitlements = ({"com.apple.security.app-sandbox": True,
+                             "com.apple.security.temporary-exception.mach-lookup.global-name":
+                             ["suku.ViewTheWord-spks", "suku.ViewTheWord-spki"]}
+                            if binary.name == "ViewTheWord" else {})
+            entitlements = override.get("entitlements", entitlements)
+            return plistlib.dumps(entitlements).decode() if entitlements else ""
         if args[0] == "xcodebuild":
+            if "-showBuildSettings" in args:
+                self.assertEqual(args[args.index("-configuration") + 1], "Release")
+                return json.dumps([{"target": "ViewTheWord", "buildSettings": {"DEVELOPMENT_TEAM": self.signing_team}}])
             if "archive" in args:
-                self.assertIn("ARCHS=arm64 x86_64", args)
+                self.assertIn("ARCHS=arm64", args)
                 self.assertIn("ONLY_ACTIVE_ARCH=NO", args)
                 self.assertNotIn("CODE_SIGNING_ALLOWED=NO", args)
                 self.assertFalse(any(arg.startswith("MARKETING_VERSION=") for arg in args))
@@ -248,6 +273,14 @@ class ReleaseFlowTests(unittest.TestCase):
                 (app / "Info.plist").write_bytes(plistlib.dumps(info))
                 (app / "MacOS").mkdir()
                 (app / "MacOS/ViewTheWord").write_bytes(b"fixture executable")
+                framework = app / "Frameworks/Sparkle.framework"
+                for name in ("Sparkle", "Autoupdate", "Updater.app/Contents/MacOS/Updater",
+                             "XPCServices/Installer.xpc/Contents/MacOS/Installer",
+                             "XPCServices/Downloader.xpc/Contents/MacOS/Downloader"):
+                    binary = framework / name
+                    if binary.name != self.missing_binary:
+                        binary.parent.mkdir(parents=True, exist_ok=True)
+                        binary.write_bytes(b"fixture Sparkle executable")
                 options = plistlib.loads(Path(args[args.index("-exportOptionsPlist") + 1]).read_bytes())
                 self.assertEqual(options["method"], "developer-id")
             return
@@ -256,7 +289,12 @@ class ReleaseFlowTests(unittest.TestCase):
         if args[0].endswith("sign_update"):
             return
         if args[0] == "lipo":
-            self.assertEqual(args[-3:], ("-verify_arch", "arm64", "x86_64"))
+            if args[-1] == "-archs":
+                self.assertEqual(Path(args[1]).name, "ViewTheWord")
+                return self.main_architectures
+            self.assertEqual(args[-2:], ("-verify_arch", "arm64"))
+            if Path(args[1]).name == self.missing_arm_binary:
+                raise subprocess.CalledProcessError(1, args)
             return
         if args[0] == "ditto":
             if "-k" in args:
@@ -863,6 +901,144 @@ class ReleaseFlowTests(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             self.invoke()
         self.assertEqual(self.archive_count(), 0)
+        self.assert_not_published()
+
+    def test_signing_team_must_be_configured_before_archiving(self):
+        self.signing_team = ""
+        with self.assertRaisesRegex(release.ReleaseError, "DEVELOPMENT_TEAM"):
+            self.invoke(no_publish=True)
+        self.assertEqual(self.archive_count(), 0)
+
+    def test_every_shipped_binary_must_support_arm64(self):
+        for name in ("ViewTheWord", "Sparkle", "Autoupdate", "Updater", "Installer", "Downloader"):
+            with self.subTest(binary=name):
+                self.missing_arm_binary = name
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+        self.assert_not_published()
+
+    def test_universal_main_executable_is_rejected(self):
+        self.main_architectures = "x86_64 arm64"
+        with self.assertRaisesRegex(release.ReleaseError, "arm64 only"):
+            self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+        self.assert_not_published()
+
+    def test_missing_sparkle_binaries_are_rejected_before_notarization(self):
+        for name in ("Sparkle", "Autoupdate", "Updater", "Installer", "Downloader"):
+            with self.subTest(binary=name):
+                self.missing_binary = name
+                with self.assertRaisesRegex(release.ReleaseError, "Required executable is missing"):
+                    self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+
+    def test_wrong_team_in_helper_is_rejected(self):
+        self.signature_overrides[("Installer", "arm64")] = {"team": "OTHERTEAM"}
+        with self.assertRaisesRegex(release.ReleaseError, "Signing team differs"):
+            self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+
+    def test_missing_hardened_runtime_in_helper_is_rejected(self):
+        self.signature_overrides[("Autoupdate", "arm64")] = {"runtime": False}
+        with self.assertRaisesRegex(release.ReleaseError, "Hardened runtime is missing"):
+            self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+
+    def test_debuggable_helper_is_rejected(self):
+        self.signature_overrides[("Updater", "arm64")] = {"entitlements": {"com.apple.security.get-task-allow": True}}
+        with self.assertRaisesRegex(release.ReleaseError, "Debugging entitlement"):
+            self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+
+    def test_app_sandbox_and_both_sparkle_mach_lookups_are_required(self):
+        key = "com.apple.security.temporary-exception.mach-lookup.global-name"
+        for entitlements in ({}, {"com.apple.security.app-sandbox": True},
+                             {"com.apple.security.app-sandbox": True, key: ["suku.ViewTheWord-spks"]},
+                             {"com.apple.security.app-sandbox": True, key: ["suku.ViewTheWord-spki"]},
+                             {key: ["suku.ViewTheWord-spks", "suku.ViewTheWord-spki"]}):
+            with self.subTest(entitlements=entitlements):
+                self.signature_overrides = {("ViewTheWord", "arm64"): {"entitlements": entitlements}}
+                with self.assertRaisesRegex(release.ReleaseError, "App Sandbox or Sparkle communication"):
+                    self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+
+    def make_clean(self):
+        scripts = self.root / "scripts"
+        scripts.mkdir(exist_ok=True)
+        shutil.copy2(ROOT / "scripts/release.py", scripts / "release.py")
+        shutil.copy2(ROOT / "Makefile", self.root / "Makefile")
+        return subprocess.run(["make", "clean"], cwd=self.root, text=True, capture_output=True)
+
+    def test_make_clean_preserves_saved_releases_and_does_not_follow_cache_symlinks(self):
+        self.directory.mkdir(parents=True)
+        saved = self.directory / "state.json"
+        saved.write_bytes(b"saved recovery record")
+        for name in ("DerivedData", "ReleaseDerivedData", "SwiftPM"):
+            cache = self.root / "build" / name
+            cache.mkdir()
+            (cache / "artifact").write_bytes(b"disposable cache")
+        external = self.root / "external"
+        external.mkdir()
+        (external / "keep").write_bytes(b"outside build")
+        (self.root / "build/linked-cache").symlink_to(external, target_is_directory=True)
+        result = self.make_clean()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(saved.read_bytes(), b"saved recovery record")
+        self.assertEqual([p.name for p in (self.root / "build").iterdir()], ["release"])
+        self.assertEqual((external / "keep").read_bytes(), b"outside build")
+
+    def test_make_clean_refuses_while_another_process_holds_the_release_lock(self):
+        cache = self.root / "build/keep"
+        cache.parent.mkdir()
+        cache.write_bytes(b"active build")
+        with release.release_lock():
+            result = self.make_clean()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Another local release or cleanup", result.stderr)
+        self.assertEqual(cache.read_bytes(), b"active build")
+
+    def test_release_lock_survives_removal_of_build_directory(self):
+        build = self.root / "build"
+        build.mkdir()
+        with release.release_lock():
+            shutil.rmtree(build)
+            build.mkdir()
+            with self.assertRaisesRegex(release.ReleaseError, "Another local release"):
+                with release.release_lock():
+                    self.fail("The held lock must survive deletion of build/")
+
+    def test_linked_worktrees_share_the_release_and_cleanup_lock(self):
+        with tempfile.TemporaryDirectory(prefix="ViewTheWord worktree ") as directory:
+            worktree = Path(directory) / "checkout"
+            self.git("worktree", "add", "--quiet", "--detach", str(worktree), self.commit)
+            cache = worktree / "build/keep"
+            cache.parent.mkdir()
+            cache.write_bytes(b"active worktree build")
+            with release.release_lock():
+                with patch.object(release, "ROOT", worktree):
+                    with self.assertRaisesRegex(release.ReleaseError, "Another local release"):
+                        release.clean_build()
+            self.assertEqual(cache.read_bytes(), b"active worktree build")
+
+    def test_clean_refuses_a_symlink_as_the_build_directory(self):
+        external = self.root / "external"
+        external.mkdir()
+        marker = external / "keep"
+        marker.write_bytes(b"external files")
+        (self.root / "build").symlink_to(external, target_is_directory=True)
+        with self.assertRaisesRegex(release.ReleaseError, "build directory that is a symlink"):
+            release.clean_build()
+        self.assertEqual(marker.read_bytes(), b"external files")
+
+    def test_previous_release_without_appcast_stops_before_archiving(self):
+        self.latest = "v4.0.0"
+        self.previous_release = {"id": 10, "tag_name": "v4.0.0", "draft": False}
+        with self.assertRaisesRegex(release.ReleaseError, "has no appcast.xml"):
+            self.invoke(no_publish=True)
+        self.assertNotIn("build", self.state)
+        self.assertEqual(self.archive_count(), 0)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
         self.assert_not_published()
 
     def test_previous_feed_is_verified_and_build_number_advances(self):

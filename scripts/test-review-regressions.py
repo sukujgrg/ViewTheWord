@@ -99,6 +99,51 @@ class VersionTests(unittest.TestCase):
 
 
 class UpdateFeedTests(unittest.TestCase):
+    def test_existing_feed_archives_and_os_hardware_eligibility_are_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "ViewTheWord.zip"
+            archive.write_bytes(b"fixture")
+            feed = Path(directory) / "appcast.xml"
+            previous = Path(directory) / "previous.xml"
+            signature = base64.b64encode(b"s" * 64).decode()
+            old_signature = base64.b64encode(b"p" * 64).decode()
+            url = "https://github.com/sukujgrg/ViewTheWord/releases/download/v4.1.0/ViewTheWord.zip"
+            old_url = "https://github.com/sukujgrg/ViewTheWord/releases/download/v4.0.0/ViewTheWord-old.zip"
+            old = f'''<item><sparkle:version>100</sparkle:version><sparkle:shortVersionString>4.0.0</sparkle:shortVersionString>
+                <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+                <enclosure url="{old_url}" sparkle:edSignature="{old_signature}" length="9"/></item>'''
+            current = f'''<item><sparkle:version>101</sparkle:version><sparkle:shortVersionString>4.1.0</sparkle:shortVersionString>
+                <sparkle:minimumSystemVersion>27.0</sparkle:minimumSystemVersion>
+                <enclosure url="{url}" sparkle:edSignature="{signature}" length="7"/></item>'''
+            def xml(items):
+                return f'<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel>{items}</channel></rss>'
+            info = {"CFBundleVersion": "101", "CFBundleShortVersionString": "4.1.0", "LSMinimumSystemVersion": "27.0"}
+            previous.write_text(xml(old))
+            feed.write_text(xml(current + old))
+            self.assertEqual(update_feed.verify_feed(feed, info, archive, url, previous), signature)
+            broken_history = {
+                "new tag prefix": old.replace("download/v4.0.0/", "download/v4.1.0/"),
+                "wrong length": old.replace('length="9"', 'length="10"'),
+                "wrong signature": old.replace(old_signature, signature),
+                "changed minimum OS": old.replace("26.0", "27.0"),
+                "excluded old Intel users": old.replace("<enclosure", "<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements><enclosure"),
+                "removed older OS build": "",
+                "duplicate build": old + old,
+                "unexpected build": old + old.replace(">100<", ">99<"),
+            }
+            for name, history in broken_history.items():
+                with self.subTest(change=name):
+                    contents = xml(current + history)
+                    feed.write_text(contents)
+                    with self.assertRaises(ValueError):
+                        update_feed.verify_feed(feed, info, archive, url, previous)
+                    self.assertEqual(feed.read_text(), contents)
+            # Older Sparkle feeds stored their build in enclosure attributes.
+            legacy = old.replace("<sparkle:version>100</sparkle:version>", "").replace("<enclosure ", '<enclosure sparkle:version="100" ')
+            previous.write_text(xml(legacy))
+            feed.write_text(xml(current + legacy))
+            self.assertEqual(update_feed.verify_feed(feed, info, archive, url, previous), signature)
+
     def test_rejects_older_builds_even_if_marketing_version_is_newer(self):
         with tempfile.TemporaryDirectory() as directory:
             feed = Path(directory) / "appcast.xml"
@@ -124,13 +169,15 @@ class UpdateFeedTests(unittest.TestCase):
             xml = f'''<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item>
                 <sparkle:version>20260910</sparkle:version><sparkle:shortVersionString>3.1.0</sparkle:shortVersionString>
                 <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+                <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
                 <enclosure url="{url}" sparkle:edSignature="{signature}" length="7" type="application/octet-stream"/>
                 </item></channel></rss>'''
             info = {"CFBundleVersion": "20260910", "CFBundleShortVersionString": "3.1.0", "LSMinimumSystemVersion": "26.0"}
             feed.write_text(xml)
             self.assertEqual(update_feed.verify_feed(feed, info, archive, url), signature)
             for before, after in [(url, "https://example.invalid/other.zip"), ('length="7"', 'length="8"'),
-                                  ("26.0", "15.0"), ("3.1.0</", "3.0.5</"), (signature, "")]:
+                                  ("26.0", "15.0"), ("3.1.0</", "3.0.5</"), (signature, ""),
+                                  ("arm64", ""), ("arm64", "x86_64")]:
                 feed.write_text(xml.replace(before, after))
                 with self.assertRaises(ValueError):
                     update_feed.verify_feed(feed, info, archive, url)
