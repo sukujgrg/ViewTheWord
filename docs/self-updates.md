@@ -47,23 +47,10 @@ build/DerivedData/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_keys \
 The release script fails if the Keychain public key differs from `SUPublicEDKey`.
 On a new machine, import the existing private key before running a release.
 
-## Publishing
+## Update feed
 
-Edit `VERSION`, commit and merge or push the changes to `master`, then update your
-local `master` checkout and run `make release` on your Mac. The command requires a
-clean checkout and a successful **Validate** push run on `master` for that exact
-commit before starting a release build. PR checks validate the proposed merge;
-feature-branch pushes and release tags do not trigger duplicate CI. Signing and
-notarization run locally with your Keychain credentials; GitHub Actions only
-tests unsigned builds.
-
-The command resolves Sparkle, verifies the signing key, archives a universal app,
-notarizes and staples it, then creates and verifies the signed feed for the final
-zip. After rechecking the source, CI, and latest release, it creates and pushes
-`v<VERSION>`. GitHub publication uploads `appcast.xml` alongside the zip, checksum,
-and source metadata, and marks that release as latest. Existing tags are reused
-only when they point to the same source commit. Existing releases are never
-overwritten. Artifacts remain in `build/release/v<VERSION>/` if publication fails.
+See the [maintainer release guide](releasing.md) for signing-machine setup,
+version changes, notarization, and GitHub publication.
 
 `scripts/update-feed.py` checks the bundle identity, embedded feed URL and public
 key, archive signature and length, app/build versions, and minimum macOS version.
@@ -78,10 +65,6 @@ timestamp (`YYYYMMDDHHMMSS`) and raises it above prior published builds when
 needed. The previous feed is signature-verified before its build numbers are
 used. The marketing version comes only from `VERSION`; the tag is derived from
 it. There are no manual version/build overrides or validation bypasses.
-
-`make release-check` checks source, destination, and CI without building or
-publishing. `make release-notarize` follows the same validated local signing
-process and saves the artifacts without creating a tag or GitHub release.
 
 The first release containing this feature must be installed manually by existing
 users. That release also establishes the feed; subsequent releases can be
