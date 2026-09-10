@@ -70,7 +70,6 @@
 		DEC37320280273435EB081B0 /* ProjectorTextLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectorTextLayout.swift; sourceTree = "<group>"; };
 		69BDC6B53CBA39E8B16AB2F3 /* VerseModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerseModels.swift; sourceTree = "<group>"; };
 		F95E9A785CFBFD249EFF5292 /* VerseTargetModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerseTargetModel.swift; sourceTree = "<group>"; };
-		C09E00000000000000000002 /* Version.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Version.xcconfig; sourceTree = SOURCE_ROOT; };
 		C0DE09090000000000000002 /* NativeReferenceTable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeReferenceTable.swift; sourceTree = "<group>"; };
 		C0DE09090000000000000004 /* NativeSearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeSearchField.swift; sourceTree = "<group>"; };
 		C0DE09110000000000000000 /* MainWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppKit/MainWindowController.swift; sourceTree = "<group>"; };
@@ -110,7 +109,6 @@
 			isa = PBXGroup;
 			children = (
 				B229A7A32F4993B900EF8FAD /* VERSION */,
-				C09E00000000000000000002 /* Version.xcconfig */,
 				B26FEF51287B9F6900DAD012 /* README.md */,
 				03A1D26228672D1700511E73 /* ViewTheWord */,
 				03A1D26128672D1700511E73 /* Products */,
@@ -186,6 +184,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 03A1D26F28672D1800511E73 /* Build configuration list for PBXNativeTarget "ViewTheWord" */;
 			buildPhases = (
+				C0DE09140000000000000001 /* Generate versioned Info.plist */,
 				03A1D25C28672D1700511E73 /* Sources */,
 				03A1D25D28672D1700511E73 /* Frameworks */,
 				03A1D25E28672D1700511E73 /* Resources */,
@@ -253,6 +252,27 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		C0DE09140000000000000001 /* Generate versioned Info.plist */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/VERSION",
+				"$(SRCROOT)/ViewTheWord/Info.plist",
+				"$(SRCROOT)/scripts/generate-info-plist.sh",
+			);
+			name = "Generate versioned Info.plist";
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/ViewTheWord-Info.plist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "/bin/bash \"$SCRIPT_INPUT_FILE_2\" \"$SCRIPT_INPUT_FILE_0\" \"$SCRIPT_INPUT_FILE_1\" \"$SCRIPT_OUTPUT_FILE_0\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		03A1D25C28672D1700511E73 /* Sources */ = {
@@ -413,7 +433,6 @@
 		};
 		03A1D27028672D1800511E73 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = C09E00000000000000000002 /* Version.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -440,10 +459,8 @@
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = ViewTheWord/Info.plist;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.reference";
-				INFOPLIST_KEY_NSHumanReadableCopyright = "By Suku";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "$(DERIVED_FILE_DIR)/ViewTheWord-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -461,12 +478,12 @@
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				SWIFT_STRICT_CONCURRENCY = complete;
+				VTW_SOURCE_COMMIT = development;
 			};
 			name = Debug;
 		};
 		03A1D27128672D1800511E73 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = C09E00000000000000000002 /* Version.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -492,10 +509,8 @@
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = ViewTheWord/Info.plist;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.reference";
-				INFOPLIST_KEY_NSHumanReadableCopyright = "By Suku";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "$(DERIVED_FILE_DIR)/ViewTheWord-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -513,6 +528,7 @@
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				SWIFT_STRICT_CONCURRENCY = complete;
+				VTW_SOURCE_COMMIT = development;
 			};
 			name = Release;
 		};

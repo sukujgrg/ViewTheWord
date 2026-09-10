@@ -6,7 +6,10 @@ BUILD_CURRENT_ARCH_ONLY=false
 
 usage() {
   cat <<'EOF'
-Usage: ./build.sh [--current-arch] [--help]
+Usage: ./scripts/build.sh [--current-arch] [--help]
+
+Build and export a local app to ~/Applications. Defaults to a universal app.
+Use make release to sign, notarize, and publish a distribution release.
 
 Options:
   --current-arch  Build only for the current machine architecture.
@@ -41,33 +44,21 @@ EXPORT_PATH="$HOME/Applications"
 
 mkdir -p "$EXPORT_PATH"
 
-CURRENT_ARCH="$(uname -m)"
-BUILD_ARGS=()
-
 if [[ "$BUILD_CURRENT_ARCH_ONLY" == true ]]; then
-  BUILD_ARGS+=(
-    ARCHS="$CURRENT_ARCH"
-    ONLY_ACTIVE_ARCH=YES
-  )
+  BUILD_ARGS=(ARCHS="$(uname -m)" ONLY_ACTIVE_ARCH=YES)
+else
+  BUILD_ARGS=("ARCHS=arm64 x86_64" ONLY_ACTIVE_ARCH=NO)
 fi
 
-ARCHIVE_CMD=(
-  xcodebuild
-  -project ViewTheWord.xcodeproj
-  -scheme ViewTheWord
-  -configuration Release
-  -archivePath "$ARCHIVE_PATH"
-  archive
-  STRIP_INSTALLED_PRODUCT=YES
-  COPY_PHASE_STRIP=YES
-)
-
-if ((${#BUILD_ARGS[@]} > 0)); then
-  ARCHIVE_CMD+=("${BUILD_ARGS[@]}")
-fi
-
-"${ARCHIVE_CMD[@]}"
-
+xcodebuild \
+  -project ViewTheWord.xcodeproj \
+  -scheme ViewTheWord \
+  -configuration Release \
+  -archivePath "$ARCHIVE_PATH" \
+  archive \
+  STRIP_INSTALLED_PRODUCT=YES \
+  COPY_PHASE_STRIP=YES \
+  "${BUILD_ARGS[@]}"
 
 cat > "$EXPORT_PLIST" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

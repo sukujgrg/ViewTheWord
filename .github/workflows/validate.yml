@@ -1,5 +1,11 @@
 name: Validate
-on: [push, pull_request]
+on:
+  push:
+    branches: [master]
+  pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -15,11 +21,29 @@ jobs:
           swift --version
       - name: Core regressions
         run: swift test --scratch-path build/SwiftPM -Xswiftc -strict-concurrency=complete
-      - name: Converter and release preflight regressions
-        run: python3 scripts/test-review-regressions.py
+      - name: Converter, version, and release regressions
+        run: |
+          python3 scripts/test-review-regressions.py
+          python3 scripts/test-release-workflow.py
       - name: Shell syntax
-        run: bash -n scripts/build.sh scripts/release-notarize-distribute.sh scripts/verify-release-source.sh scripts/set-version.sh scripts/render-projector-review.sh
+        run: |
+          for script in scripts/*.sh; do
+            bash -n "$script"
+          done
       - name: Debug build
         run: xcodebuild -project ViewTheWord.xcodeproj -scheme ViewTheWord -configuration Debug -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build
       - name: Release build
         run: xcodebuild -project ViewTheWord.xcodeproj -scheme ViewTheWord -configuration Release -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build
+      - name: Verify built app versions
+        run: |
+          python3 - <<'PY'
+          import plistlib
+          from pathlib import Path
+          version = Path("VERSION").read_text().strip()
+          for configuration in ("Debug", "Release"):
+              app = Path("build/DerivedData/Build/Products") / configuration / "ViewTheWord.app"
+              info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+              actual = info.get("CFBundleShortVersionString")
+              assert actual == version, f"{configuration}: expected {version}, got {actual}"
+              print(f"{configuration}: version {actual}")
+          PY

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Run converter and release-preflight regressions entirely in temporary directories."""
+"""Run converter, version, and update-feed regressions in temporary directories."""
 import importlib.util
 import base64
-import re
+import plistlib
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -36,36 +37,65 @@ class ConverterTests(unittest.TestCase):
                 self.assertEqual(db.execute("SELECT verse FROM bible LIMIT 1").fetchone()[0], "replacement")
             self.assertEqual([p.name for p in Path(directory).iterdir()], ["ENG_TST.bible"])
 
-    def test_version_configuration_matches_source(self):
-        version = (ROOT / "VERSION").read_text().strip()
-        config = (ROOT / "Config/Version.xcconfig").read_text()
-        self.assertEqual(re.search(r"^MARKETING_VERSION = (.+)$", config, re.M)[1], version)
 
+class VersionTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="ViewTheWord version ")
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        self.version = self.directory / "VERSION"
+        self.version.write_text((ROOT / "VERSION").read_text())
+        self.template = self.directory / "Source Info.plist"
+        self.template.write_bytes((ROOT / "ViewTheWord/Info.plist").read_bytes())
+        self.output = self.directory / "Derived Files/Info.plist"
 
-class ReleasePreflightTests(unittest.TestCase):
-    def test_dirty_untracked_and_wrong_tag_sources_are_rejected(self):
-        with tempfile.TemporaryDirectory() as directory:
-            def git(*args):
-                return subprocess.check_output(["git", "-C", directory, *args], text=True).strip()
-            def verify():
-                return subprocess.run([str(ROOT / "scripts/verify-release-source.sh"), "v1.0.0"], cwd=directory, text=True, capture_output=True)
-            git("init", "--quiet")
-            git("config", "user.name", "Regression Test")
-            git("config", "user.email", "test@example.invalid")
-            path = Path(directory) / "source.txt"
-            path.write_text("original")
-            git("add", "."); git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "fixture")
-            git("-c", "tag.gpgsign=false", "tag", "v1.0.0")
-            self.assertEqual(verify().stdout.strip(), git("rev-parse", "HEAD"))
-            path.write_text("dirty")
-            self.assertNotEqual(verify().returncode, 0)
-            path.write_text("original")
-            stray = Path(directory) / "untracked.txt"; stray.write_text("untracked")
-            self.assertNotEqual(verify().returncode, 0)
-            stray.unlink()
-            path.write_text("new commit")
-            git("add", "."); git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "newer")
-            self.assertNotEqual(verify().returncode, 0)
+    def generate(self, override=None):
+        command = ["/bin/bash", str(ROOT / "scripts/generate-info-plist.sh"),
+                   str(self.version), str(self.template), str(self.output)]
+        if override is not None:
+            command.append(override)
+        return subprocess.run(command, text=True, capture_output=True)
+
+    def test_version_edits_update_plist_and_preserve_source_metadata(self):
+        original_template = self.template.read_bytes()
+        for version in (self.version.read_text().strip(), "9.8.7"):
+            with self.subTest(version=version):
+                self.version.write_text(version + "\n")
+                result = self.generate()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                expected = plistlib.loads(original_template)
+                expected["CFBundleShortVersionString"] = version
+                self.assertEqual(plistlib.loads(self.output.read_bytes()), expected)
+                self.assertEqual(self.version.read_text(), version + "\n")
+                self.assertEqual(self.template.read_bytes(), original_template)
+
+    def test_version_override_is_rejected(self):
+        original_version = self.version.read_bytes()
+        result = self.generate("9.8.6")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.output.exists())
+        self.assertEqual(self.version.read_bytes(), original_version)
+
+    def test_invalid_versions_fail_without_changing_generated_plist(self):
+        result = self.generate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        original_output = self.output.read_bytes()
+        for version in ("", "4.0.x", "1.2.3.4", "4.0.0-preview"):
+            with self.subTest(version=version):
+                self.version.write_text(version)
+                result = self.generate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("VERSION must contain a numeric", result.stderr)
+                self.assertEqual(self.output.read_bytes(), original_output)
+
+    def test_set_version_only_requires_the_version_file(self):
+        scripts = self.directory / "scripts"
+        scripts.mkdir()
+        script = scripts / "set-version.sh"
+        shutil.copy2(ROOT / "scripts/set-version.sh", script)
+        subprocess.run([str(script), "9.8.5"], check=True)
+        self.assertEqual(self.version.read_text(), "9.8.5\n")
+        self.assertFalse((self.directory / "Config").exists())
 
 
 class UpdateFeedTests(unittest.TestCase):
