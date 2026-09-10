@@ -50,7 +50,7 @@ def run(*args, capture=False, output=None, include_stderr=False):
     return result.stdout.strip() if capture else None
 
 
-def github(repo, path, optional=False):
+def github(repo, path, optional=False, expected_type=dict):
     """Only a confirmed HTTP 404 means absent; network/auth failures must stop."""
     result = subprocess.run(["gh", "api", "--include", f"repos/{repo}/{path}"],
                             cwd=ROOT, text=True, capture_output=True)
@@ -61,14 +61,22 @@ def github(repo, path, optional=False):
     if result.returncode or code != 200:
         raise ReleaseError(f"GitHub request failed for {path} (HTTP {code or 'unavailable'}). "
                            "Check gh authentication and network access, then retry.")
-    return json.loads(result.stdout.split("\n\n", 1)[1])
+    try:
+        body = re.split(r"\r?\n\r?\n", result.stdout, maxsplit=1)[1]
+        data = json.loads(body)
+        if not isinstance(data, expected_type):
+            raise ValueError("unexpected response type")
+    except (IndexError, TypeError, ValueError) as error:
+        raise ReleaseError(f"GitHub returned a malformed response for {path}. "
+                           "Retry the same command; completed work is retained.") from error
+    return data
 
 
 def github_pages(repo, path):
     page = 1
     while True:
-        items = github(repo, f"{path}?per_page=100&page={page}")
-        if not isinstance(items, list):
+        items = github(repo, f"{path}?per_page=100&page={page}", expected_type=list)
+        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
             raise ReleaseError(f"GitHub returned an invalid list for {path}.")
         yield from items
         if len(items) < 100:
@@ -221,11 +229,23 @@ def source_commit(expected=None):
 def release_repository():
     # Push to the exact URL we checked, including repositories using a pushurl.
     origin = run("git", "remote", "get-url", "--push", "--all", "origin", capture=True)
-    match = re.fullmatch(r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
+    match = re.fullmatch(r"https://github\.com/"
                          r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?", origin)
     if not match:
-        raise ReleaseError("origin must have one GitHub push URL (HTTPS or SSH).")
+        raise ReleaseError("origin must have one HTTPS GitHub push URL: https://github.com/OWNER/REPO.git")
     return match[1], origin
+
+
+def read_release_notes(path):
+    if path is None:
+        return None
+    path = path.expanduser().resolve()
+    if path.is_relative_to(ROOT.resolve()):
+        raise ReleaseError("Keep release notes outside the checkout. Use NOTES_FILE=/tmp/viewtheword-notes.md "
+                           "(or --notes with that path) so the release source stays clean.")
+    if not path.is_file():
+        raise ReleaseError(f"Release notes file does not exist: {path}")
+    return path.read_text()
 
 
 def verify_ci(repo, commit):
@@ -425,7 +445,8 @@ def notarize(directory, state, args, notary_zip):
     log_path = work / "notary-log.json"
     run("xcrun", "notarytool", "log", submission, *profile, output=log_path)
     log = json.loads(log_path.read_text())
-    if log.get("jobId") != submission or log.get("sha256") != state["notary_zip_hash"]:
+    if (not isinstance(log, dict) or log.get("jobId") != submission
+            or not isinstance(log.get("sha256"), str) or log["sha256"].lower() != state["notary_zip_hash"]):
         raise ReleaseError(f"Apple's submission does not match the saved archive. Inspect {log_path}.")
     if response.get("status") != "Accepted" or log.get("status") != "Accepted":
         raise ReleaseError(f"Notarization was not accepted ({response.get('status')}). Inspect {log_path}.")
@@ -587,7 +608,7 @@ def verify_latest(state):
                            "prepare a new version from the intended source and current update feed.")
 
 
-def publish(directory, state, notes):
+def publish(directory, state, supplied_notes):
     repo, origin, version, tag, commit = (state[key] for key in ("repo", "origin", "version", "tag", "commit"))
     artifacts = verify_artifacts(directory, state)
     source_commit(commit)
@@ -599,7 +620,6 @@ def publish(directory, state, notes):
         print("This exact release is already published; no changes were made.", flush=True)
         return
     verify_latest(state)
-    supplied_notes = notes.read_text() if notes else None
     if "release_body" not in state:
         text = supplied_notes if supplied_notes is not None else f"Notarized release {version} from source commit {commit}"
         checkpoint(directory, state, notes=text, release_body=text + "\n\n" + release_marker(state))
@@ -673,6 +693,7 @@ def release(args):
     for tool in ("git", "gh"):
         if not shutil.which(tool):
             raise ReleaseError(f"Install {tool} before releasing.")
+    supplied_notes = read_release_notes(args.notes)
     commit = source_commit()
     version = (ROOT / "VERSION").read_text().strip()
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
@@ -682,10 +703,6 @@ def release(args):
     info = plistlib.loads((ROOT / "ViewTheWord/Info.plist").read_bytes())
     if info["SUFeedURL"] != f"https://github.com/{repo}/releases/latest/download/appcast.xml":
         raise ReleaseError("origin's push repository differs from the app's update feed.")
-    if args.notes:
-        args.notes = args.notes.resolve()
-        if not args.notes.is_file():
-            raise ReleaseError(f"Release notes file does not exist: {args.notes}")
     if args.resume_notarization and (args.check or args.publish_only):
         raise ReleaseError("--resume-notarization requires artifact preparation.")
     identity = dict(repo=repo, origin=origin, commit=commit, version=version, tag=tag)
@@ -720,14 +737,14 @@ def release(args):
         source_commit(commit)
         print(f"Signed artifacts: {directory}", flush=True)
         if not args.no_publish:
-            publish(directory, state, args.notes)
+            publish(directory, state, supplied_notes)
             print(f"Release complete: https://github.com/{repo}/releases/tag/{tag}", flush=True)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--notary-profile", default="ViewTheWordNotary", help="local Keychain profile (default: ViewTheWordNotary)")
-    parser.add_argument("--notes", type=Path, help="optional release notes file")
+    parser.add_argument("--notes", type=Path, help="optional release notes file outside the checkout")
     parser.add_argument("--resume-notarization", help="recover a lost Apple submission ID for the saved archive")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--clean", action="store_true", help="remove build caches while preserving saved releases; refuse during a release")
@@ -742,7 +759,7 @@ if __name__ == "__main__":
             clean_build()
         else:
             release(args)
-    except (ReleaseError, OSError, ValueError, KeyError, ET.ParseError, subprocess.CalledProcessError) as error:
+    except (ReleaseError, OSError, ValueError, KeyError, TypeError, IndexError, ET.ParseError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"error: {error}\n")
     except KeyboardInterrupt:
         parser.exit(130, "Release interrupted. Saved work is retained; rerun the same command to resume.\n")

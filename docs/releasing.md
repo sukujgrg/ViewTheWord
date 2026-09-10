@@ -28,7 +28,9 @@ to the same commit; published releases are never overwritten.
 an intermediate Info.plist in DerivedData, so ordinary Xcode builds and release
 builds use the same version automatically. Build numbers are automatic and
 increase beyond every build in the previous signed feed. The repository comes
-from `origin` and must match the app's update-feed URL.
+from `origin` and must match the app's update-feed URL. The release command
+supports one HTTPS GitHub push URL, such as
+`https://github.com/sukujgrg/ViewTheWord.git`; SSH remotes are rejected.
 
 After export, the script checks that the main executable is arm64 only and every
 Sparkle helper contains arm64. It verifies code signatures, hardened runtime,
@@ -64,7 +66,7 @@ credentials need no setup changes.
 
 ```bash
 make release-check                         # Check clean source, destination, and CI; no build or publication
-make release NOTES_FILE=release-notes.md    # Supply release notes
+make release NOTES_FILE=/tmp/viewtheword-notes.md  # Supply external release notes
 make release-notarize                      # Produce signed artifacts locally; no tag or publication
 make release-publish                       # Publish saved artifacts; no build, signing, or notarization
 ```
@@ -72,6 +74,13 @@ make release-publish                       # Publish saved artifacts; no build, 
 A different local notary profile can be selected with `NOTARY_PROFILE=ProfileName`.
 Version, tag, build-number, and repository overrides are removed; there is no
 validation bypass.
+
+Create the optional notes file **outside the checkout** before running the
+command. `NOTES_FILE` (plural) passes it to `--notes`; the script rejects a path
+inside the checkout, including ignored files or an external symlink pointing
+back into it. It reads the notes before any build work, and saves them with the
+draft for publication retries. An untracked notes file left in the checkout
+still fails the clean-source check even when it is not supplied as `NOTES_FILE`.
 
 ## Artifacts and retries
 
@@ -81,6 +90,21 @@ source commit, repository, build number, checksums, and notarization submission.
 `work/` retains the Xcode archive, original exported app, submission archive,
 and Apple responses. Keep this directory intact until publication completes.
 Release builds use `build/ReleaseDerivedData`, separate from ordinary builds.
+
+Recovery records bind the exact HTTPS push URL as well as the source commit.
+Keep that URL unchanged until publication completes; if it changes, restore
+the recorded URL before retrying. Switching even an equivalent URL spelling
+(for example, adding `.git`) does not silently adopt the new destination.
+
+Directory checkpoints include every file inside a saved `.app` or `.xcarchive`,
+including `.DS_Store`. Browsing the outer release folder alone does not change
+these checkpoints. Keep package contents unchanged during recovery; Finder
+metadata added inside a package will correctly fail its checksum check.
+
+Git's tag-signing preference is respected. If `tag.gpgsign` is enabled, tag
+creation can prompt through your configured signing agent after preparation.
+Have that agent ready before releasing. Canceling or failing the prompt preserves
+the signed artifacts; fix signing access and rerun `make release-publish`.
 
 Usually recovery is simply **rerun the same command**. `make release` calls
 preparation and publication; `make release-notarize` calls preparation only;

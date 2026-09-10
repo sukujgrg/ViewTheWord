@@ -3,6 +3,7 @@
 
 NOTARY_PROFILE ?= ViewTheWordNotary
 NOTES_FILE ?=
+# Optional notes must be outside the checkout, e.g. /tmp/viewtheword-notes.md.
 
 help:
 	@printf '%s\n' \

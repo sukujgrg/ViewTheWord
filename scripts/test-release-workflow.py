@@ -46,7 +46,7 @@ class ReleaseFlowTests(unittest.TestCase):
         self.use_asset_digests = True
         self.submissions = {}
         self.finished_submissions = set()
-        self.wrong_notary_hash = False
+        self.notary_hash_transform = lambda value: value
         self.previous_release = None
         self.previous_feed = None
         self.signing_team = "TEAM"
@@ -105,7 +105,7 @@ class ReleaseFlowTests(unittest.TestCase):
     def state(self):
         return json.loads((self.directory / "state.json").read_text())
 
-    def api(self, repo, path, optional=False):
+    def api(self, repo, path, optional=False, expected_type=dict):
         self.assertEqual(repo, "sukujgrg/ViewTheWord")
         if path == "releases?per_page=100&page=1":
             if self.remote_release and self.remote_release["draft"] and self.hidden_draft_reads:
@@ -323,7 +323,7 @@ class ReleaseFlowTests(unittest.TestCase):
                 return json.dumps({"id": identifier, "status": status})
             if args[2] == "log":
                 return json.dumps({"jobId": identifier, "status": self.notary_status,
-                                   "sha256": "wrong" if self.wrong_notary_hash else self.submissions[identifier]})
+                                   "sha256": self.notary_hash_transform(self.submissions[identifier])})
             self.fail(f"Unexpected notarization command: {args}")
         if args[:2] == ("xcrun", "stapler"):
             if args[2] == "staple":
@@ -473,10 +473,10 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertTrue(self.existing_release)
 
     def test_tag_lookup_failure_after_push_resumes_prepared_release(self):
-        def request(repo, path, optional=False):
+        def request(repo, path, optional=False, expected_type=dict):
             if path == "git/tags/release-tag-sha":
                 raise release.ReleaseError("GitHub request failed after the tag was pushed (HTTP 503).")
-            return self.api(repo, path, optional=optional)
+            return self.api(repo, path, optional=optional, expected_type=expected_type)
 
         with patch.object(release, "github", side_effect=request):
             with self.assertRaisesRegex(release.ReleaseError, "after the tag was pushed"):
@@ -530,11 +530,43 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_unsupported_push_destinations_are_rejected(self):
-        for origin in ("https://example.invalid/repo.git", "https://github.com/elsewhere/app.git"):
+        for origin in ("https://example.invalid/repo.git", "https://github.com/elsewhere/app.git",
+                       "git@github.com:sukujgrg/ViewTheWord.git", "ssh://git@github.com/sukujgrg/ViewTheWord.git",
+                       "http://github.com/sukujgrg/ViewTheWord.git"):
             self.git("remote", "set-url", "origin", origin)
             with self.assertRaises(release.ReleaseError):
                 self.invoke()
         self.assert_not_published()
+
+    def test_https_remotes_with_or_without_git_suffix_are_supported(self):
+        for origin in ("https://github.com/sukujgrg/ViewTheWord", "https://github.com/sukujgrg/ViewTheWord.git"):
+            with self.subTest(origin=origin):
+                self.git("remote", "set-url", "origin", origin)
+                self.invoke(check=True)
+                self.assertEqual(release.release_repository(), ("sukujgrg/ViewTheWord", origin))
+        self.assertEqual(self.archive_count(), 0)
+
+    def test_push_url_must_be_one_https_url_even_when_fetch_url_is_valid(self):
+        self.git("config", "remote.origin.pushurl", "git@github.com:sukujgrg/ViewTheWord.git")
+        with self.assertRaisesRegex(release.ReleaseError, "one HTTPS GitHub push URL"):
+            self.invoke(check=True)
+        self.git("config", "remote.origin.pushurl", "https://github.com/sukujgrg/ViewTheWord.git")
+        self.git("config", "--add", "remote.origin.pushurl", "https://github.com/sukujgrg/ViewTheWord")
+        with self.assertRaisesRegex(release.ReleaseError, "one HTTPS GitHub push URL"):
+            self.invoke(check=True)
+        self.assertEqual(self.archive_count(), 0)
+
+    def test_resume_keeps_the_exact_https_push_url(self):
+        self.invoke(no_publish=True)
+        original = self.state
+        self.git("remote", "set-url", "origin", "https://github.com/sukujgrg/ViewTheWord")
+        with self.assertRaisesRegex(release.ReleaseError, "Cannot reuse"):
+            self.invoke(publish_only=True)
+        self.assertEqual(self.state, original)
+        self.assert_not_published()
+        self.git("remote", "set-url", "origin", original["origin"])
+        self.invoke(publish_only=True)
+        self.assertEqual(self.archive_count(), 1)
 
     def count(self, *prefix):
         return sum(call[:len(prefix)] == prefix for call in self.calls)
@@ -603,6 +635,42 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assert_not_published()
         self.invoke(resume_notarization=correct_id)
         self.assertEqual(self.state["notary_id"], correct_id)
+
+    def test_manual_submission_recovery_accepts_uppercase_sha256(self):
+        self.fail_once("submit", "after")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        (self.directory / "work/notary-submission.json").unlink()
+        self.notary_hash_transform = str.upper
+        identifier = next(iter(self.submissions))
+        self.invoke(resume_notarization=identifier)
+        self.assertEqual(self.state["notary_id"], identifier)
+        self.assertTrue(self.state["notarized"])
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 1)
+
+    def test_missing_malformed_and_different_apple_hashes_still_reject_recovery(self):
+        for value in (None, [], 42, "", "0" * 64, "A" * 63 + "G"):
+            with self.subTest(hash=value):
+                self.notary_hash_transform = lambda recorded: value
+                with self.assertRaisesRegex(release.ReleaseError, "does not match the saved archive"):
+                    self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "stapler", "staple"), 0)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 1)
+        self.assert_not_published()
+
+    def test_git_tag_signing_failure_preserves_prepared_artifacts_and_the_signing_preference(self):
+        self.git("config", "tag.gpgsign", "true")
+        self.git("config", "gpg.format", "openpgp")
+        self.git("config", "gpg.program", "/usr/bin/false")
+        self.git("config", "user.signingkey", "fixture-unavailable-key")
+        for options in ({}, {"publish_only": True}):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.invoke(**options)
+            release.verify_artifacts(self.directory, self.state)
+            self.assertEqual(self.git("config", "--bool", "tag.gpgsign"), "true")
+            self.assert_not_published()
+        self.assertEqual(self.archive_count(), 1)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 1)
 
     def test_stapler_failure_preserves_original_app_and_does_not_resubmit(self):
         self.fail_once("staple", "after")
@@ -786,10 +854,15 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertTrue((backup / "state.json").exists())
         self.assertEqual(self.archive_count(), 2)
 
-    def test_snapshot_of_release_notes_survives_retry_without_notes_argument(self):
-        notes = self.root / "build/notes.md"
-        notes.parent.mkdir(exist_ok=True)
+    def external_notes(self):
+        directory = tempfile.TemporaryDirectory(prefix="ViewTheWord notes ")
+        self.addCleanup(directory.cleanup)
+        notes = Path(directory.name) / "release notes.md"
         notes.write_text("Release notes with `code` and $literal text.\n")
+        return notes
+
+    def test_snapshot_of_release_notes_survives_retry_without_notes_argument(self):
+        notes = self.external_notes()
         self.fail_once("create", "after")
         with self.assertRaises(subprocess.CalledProcessError):
             self.invoke(notes=notes)
@@ -799,6 +872,61 @@ class ReleaseFlowTests(unittest.TestCase):
             self.invoke(publish_only=True, notes=notes)
         self.invoke(publish_only=True)
         self.assertEqual(self.remote_release["body"], saved)
+
+    def test_external_notes_are_read_before_preparation(self):
+        notes = self.external_notes()
+        text = notes.read_text()
+        self.after_archive = notes.unlink
+        self.invoke(notes=notes)
+        self.assertEqual(self.state["notes"], text)
+        self.assertTrue(self.remote_release["body"].startswith(text))
+
+    def test_notes_inside_checkout_are_rejected_before_the_dirty_check_or_build(self):
+        for notes in (self.root / "release-notes.md", self.root / "build/notes.md", self.root / "VERSION"):
+            with self.subTest(notes=notes):
+                notes.parent.mkdir(parents=True, exist_ok=True)
+                if not notes.exists():
+                    notes.write_text("Local notes")
+                with self.assertRaisesRegex(release.ReleaseError, "Keep release notes outside the checkout"):
+                    self.invoke(notes=notes)
+        self.assertEqual(self.calls, [])
+        self.assert_not_published()
+
+    def test_external_symlink_cannot_point_to_notes_inside_checkout(self):
+        notes = self.external_notes()
+        notes.unlink()
+        notes.symlink_to(self.root / "VERSION")
+        with self.assertRaisesRegex(release.ReleaseError, "outside the checkout"):
+            self.invoke(notes=notes)
+        self.assertEqual(self.calls, [])
+
+    def test_missing_external_notes_are_rejected_before_build_work(self):
+        notes = self.external_notes()
+        notes.unlink()
+        with self.assertRaisesRegex(release.ReleaseError, "Release notes file does not exist"):
+            self.invoke(notes=notes)
+        self.assertEqual(self.calls, [])
+
+    def test_finder_metadata_outside_saved_packages_does_not_invalidate_recovery(self):
+        self.fail_once("wait")
+        with self.assertRaises(release.ReleaseError):
+            self.invoke()
+        for directory in (self.root / "build/release", self.directory, self.directory / "work"):
+            (directory / ".DS_Store").write_bytes(b"Finder folder view")
+        self.invoke()
+        self.assertEqual(self.archive_count(), 1)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 1)
+
+    def test_finder_metadata_inside_saved_app_is_still_a_checkpoint_change(self):
+        self.fail_once("wait")
+        with self.assertRaises(release.ReleaseError):
+            self.invoke()
+        app = self.directory / "work/export/ViewTheWord.app"
+        (app / "Contents/.DS_Store").write_bytes(b"Finder package view")
+        with self.assertRaisesRegex(release.ReleaseError, "Saved artifact changed"):
+            self.invoke()
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 1)
+        self.assert_not_published()
 
     def test_read_only_check_does_not_create_recovery_files_or_access_apple(self):
         self.invoke(check=True)
@@ -1052,6 +1180,30 @@ class ReleaseFlowTests(unittest.TestCase):
 
 
 class GitHubTransportTests(unittest.TestCase):
+    def test_malformed_success_responses_stop_with_a_recoverable_error(self):
+        outputs = ["HTTP/2.0 200 OK\ncontent-type: application/json", "HTTP/2.0 200 OK\n\n"]
+        outputs += ["HTTP/2.0 200 OK\n\n" + body for body in ("{", "not JSON", "null", "42", '"string"', "[]")]
+        for output in outputs:
+            with self.subTest(output=output):
+                response = subprocess.CompletedProcess([], 0, output, "")
+                with patch.object(release.subprocess, "run", return_value=response):
+                    with self.assertRaisesRegex(release.ReleaseError, "malformed response.*completed work is retained"):
+                        release.github("owner/repo", "releases/latest", optional=True)
+
+    def test_crlf_headers_and_list_responses_are_supported(self):
+        output = 'HTTP/2.0 200 OK\r\ncontent-type: application/json\r\n\r\n[{"tag_name":"v4.0.1"}]'
+        response = subprocess.CompletedProcess([], 0, output, "")
+        with patch.object(release.subprocess, "run", return_value=response):
+            self.assertEqual(list(release.github_pages("owner/repo", "releases")), [{"tag_name": "v4.0.1"}])
+
+    def test_malformed_list_contents_are_rejected(self):
+        for body in ("{}", "[null]", "[42]", '["v4.0.1"]'):
+            with self.subTest(body=body):
+                response = subprocess.CompletedProcess([], 0, "HTTP/2.0 200 OK\n\n" + body, "")
+                with patch.object(release.subprocess, "run", return_value=response):
+                    with self.assertRaises(release.ReleaseError):
+                        list(release.github_pages("owner/repo", "releases"))
+
     def test_only_confirmed_404_is_treated_as_absent(self):
         for status, body, exit_code in ((200, '{"sha":"fixture"}', 0), (404, '{}', 1),
                                         (403, '{}', 1), (422, '{}', 1), (500, '{}', 1), (None, '', 1)):
@@ -1138,7 +1290,8 @@ class GitHubTransportTests(unittest.TestCase):
 
     def test_release_lookup_includes_drafts_and_later_pages(self):
         draft = {"id": 101, "tag_name": "v4.0.1", "draft": True}
-        def request(repo, path):
+        def request(repo, path, expected_type=dict):
+            self.assertIs(expected_type, list)
             if path == "releases?per_page=100&page=1":
                 return [{"id": index, "tag_name": f"v0.0.{index}", "draft": False} for index in range(100)]
             self.assertEqual(path, "releases?per_page=100&page=2")
