@@ -22,11 +22,14 @@ final class NativeWorkspaceTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let defaults = UserDefaults(suiteName: "NativeWorkspaceTests.\(UUID())")!
         let source = BibleSources(primary: directory.appendingPathComponent("ENG_TEST.bible"), secondary: nil, revision: 1)
+        let library = BibleLibrary(preloadedURLs: [source.primary])
         let workspace = MainWorkspaceController(navigation: VerseTargetModel(readerFactory: { _ in WorkspaceBible() }),
             history: HistoryStore(fileURL: directory.appendingPathComponent("history.json")),
             bookmarks: BookmarkStore(fileURL: directory.appendingPathComponent("bookmarks.json")),
-            library: BibleLibrary(preloadedURLs: [source.primary]), defaults: defaults,
-            sourceResolver: { _ in source })
+            library: library, defaults: defaults,
+            sourceResolver: { primaryOnly in
+                BibleSources(primary: source.primary, secondary: primaryOnly ? nil : source.primary, revision: library.revision)
+            })
         // Projection intent is tested without opening live output on a display.
         workspace.liveProjection.projectorWindowFactory = { _ in nil }
         let controller = MainWindowController(workspace: workspace, savesFrame: false)
@@ -82,6 +85,38 @@ final class NativeWorkspaceTests: XCTestCase {
         try await settle(subject)
         XCTAssertEqual(subject.projector.projectionOwner, .searchResult(VerseReference(book: "John", chapter: 3, verse: 2)!))
         XCTAssertTrue(subject.history.entries.isEmpty)
+    }
+
+    func testTranslationRefreshPreservesBookFilterAndBrowsing() async throws {
+        let (controller, directory) = try mounted()
+        defer { controller.close(); try? FileManager.default.removeItem(at: directory) }
+        let subject = controller.workspace
+        let john = VerseReference(book: "John", chapter: 3, verse: 1)!
+        subject.navigate(to: john)
+        try await settle(subject)
+        for browsingOtherBook in [false, true] {
+            if browsingOtherBook { subject.browse("Romans") }
+            subject.testamentControl.selectedSegment = BibleTestament.oldTestament.rawValue
+            subject.changeTestament(subject.testamentControl)
+            subject.focus(.books)
+            let responder = controller.window?.firstResponder
+            for refreshCatalog in [false, true] {
+                let previous = subject.sources
+                if refreshCatalog { subject.library.refresh() }
+                else { subject.defaults.set(!subject.primaryOnly, forKey: AppDefaultsKey.showOnlyPrimary) }
+                subject.render()
+                try await settle(subject)
+                XCTAssertNotEqual(subject.sources, previous)
+                XCTAssertEqual(subject.navigation.navigation.chapter?.sources, subject.sources)
+                XCTAssertEqual(subject.browsedBook, browsingOtherBook ? "Romans" : "John")
+                XCTAssertEqual(subject.browsedTestament, .oldTestament)
+                XCTAssertTrue(controller.window?.firstResponder === responder)
+            }
+            subject.navigate(to: john)
+            try await settle(subject)
+            XCTAssertEqual(subject.browsedBook, "John")
+            XCTAssertEqual(subject.browsedTestament, .newTestament)
+        }
     }
 
     func testBookmarkClearUndoUsesWindowResponderChain() throws {

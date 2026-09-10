@@ -153,7 +153,7 @@ struct BibleImportView: View {
             switch result {
             case .success(let urls): if let url = urls.first { library.importFile(url, presenter: .settings) }
             case .failure(let error):
-                if (error as? CocoaError)?.code != .userCancelled { library.notice = error.localizedDescription }
+                if (error as? CocoaError)?.code != .userCancelled { library.showNotice(error.localizedDescription, presenter: .settings) }
             }
         }
         .confirmationDialog("Remove imported translation?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), presenting: removing) { url in
@@ -180,13 +180,18 @@ struct BibleLibraryAlerts: ViewModifier {
     let presenter: BibleLibrary.Presenter
     func body(content: Content) -> some View {
         content
-            .alert("Bible Library", isPresented: Binding(get: { library.presentationTarget == presenter && library.notice != nil }, set: { if !$0 { library.notice = nil } })) {
-                Button("OK") { library.notice = nil }
-            } message: { Text(library.notice ?? "") }
-            .confirmationDialog("Replace imported translation?", isPresented: Binding(get: { library.presentationTarget == presenter && library.pendingReplacement != nil }, set: { if !$0 { library.pendingReplacement = nil } }), presenting: library.pendingReplacement) { url in
-                Button("Replace Translation", role: .destructive) { library.importFile(url, replaceExisting: true, presenter: presenter) }
-            } message: { url in
-                Text("Replace \(BibleTranslation.name(for: url))? The existing copy remains intact if validation or import fails.")
-            }
+            .alert(library.alert(for: presenter)?.title ?? "Bible Library", isPresented: Binding(
+                get: { library.alert(for: presenter) != nil },
+                // Every dismissal has an explicit button action tied to this alert's ID.
+                set: { _ in }
+            ), presenting: library.alert(for: presenter)) { alert in
+                switch alert.content {
+                case .notice:
+                    Button("OK") { library.completeAlert(alert.id) }
+                case .replacement:
+                    Button("Replace Translation", role: .destructive) { library.completeAlert(alert.id, replaceExisting: true) }
+                    Button("Cancel", role: .cancel) { library.completeAlert(alert.id) }
+                }
+            } message: { alert in Text(alert.message) }
     }
 }

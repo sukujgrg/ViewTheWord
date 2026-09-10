@@ -4,6 +4,7 @@ import AppKit
 final class NativeSearchFieldController: NSObject, NSSearchFieldDelegate {
     let field = ReferenceSearchField()
     private var didClearEmptyDraft = false
+    private(set) var interactionRevision = 0
     var onTextChange: (String) -> Void = { _ in }
     var onSubmit: () -> Void = {}
     var onClear: () -> Void = {}
@@ -44,6 +45,7 @@ final class NativeSearchFieldController: NSObject, NSSearchFieldDelegate {
     }
 
     func controlTextDidBeginEditing(_ notification: Notification) {
+        interactionRevision += 1
         if let editor = field.currentEditor() as? NSTextView {
             editor.isAutomaticSpellingCorrectionEnabled = false
             editor.isAutomaticQuoteSubstitutionEnabled = false
@@ -52,8 +54,17 @@ final class NativeSearchFieldController: NSObject, NSSearchFieldDelegate {
     }
 
     func controlTextDidChange(_ notification: Notification) {
+        interactionRevision += 1
         if !field.stringValue.isEmpty { didClearEmptyDraft = false }
         onTextChange(field.stringValue)
+    }
+
+    func controlTextDidEndEditing(_ notification: Notification) {
+        // Return submits before AppKit sends this notification; it is part of
+        // the same intent, not a newer focus change.
+        if notification.userInfo?[NSText.movementUserInfoKey] as? Int != NSTextMovement.return.rawValue {
+            interactionRevision += 1
+        }
     }
 
     @objc func submit(_ sender: NSSearchField) {

@@ -68,6 +68,10 @@ struct NativeWorkspaceReview {
         }
         precondition(NSApp.isRunning && NSApp.isActive && window.isKeyWindow,
                      "Window-event checks require a running AppKit application: running=\(NSApp.isRunning), active=\(NSApp.isActive), key=\(NSApp.keyWindow?.title ?? "nil"), visible=\(window.isVisible)")
+        try await checkDelayedSearchFocus(output: output)
+        try await checkQueuedLibraryAlerts(output: output)
+        window.makeKeyAndOrderFront(nil)
+        try await waitUntil { window.isKeyWindow }
         try await checkTestamentSwitch(workspace, window: window)
         try await checkNavigation(workspace, window: window)
         try await checkSavedActivation(workspace, window: window)
@@ -362,6 +366,120 @@ struct NativeWorkspaceReview {
         }
         preconditionFailure("Native asynchronous event did not complete")
     }
+    @MainActor static func checkDelayedSearchFocus(output: URL) async throws {
+        let reader = ReviewBibleGate()
+        await reader.suspend(chapters: false, lookups: false, searches: true)
+        let defaultsName = "ViewTheWord.DelayedSearchReview"
+        let defaults = UserDefaults(suiteName: defaultsName)!
+        let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: []), defaults: defaults, sourceResolver: { _ in
+            BibleSources(primary: output.appendingPathComponent("ENG_TEST.bible"), secondary: nil, revision: 1)
+        })
+        live.projectorWindowFactory = { _ in nil }
+        let tabs = PassageTabsController(liveProjection: live,
+            history: HistoryStore(fileURL: output.appendingPathComponent("focus-history.json")),
+            bookmarks: BookmarkStore(fileURL: output.appendingPathComponent("focus-bookmarks.json")), savesFrames: false,
+            navigationFactory: { VerseTargetModel(readerFactory: { _ in reader }) })
+        let controller = tabs.open()
+        let subject = controller.workspace
+        let window = controller.window!
+        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        try await waitUntil { NSApp.isActive && window.isKeyWindow }
+        defer {
+            for tab in tabs.windows { tab.close() }
+            tabs.shutdown()
+            defaults.removePersistentDomain(forName: defaultsName)
+        }
+        for mode in [SearchMode.wordSearch, .phraseSearch] {
+            for action in ["unchanged", "edit", "edit back", "move focus", "leave and return"] {
+                subject.changeSearchMode(mode)
+                subject.focusSearch(nil)
+                var editor = subject.search.field.currentEditor() as! NSTextView
+                editor.selectAll(nil)
+                editor.insertText("hope", replacementRange: editor.selectedRange())
+                sendKey("\r", code: 36, window: window)
+                try await waitUntil { await reader.hasSearch }
+                switch action {
+                case "edit", "edit back":
+                    // Return can end field editing. Command-L starts the user's
+                    // next draft through the real toolbar responder command.
+                    command("l", modifiers: .command, code: 37, window: window)
+                    editor = subject.search.field.currentEditor() as! NSTextView
+                    editor.selectAll(nil)
+                    editor.insertText("faith", replacementRange: editor.selectedRange())
+                    if action == "edit back" {
+                        editor.selectAll(nil)
+                        editor.insertText("hope", replacementRange: editor.selectedRange())
+                    }
+                case "move focus", "leave and return":
+                    subject.focus(.books)
+                    if action == "leave and return" {
+                        subject.focusSearch(nil)
+                        editor = subject.search.field.currentEditor() as! NSTextView
+                    }
+                default: break
+                }
+                await reader.release()
+                try await settle(subject)
+                precondition(subject.verses.rows.count == 3)
+                switch action {
+                case "unchanged":
+                    precondition(window.firstResponder === subject.verses.table, "An unchanged \(mode) submission focuses results")
+                case "move focus":
+                    precondition(window.firstResponder === subject.books.outline, "A pending search must respect newer focus")
+                default:
+                    precondition(window.firstResponder === editor, "\(mode) completion must preserve the editor after \(action)")
+                    precondition(subject.draft == (action == "edit" ? "faith" : "hope"))
+                }
+            }
+        }
+        reviewLog("PASS delayed Words/Phrase search: Return focuses results only without newer edits or focus changes")
+    }
+
+    @MainActor static func checkQueuedLibraryAlerts(output: URL) async throws {
+        let library = BibleLibrary(preloadedURLs: [], importer: { url, _, replace in
+            if url.lastPathComponent.contains("EXISTING") && !replace {
+                throw BibleImportError.bibleAlreadyExists(url.lastPathComponent)
+            }
+            if url.lastPathComponent.contains("INVALID") { throw CocoaError(.fileReadCorruptFile) }
+            return url
+        })
+        let defaultsName = "ViewTheWord.QueuedImportsReview"
+        let defaults = UserDefaults(suiteName: defaultsName)!
+        let live = LiveProjectionController(library: library, defaults: defaults, sourceResolver: { _ in
+            BibleSources(primary: output.appendingPathComponent("ENG_TEST.bible"), secondary: nil, revision: library.revision)
+        })
+        live.projectorWindowFactory = { _ in nil }
+        let tabs = PassageTabsController(liveProjection: live,
+            history: HistoryStore(fileURL: output.appendingPathComponent("import-history.json")),
+            bookmarks: BookmarkStore(fileURL: output.appendingPathComponent("import-bookmarks.json")), savesFrames: false)
+        let inactive = tabs.open()
+        let active = tabs.open(after: inactive)
+        let window = active.window!
+        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        try await waitUntil { window.isKeyWindow }
+        defer {
+            for tab in tabs.windows { tab.close() }
+            tabs.shutdown()
+            defaults.removePersistentDomain(forName: defaultsName)
+        }
+        for name in ["FIRST", "EXISTINGCANCEL", "EXISTINGREPLACE", "INVALID", "LAST"] {
+            library.importFile(output.appendingPathComponent("ENG_\(name).bible"), presenter: .main)
+        }
+        for (name, response) in [("FIRST", NSApplication.ModalResponse.alertFirstButtonReturn),
+                                 ("EXISTINGCANCEL", .alertSecondButtonReturn), ("EXISTINGREPLACE", .alertFirstButtonReturn),
+                                 ("EXISTINGREPLACE", .alertFirstButtonReturn), ("INVALID", .alertFirstButtonReturn),
+                                 ("LAST", .alertFirstButtonReturn)] {
+            try await waitUntil { window.attachedSheet != nil }
+            let alert = library.alert(for: .main)!
+            precondition(alert.message.contains(name), "Each queued result must retain its file identity")
+            precondition(inactive.window!.attachedSheet == nil, "Only the active tab may present a library alert")
+            window.endSheet(window.attachedSheet!, returnCode: response)
+            try await waitUntil { library.alert(for: .main)?.id != alert.id }
+        }
+        precondition(!library.isImporting && library.alerts.isEmpty)
+        precondition(Set(library.urls.map(\.lastPathComponent)) == ["ENG_FIRST.bible", "ENG_EXISTINGREPLACE.bible", "ENG_LAST.bible"])
+        reviewLog("PASS queued import sheets: all files, explicit Replace/Cancel, failures continue, one active-tab presenter")
+    }
     @MainActor static func sendKey(_ key: String, code: UInt16, modifiers: NSEvent.ModifierFlags = [], window: NSWindow) {
         let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
             windowNumber: window.windowNumber, context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: code)!
@@ -620,14 +738,20 @@ struct NativeWorkspaceReview {
 private actor ReviewBibleGate: BibleReading {
     private var suspendChapters = false
     private var suspendLookups = false
+    private var suspendSearches = false
     private var chapterContinuation: CheckedContinuation<Void, Never>?
     private var lookupContinuation: CheckedContinuation<Void, Never>?
+    private var searchContinuation: CheckedContinuation<Void, Never>?
     var hasChapter: Bool { chapterContinuation != nil }
     var hasLookup: Bool { lookupContinuation != nil }
-    func suspend(chapters: Bool, lookups: Bool) { suspendChapters = chapters; suspendLookups = lookups }
+    var hasSearch: Bool { searchContinuation != nil }
+    func suspend(chapters: Bool, lookups: Bool, searches: Bool = false) {
+        suspendChapters = chapters; suspendLookups = lookups; suspendSearches = searches
+    }
     func release() {
         chapterContinuation?.resume(); chapterContinuation = nil
         lookupContinuation?.resume(); lookupContinuation = nil
+        searchContinuation?.resume(); searchContinuation = nil
     }
     func chapter(_ reference: VerseReference) async throws -> [AVerse] {
         if suspendChapters { await withCheckedContinuation { chapterContinuation = $0 } }
@@ -638,6 +762,7 @@ private actor ReviewBibleGate: BibleReading {
         return references.map { AVerse(reference: $0, verse: "Hope and faith") }
     }
     func search(_ request: TextSearchRequest, after: VerseCoordinate?, limit: Int) async throws -> [AVerse] {
-        (1...3).map { AVerse(reference: VerseReference(book: "John", chapter: 3, verse: $0)!, verse: "Hope and faith") }
+        if suspendSearches { await withCheckedContinuation { searchContinuation = $0 } }
+        return (1...3).map { AVerse(reference: VerseReference(book: "John", chapter: 3, verse: $0)!, verse: "Hope and faith") }
     }
 }

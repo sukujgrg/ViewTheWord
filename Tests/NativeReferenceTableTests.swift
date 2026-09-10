@@ -277,6 +277,45 @@ final class NativeReferenceTableTests: XCTestCase {
         XCTAssertTrue(subject.table.visibleRect.intersects(subject.table.rect(ofRow: 89)))
     }
 
+    func testAppendingSearchPagePreservesVisibleReferenceAndOffset() async throws {
+        let subject = controller()
+        let window = mountedWindow(subject)
+        defer { window.close() }
+        let rows = (1...200).map { number in
+            var item = row(number % 100 + 1, chapter: number / 100 + 1)
+            item.secondaryText = String(repeating: "ദൈവം സ്നേഹമാകുന്നു. ", count: number % 7 + 1)
+            item.heading = item.reference.verseQuery.title
+            return item
+        }
+        let style = NativeReferenceStyle.results(fontSize: 17, dual: true)
+        let searchID = UUID()
+        subject.activatesOnSelection = false
+        subject.apply(rows: Array(rows.prefix(100)), selection: rows[0].reference, style: style, scrollRequest: searchID)
+        try await settle(subject)
+        subject.table.scrollRowToVisible(99)
+        try await settle(subject)
+        let top = subject.table.rows(in: subject.table.visibleRect).location
+        let reference = subject.rows[top].reference
+        let offset = subject.table.visibleRect.minY - subject.table.rect(ofRow: top).minY
+        XCTAssertGreaterThan(top, 0)
+        subject.apply(rows: Array(rows.prefix(100)), selection: rows[0].reference, style: style, enabled: false, scrollRequest: searchID)
+        subject.apply(rows: Array(rows.prefix(150)), selection: rows[0].reference, style: style, scrollRequest: searchID)
+        try await settle(subject)
+        let restoredTop = subject.table.rows(in: subject.table.visibleRect).location
+        XCTAssertEqual(subject.rows[restoredTop].reference, reference)
+        XCTAssertEqual(subject.table.visibleRect.minY - subject.table.rect(ofRow: restoredTop).minY, offset, accuracy: 1)
+        XCTAssertEqual(subject.selectedReference, rows[0].reference)
+
+        // Even if a new query extends the old rows, its new ID must reveal the selection.
+        subject.apply(rows: rows, selection: rows[0].reference, style: style, scrollRequest: UUID())
+        try await settle(subject)
+        XCTAssertTrue(subject.table.visibleRect.intersects(subject.table.rect(ofRow: 0)))
+        subject.table.scrollRowToVisible(90)
+        subject.apply(rows: Array(rows.suffix(100)), selection: rows[100].reference, style: style, scrollRequest: UUID())
+        try await settle(subject)
+        XCTAssertTrue(subject.table.visibleRect.intersects(subject.table.rect(ofRow: 0)))
+    }
+
     func testCopyMenuValidationFollowsSelectionTranslationAndLoading() {
         let subject = controller()
         let copy = NSMenuItem(title: "Copy", action: #selector(ReferenceNSTableView.copy(_:)), keyEquivalent: "c")

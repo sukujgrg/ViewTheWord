@@ -49,11 +49,7 @@ final class MainWorkspaceController: NSViewController {
     let preview = NSPopover()
     var searchToolbarItem: NSSearchToolbarItem?
 
-    private(set) var browsedBook: String? {
-        didSet {
-            if let browsedBook { browsedTestament = BibleTestament(book: browsedBook) }
-        }
-    }
+    private(set) var browsedBook: String?
     private(set) var browsedTestament = BibleTestament.oldTestament
     private(set) var searchMode = SearchMode.verseReference
     private(set) var draft = ""
@@ -214,7 +210,8 @@ final class MainWorkspaceController: NSViewController {
             }
             if !rows.contains(where: { $0.reference == searchSelection }) { searchSelection = rows.first?.reference }
             verses.activatesOnSelection = false
-            verses.apply(rows: rows, selection: searchSelection, style: .results(fontSize: rowFontSize, dual: sources.secondary != nil), enabled: !navigation.isLoading)
+            verses.apply(rows: rows, selection: searchSelection, style: .results(fontSize: rowFontSize, dual: sources.secondary != nil),
+                         enabled: !navigation.isLoading, scrollRequest: page.id)
             referenceTitle.stringValue = "Search results"
             resultLabel.stringValue = "\(page.hits.count)\(page.hasMore ? "+" : "") results for “\(page.request.text)”"
             resultsHeader.isHidden = false
@@ -278,7 +275,7 @@ final class MainWorkspaceController: NSViewController {
     func browse(_ book: String) {
         guard book != browsedBook else { return }
         navigation.cancelLoading(clearSearch: true)
-        browsedBook = book
+        revealBook(book)
         searchSelection = nil
         render()
     }
@@ -291,15 +288,18 @@ final class MainWorkspaceController: NSViewController {
     }
 
     func navigate(to reference: VerseReference, project: Bool = false, recordHistory: Bool = false,
-                  updateDraft: Bool = true, focusVerses: Bool = true) {
+                  updateDraft: Bool = true, focusVerses: Bool = true, updateBrowsing: Bool = true) {
         let originalDraft = draft
+        let interactionRevision = search.interactionRevision
+        let responder = view.window?.firstResponder
+        let wasEditingSearch = responder != nil && responder === search.field.currentEditor()
         let intent = project ? liveProjection.beginIntent(using: navigation) : nil
         navigation.navigate(to: reference, sources: sources, project: project) { [weak self] result in
             guard let self else { return }
-            self.browsedBook = result.reference.book
-            if updateDraft && self.draft == originalDraft {
+            if updateBrowsing { self.revealBook(result.reference.book) }
+            if updateDraft && self.draft == originalDraft && self.search.interactionRevision == interactionRevision {
                 self.draft = result.reference.verseQuery.title
-                if focusVerses { self.focus(.verses) }
+                if focusVerses && self.focusUnchanged(from: responder, wasEditingSearch: wasEditingSearch) { self.focus(.verses) }
             }
             if recordHistory && result.requestedAvailable { self.history.append(reference.verseQuery.title) }
             if let projection = result.projection, let intent { self.liveProjection.publish(projection, intent: intent) }
@@ -316,7 +316,16 @@ final class MainWorkspaceController: NSViewController {
                 navigate(to: reference, project: true, recordHistory: true)
             case .text(let request):
                 searchSelection = nil
-                navigation.search(request, sources: sources) { [weak self] in self?.focus(.verses) }
+                let submittedDraft = draft
+                let interactionRevision = search.interactionRevision
+                let responder = view.window?.firstResponder
+                let wasEditingSearch = responder != nil && responder === search.field.currentEditor()
+                navigation.search(request, sources: sources) { [weak self] in
+                    guard let self, self.draft == submittedDraft,
+                          self.search.interactionRevision == interactionRevision,
+                          self.focusUnchanged(from: responder, wasEditingSearch: wasEditingSearch) else { return }
+                    self.focus(.verses)
+                }
             }
         } catch {
             navigation.cancelAll()
@@ -333,7 +342,7 @@ final class MainWorkspaceController: NSViewController {
         navigation.cancelLoading(clearSearch: true)
         navigation.message = nil
         if navigation.navigation.chapter?.sources != sources, let reference = navigation.refreshReference {
-            navigate(to: reference, updateDraft: false, focusVerses: false)
+            navigate(to: reference, updateDraft: false, focusVerses: false, updateBrowsing: false)
         }
         renderSearchField()
         scheduleRender()
@@ -345,7 +354,7 @@ final class MainWorkspaceController: NSViewController {
             liveProjection.requestProjection(owner: .searchResult(reference), using: navigation)
         } else {
             guard let projection = navigation.prepareRowProjection(reference, sources: sources) else { return }
-            browsedBook = reference.book
+            revealBook(reference.book)
             draft = reference.verseQuery.title
             liveProjection.publishRow(projection)
         }
@@ -353,8 +362,23 @@ final class MainWorkspaceController: NSViewController {
 
     func refreshSources() {
         if let request = navigation.searchRequest { navigation.search(request, sources: sources) }
-        else if let reference = navigation.refreshReference { navigate(to: reference, updateDraft: false, focusVerses: false) }
+        else if let reference = navigation.refreshReference {
+            navigate(to: reference, updateDraft: false, focusVerses: false, updateBrowsing: false)
+        }
         else { navigation.cancelLoading() }
+    }
+
+    private func revealBook(_ book: String) {
+        browsedBook = book
+        browsedTestament = BibleTestament(book: book)
+    }
+
+    private func focusUnchanged(from responder: NSResponder?, wasEditingSearch: Bool) -> Bool {
+        guard let window = view.window else { return false }
+        if window.firstResponder === responder { return true }
+        // Return may end field editing and give first responder back to the
+        // search control or window. No other control gained focus in that case.
+        return wasEditingSearch && (window.firstResponder === search.field || window.firstResponder === window)
     }
 
     func toggleBookmark(_ reference: VerseReference) {
@@ -392,28 +416,25 @@ final class MainWorkspaceController: NSViewController {
     }
 
     private func presentLibraryAlertIfNeeded() {
-        guard !presentingLibraryAlert, library.presentationTarget == .main, let window = view.window, window.isKeyWindow else { return }
-        if let url = library.pendingReplacement {
-            // Claim the shared request before another passage window can present it.
-            library.pendingReplacement = nil
-            presentingLibraryAlert = true
-            let alert = NSAlert()
-            alert.messageText = "Replace imported translation?"
-            alert.informativeText = "Replace \(url.lastPathComponent) with the selected file?"
+        guard !presentingLibraryAlert, let window = view.window, window.isKeyWindow,
+              let request = library.claimAlert(for: .main) else { return }
+        presentingLibraryAlert = true
+        let alert = NSAlert()
+        alert.messageText = request.title
+        alert.informativeText = request.message
+        let replacing: Bool
+        if case .replacement = request.content {
+            replacing = true
             alert.addButton(withTitle: "Replace")
             alert.addButton(withTitle: "Cancel")
-            alert.beginSheetModal(for: window) { [weak self] response in
-                guard let self else { return }
-                self.presentingLibraryAlert = false
-                if response == .alertFirstButtonReturn { self.library.importFile(url, replaceExisting: true, presenter: .main) }
-            }
-        } else if let notice = library.notice {
-            presentingLibraryAlert = true
-            library.notice = nil
-            let alert = NSAlert()
-            alert.messageText = "Bible Library"
-            alert.informativeText = notice
-            alert.beginSheetModal(for: window) { [weak self] _ in self?.presentingLibraryAlert = false }
+        } else {
+            replacing = false
+            alert.addButton(withTitle: "OK")
+        }
+        alert.beginSheetModal(for: window) { [weak self, library] response in
+            self?.presentingLibraryAlert = false
+            library.completeAlert(request.id, replaceExisting: replacing && response == .alertFirstButtonReturn)
+            self?.scheduleRender()
         }
     }
 }

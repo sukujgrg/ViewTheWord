@@ -8,12 +8,21 @@ struct SearchHit: Identifiable, Sendable {
     var id: VerseCoordinate { pair.id }
 }
 
-struct SearchPage: Sendable {
+struct SearchPage: Identifiable, Sendable {
+    let id: UUID
     let request: TextSearchRequest
     let sources: BibleSources
     let hits: [SearchHit]
     let hasMore: Bool
     var cursor: VerseCoordinate? { hits.last?.id }
+
+    init(id: UUID = UUID(), request: TextSearchRequest, sources: BibleSources, hits: [SearchHit], hasMore: Bool) {
+        self.id = id
+        self.request = request
+        self.sources = sources
+        self.hits = hits
+        self.hasMore = hasMore
+    }
 }
 
 struct NavigationResult {
@@ -162,6 +171,7 @@ final class VerseTargetModel: ObservableObject {
         guard !isLoading, let chapter = navigation.chapter, chapter.sources == sources,
               let row = chapter.row(at: reference) else { return nil }
         cancelAll()
+        message = nil
         navigation = NavigationState(reference: reference, chapter: chapter)
         return PreparedProjection(pair: row, sources: sources, owner: .verseRowSelection(reference))
     }
@@ -171,6 +181,9 @@ final class VerseTargetModel: ObservableObject {
         cancelProjection()
         let id = projectionGeneration
         isProjecting = true
+        // Clear the previous attempt's error now, so a later successful lookup
+        // cannot erase an error from newer, independent navigation work.
+        message = nil
         let (primary, secondary) = databases(sources)
         projectionTask = Task { [weak self] in
             do {
@@ -207,7 +220,8 @@ final class VerseTargetModel: ObservableObject {
             do {
                 let page = try await Self.loadSearchPage(request, sources: sources, primary: primary, secondary: secondary, after: previous?.cursor)
                 guard let self, self.current(id) else { return }
-                self.searchPage = SearchPage(request: request, sources: sources, hits: (previous?.hits ?? []) + page.hits, hasMore: page.hasMore)
+                self.searchPage = SearchPage(id: previous?.id ?? page.id, request: request, sources: sources,
+                                           hits: (previous?.hits ?? []) + page.hits, hasMore: page.hasMore)
                 self.isLoading = false
                 self.task = nil
                 onComplete()

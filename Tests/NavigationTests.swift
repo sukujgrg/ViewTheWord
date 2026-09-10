@@ -253,4 +253,42 @@ final class NavigationTests: XCTestCase {
         XCTAssertThrowsError(try LoadedChapter(reference: verse(4).reference, sources: sources, primary: [verse(3)], secondary: []))
         XCTAssertThrowsError(try LoadedChapter(reference: verse(3).reference, sources: sources, primary: [verse(3), verse(3)], secondary: []))
     }
+
+    func testValidRowClearsValidationErrorButRejectedRowKeepsIt() async {
+        let row = verse(3, 16)
+        let model = VerseTargetModel(readerFactory: { _ in MemoryBible(rows: [row]) })
+        let loaded = expectation(description: "chapter loaded")
+        model.navigate(to: row.reference, sources: sources) { _ in loaded.fulfill() }
+        await fulfillment(of: [loaded], timeout: 1)
+        model.message = QueryError.invalidReference.localizedDescription
+        XCTAssertNil(model.prepareRowProjection(verse(4).reference, sources: sources))
+        XCTAssertNotNil(model.message)
+        XCTAssertEqual(model.prepareRowProjection(row.reference, sources: sources)?.owner, .verseRowSelection(row.reference))
+        XCTAssertNil(model.message)
+    }
+
+    func testProjectionRetryClearsOldErrorAndPreservesNewerNavigationError() async {
+        let reader = SuspendedBible()
+        let model = VerseTargetModel(readerFactory: { _ in reader })
+        let row = verse(3, 16)
+        let missing = expectation(description: "missing projection")
+        model.requestProjection(owner: .searchResult(row.reference), sources: sources) { _ in missing.fulfill() }
+        await reader.waitForLookup(row.reference)
+        await reader.finishLookup(row.reference, rows: [])
+        await fulfillment(of: [missing], timeout: 1)
+        XCTAssertNotNil(model.message)
+
+        let retry = expectation(description: "successful retry")
+        model.requestProjection(owner: .searchResult(row.reference), sources: sources) { result in
+            XCTAssertNotNil(result)
+            retry.fulfill()
+        }
+        await reader.waitForLookup(row.reference)
+        XCTAssertNil(model.message)
+        let newerError = "The newly browsed chapter could not be loaded."
+        model.message = newerError
+        await reader.finishLookup(row.reference, rows: [row])
+        await fulfillment(of: [retry], timeout: 1)
+        XCTAssertEqual(model.message, newerError)
+    }
 }

@@ -88,6 +88,16 @@ final class NativeReferenceTableController: NSObject, NSTableViewDataSource, NST
         let revealRequested = lastScrollRequest != scrollRequest
         lastScrollRequest = scrollRequest
         let oldSelection = selectedReference
+        let oldCount = rows.count
+        let appendingResults = newStyle.isSearch && style == newStyle && !rows.isEmpty && newRows.count > oldCount
+            && zip(rows, newRows).allSatisfy {
+                $0.reference == $1.reference && $0.primaryText == $1.primaryText
+                    && $0.secondaryText == $1.secondaryText && $0.heading == $1.heading
+            }
+        let preserveViewport = appendingResults && !revealRequested && oldSelection == selection
+        let visibleRow = table.rows(in: table.visibleRect).location
+        let anchor = preserveViewport && rows.indices.contains(visibleRow) ? rows[visibleRow].reference : nil
+        let offset = anchor == nil ? 0 : table.visibleRect.minY - table.rect(ofRow: visibleRow).minY
         isApplyingSnapshot = true
         defer { isApplyingSnapshot = false }
         rows = newRows
@@ -95,7 +105,10 @@ final class NativeReferenceTableController: NSObject, NSTableViewDataSource, NST
         self.enabled = enabled
         table.usesAlternatingRowBackgroundColors = style.isVerse
         table.setAccessibilityLabel(style.isSearch ? "Search results" : style.isVerse ? "Bible verses" : "Chapters")
-        if layoutChanged {
+        if appendingResults {
+            // Keep the existing rows and their automatic height measurements.
+            table.insertRows(at: IndexSet(integersIn: oldCount..<rows.count), withAnimation: [])
+        } else if layoutChanged {
             table.rowHeight = style.isVerse ? 100 : 30
             table.reloadData()
         }
@@ -104,10 +117,15 @@ final class NativeReferenceTableController: NSObject, NSTableViewDataSource, NST
             table.selectRowIndexes(index.map { IndexSet(integer: $0) } ?? [], byExtendingSelection: false)
         }
         refreshVisibleCells()
-        if let index, referencesChanged || revealRequested || oldSelection != selection {
+        if let index, !preserveViewport && (referencesChanged || revealRequested || oldSelection != selection) {
             table.scrollRowToVisible(index)
         }
-        if layoutChanged { resized() }
+        if let anchor, let index = rows.firstIndex(where: { $0.reference == anchor }) {
+            table.layoutSubtreeIfNeeded()
+            scrollView.contentView.scroll(to: NSPoint(x: table.visibleRect.minX, y: table.rect(ofRow: index).minY + offset))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
+        if layoutChanged && !appendingResults { resized() }
     }
 
     var selectedReference: VerseReference? {
