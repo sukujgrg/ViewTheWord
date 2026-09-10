@@ -47,7 +47,7 @@ struct NativeWorkspaceReview {
         let savedReferences = [("Joshua", 7, 17), ("Joshua", 7, 18), ("1 Samuel", 12, 3),
                                ("Ecclesiastes", 8, 8), ("Ecclesiastes", 8, 10), ("Ecclesiastes", 8, 17),
                                ("Ezra", 10, 42), ("Zechariah", 14, 6), ("Ephesians", 6, 8),
-                               ("Psalm", 23, 1), ("John", 3, 16), ("Romans", 8, 28)]
+                               ("Psalm", 23, 1), ("John", 3, 16), ("Romans", 8, 28), ("Esther", 8, 9)]
             .map { VerseReference(book: $0.0, chapter: $0.1, verse: $0.2)! }
         for reference in savedReferences {
             workspace.bookmarks.add(reference)
@@ -68,6 +68,9 @@ struct NativeWorkspaceReview {
         }
         precondition(NSApp.isRunning && NSApp.isActive && window.isKeyWindow,
                      "Window-event checks require a running AppKit application: running=\(NSApp.isRunning), active=\(NSApp.isActive), key=\(NSApp.keyWindow?.title ?? "nil"), visible=\(window.isVisible)")
+        defer { tabs.shutdown(); for tab in tabs.windows { tab.close() }; defaults.removePersistentDomain(forName: "ViewTheWord.NativeWorkspaceReview") }
+        try await checkHistoryVerseReveal(workspace, window: window, output: output)
+        if CommandLine.arguments.contains("--history-reveal-only") { return }
         try await checkDelayedSearchFocus(output: output)
         try await checkQueuedLibraryAlerts(output: output)
         window.makeKeyAndOrderFront(nil)
@@ -76,7 +79,6 @@ struct NativeWorkspaceReview {
         try await checkNavigation(workspace, window: window)
         try await checkSavedActivation(workspace, window: window)
         try await checkBookmarkRemoval(workspace, window: window)
-        defer { tabs.shutdown(); for tab in tabs.windows { tab.close() }; defaults.removePersistentDomain(forName: "ViewTheWord.NativeWorkspaceReview") }
         try await checkPassageTabs(tabs, original: controller, output: output, outputCreations: { outputCreations })
         try await checkTabCancellation(output: output)
         window.makeKeyAndOrderFront(nil)
@@ -541,6 +543,50 @@ struct NativeWorkspaceReview {
         workspace.closeProjector()
         try await settle(workspace)
         workspace.changeSearchMode(.verseReference)
+    }
+    @MainActor static func checkHistoryVerseReveal(_ workspace: MainWorkspaceController, window: NSWindow, output: URL) async throws {
+        let origin = VerseReference(book: "Psalm", chapter: 117, verse: 2)!
+        let target = VerseReference(book: "Esther", chapter: 8, verse: 9)!
+        let historyBefore = workspace.history.entries
+        for (name, width, height, fontSize, primaryOnly) in [
+            ("history-esther-bilingual", 1200.0, 800.0, 17.0, false),
+            ("history-esther-compact", 950.0, 600.0, 20.0, false),
+            ("history-esther-primary", 1200.0, 800.0, 17.0, true)
+        ] {
+            window.setContentSize(NSSize(width: width, height: height))
+            workspace.defaults.set(fontSize, forKey: AppDefaultsKey.verseRowFontSize)
+            workspace.defaults.set(primaryOnly, forKey: AppDefaultsKey.showOnlyPrimary)
+            workspace.render()
+            try await settle(workspace)
+            // Repeat to cover a click on the already-selected History entry.
+            for _ in 0..<2 {
+                workspace.navigate(to: origin, focusVerses: false)
+                try await settle(workspace)
+                precondition(workspace.verses.rows.count == 2)
+                activateSaved(target, in: workspace.savedHistory, window: window)
+                try await settle(workspace)
+                precondition(workspace.verses.selectedReference == target)
+                let table = workspace.verses.table
+                let row = table.rect(ofRow: table.selectedRow)
+                let viewport = table.visibleRect
+                let frame = workspace.verses.scrollView
+                let bitmap = frame.bitmapImageRepForCachingDisplay(in: frame.bounds)!
+                frame.cacheDisplay(in: frame.bounds, to: bitmap)
+                try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(name + ".png"))
+                if row.height <= viewport.height {
+                    precondition(abs(row.midY - viewport.midY) <= 1,
+                                 "History must center the measured verse: row=\(row), viewport=\(viewport)")
+                } else {
+                    precondition(abs(row.minY - viewport.minY) <= 1,
+                                 "A verse taller than the viewport must start visibly at the top: row=\(row), viewport=\(viewport)")
+                }
+            }
+            reviewLog("PASS \(name): Psalm 117:2 → History Esther 8:9, measured verse reveal and same-row reactivation")
+        }
+        precondition(workspace.history.entries == historyBefore)
+        workspace.defaults.set(false, forKey: AppDefaultsKey.showOnlyPrimary)
+        workspace.closeProjector()
+        try await settle(workspace)
     }
     @MainActor static func checkBookmarkRemoval(_ workspace: MainWorkspaceController, window: NSWindow) async throws {
         let saved = workspace.savedBookmarks

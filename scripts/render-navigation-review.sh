@@ -29,7 +29,7 @@ codesign --force --sign - "$REVIEW_APP"
 rm -f "$REVIEW_OUTPUT/passed"
 : > "$REVIEW_OUTPUT/events.log"
 : > "$REVIEW_OUTPUT/events-errors.log"
-open -n -W --stdout "$REVIEW_OUTPUT/events.log" --stderr "$REVIEW_OUTPUT/events-errors.log" "$REVIEW_APP" --args "$PWD"
+open -n -W --stdout "$REVIEW_OUTPUT/events.log" --stderr "$REVIEW_OUTPUT/events-errors.log" "$REVIEW_APP" --args "$PWD" "$@"
 cat "$REVIEW_OUTPUT/events.log" "$REVIEW_OUTPUT/events-errors.log"
 # open reports launch success rather than the app's exit code. Only a completed
 # review writes this marker; assertions, crashes, and thrown errors fail the script.

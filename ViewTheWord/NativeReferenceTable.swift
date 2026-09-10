@@ -40,6 +40,7 @@ final class NativeReferenceTableController: NSObject, NSTableViewDataSource, NST
     private(set) var enabled = true
     private var isApplyingSnapshot = false
     private var resizeTask: Task<Void, Never>?
+    private var revealTask: Task<Void, Never>?
     private var lastScrollRequest: UUID?
     var onActivate: (VerseReference) -> Void = { _ in }
     var onToggle: (VerseReference) -> Void = { _ in }
@@ -78,7 +79,7 @@ final class NativeReferenceTableController: NSObject, NSTableViewDataSource, NST
         scrollView.borderType = .noBorder
     }
 
-    deinit { resizeTask?.cancel() }
+    deinit { resizeTask?.cancel(); revealTask?.cancel() }
 
     func apply(rows newRows: [NativeReferenceRow], selection: VerseReference?,
                style newStyle: NativeReferenceStyle, enabled: Bool = true, scrollRequest: UUID? = nil) {
@@ -117,8 +118,8 @@ final class NativeReferenceTableController: NSObject, NSTableViewDataSource, NST
             table.selectRowIndexes(index.map { IndexSet(integer: $0) } ?? [], byExtendingSelection: false)
         }
         refreshVisibleCells()
-        if let index, !preserveViewport && (referencesChanged || revealRequested || oldSelection != selection) {
-            table.scrollRowToVisible(index)
+        if index != nil, !preserveViewport && (referencesChanged || revealRequested || oldSelection != selection) {
+            revealSelectionAfterLayout()
         }
         if let anchor, let index = rows.firstIndex(where: { $0.reference == anchor }) {
             table.layoutSubtreeIfNeeded()
@@ -201,6 +202,41 @@ final class NativeReferenceTableController: NSObject, NSTableViewDataSource, NST
         guard enabled, rows.indices.contains(index) else { return }
         table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
         table.scrollRowToVisible(index)
+    }
+
+    private func revealSelectionAfterLayout() {
+        revealTask?.cancel()
+        guard let reference = selectedReference else { return }
+        revealTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard !Task.isCancelled, let self, self.selectedReference == reference else { return }
+            // A new chapter starts with estimated row heights. Finish width-driven
+            // invalidation, then bring the target into view so AppKit measures it.
+            self.scrollView.layoutSubtreeIfNeeded()
+            while let resizeTask = self.resizeTask {
+                await resizeTask.value
+                guard !Task.isCancelled, self.selectedReference == reference else { return }
+            }
+            guard let index = self.rows.firstIndex(where: { $0.reference == reference }) else { return }
+            self.table.scrollRowToVisible(index)
+            while true {
+                await Task.yield()
+                guard !Task.isCancelled, self.selectedReference == reference else { return }
+                self.table.layoutSubtreeIfNeeded()
+                let row = self.table.rect(ofRow: index)
+                let viewport = self.scrollView.contentView.bounds
+                // Center rows that fit; keep the beginning of an oversized verse visible.
+                let proposedY = row.minY - max(0, (viewport.height - row.height) / 2)
+                let maximumY = max(0, self.table.bounds.maxY - viewport.height)
+                let y = min(maximumY, max(0, proposedY))
+                if abs(viewport.minY - y) <= 0.5 { break }
+                self.scrollView.contentView.scroll(to: NSPoint(x: viewport.minX, y: y))
+                self.scrollView.reflectScrolledClipView(self.scrollView.contentView)
+                // Newly exposed neighbors can replace more estimated heights.
+                // Recheck after their layout, stopping as soon as the target settles.
+            }
+            self.revealTask = nil
+        }
     }
 
     func resized() {

@@ -232,6 +232,13 @@ final class NativeReferenceTableTests: XCTestCase {
         subject.scrollView.layoutSubtreeIfNeeded()
     }
 
+    private func waitForReveal(_ subject: NativeReferenceTableController, aligned: () -> Bool) async throws {
+        for _ in 0..<50 {
+            try await settle(subject)
+            if aligned() { return }
+        }
+    }
+
     func testSnapshotRefreshDoesNotStealFocus() {
         let subject = controller()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 400),
@@ -275,6 +282,58 @@ final class NativeReferenceTableTests: XCTestCase {
         subject.apply(rows: rows, selection: rows[89].reference, style: .verses(fontSize: 17, dual: false), scrollRequest: UUID())
         try await settle(subject)
         XCTAssertTrue(subject.table.visibleRect.intersects(subject.table.rect(ofRow: 89)))
+    }
+
+    func testChapterRevealUsesWrappedHeightAndKeepsOversizedVerseStartVisible() async throws {
+        let subject = controller()
+        let window = mountedWindow(subject)
+        defer { window.close() }
+        let origin = (1...2).map { row($0, chapter: 117) }
+        let destination = (1...17).map { number in
+            let reference = VerseReference(book: "Esther", chapter: 8, verse: number)!
+            return NativeReferenceRow(reference: reference,
+                primaryText: String(repeating: "A long verse wraps across the available text width. ", count: number == 9 ? 12 : number % 3 + 2),
+                secondaryText: String(repeating: "ദൈവം സ്നേഹമാകുന്നു. ", count: number == 9 ? 24 : 4))
+        }
+        for (width, dual) in [(700.0, false), (350.0, true)] {
+            window.setContentSize(NSSize(width: width, height: 400))
+            let style = NativeReferenceStyle.verses(fontSize: 17, dual: dual)
+            subject.apply(rows: origin, selection: origin[1].reference, style: style, scrollRequest: UUID())
+            try await settle(subject)
+            subject.apply(rows: destination, selection: destination[8].reference, style: style, scrollRequest: UUID())
+            try await waitForReveal(subject) {
+                let target = subject.table.rect(ofRow: 8)
+                let viewport = subject.table.visibleRect
+                return abs(dual ? target.minY - viewport.minY : target.midY - viewport.midY) <= 1
+            }
+            let target = subject.table.rect(ofRow: 8)
+            let viewport = subject.table.visibleRect
+            if dual {
+                XCTAssertGreaterThan(target.height, viewport.height)
+                XCTAssertEqual(target.minY, viewport.minY, accuracy: 1)
+            } else {
+                XCTAssertLessThan(target.height, viewport.height)
+                XCTAssertEqual(target.midY, viewport.midY, accuracy: 1)
+                XCTAssertGreaterThanOrEqual(target.minY, viewport.minY)
+                XCTAssertLessThanOrEqual(target.maxY, viewport.maxY)
+            }
+        }
+    }
+
+    func testNewNavigationSupersedesPendingVerseReveal() async throws {
+        let subject = controller()
+        let window = mountedWindow(subject)
+        defer { window.close() }
+        let first = (1...100).map { row($0, chapter: 119) }
+        let second = (1...17).map { row($0, book: "Esther", chapter: 8) }
+        let style = NativeReferenceStyle.verses(fontSize: 17, dual: false)
+        subject.apply(rows: first, selection: first[89].reference, style: style, scrollRequest: UUID())
+        subject.apply(rows: second, selection: second[8].reference, style: style, scrollRequest: UUID())
+        try await waitForReveal(subject) {
+            abs(subject.table.rect(ofRow: 8).midY - subject.table.visibleRect.midY) <= 1
+        }
+        XCTAssertEqual(subject.selectedReference, second[8].reference)
+        XCTAssertEqual(subject.table.rect(ofRow: 8).midY, subject.table.visibleRect.midY, accuracy: 1)
     }
 
     func testAppendingSearchPagePreservesVisibleReferenceAndOffset() async throws {
