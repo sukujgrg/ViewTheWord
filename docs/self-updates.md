@@ -78,7 +78,8 @@ without checking the internet or starting an installer. Native tests cover menu
 enablement, the automatic-check preference, reminders in multiple windows,
 focus preservation, and shared live output when a window closes. Python
 regressions reject older builds and feed/archive metadata mismatches.
-`scripts/test-release-workflow.py` exercises release ordering and failure paths
+`scripts/test-release-workflow.py` exercises release ordering, interrupted
+preparation, notarization recovery, draft uploads, and lost publication responses
 using temporary Git repositories and offline command doubles; it never signs,
 notarizes, pushes to GitHub, or publishes a real release.
 

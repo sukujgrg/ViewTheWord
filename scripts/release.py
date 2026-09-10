@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build, sign, notarize, and publish ViewTheWord from the maintainer's Mac."""
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -8,11 +9,14 @@ import platform
 import plistlib
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+import uuid
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -29,7 +33,17 @@ class ReleaseError(Exception):
     pass
 
 
-def run(*args, capture=False):
+def run(*args, capture=False, output=None):
+    if output is not None:
+        # Keep Apple's response even if the process is interrupted before the
+        # caller can checkpoint its submission ID.
+        with Path(output).open("w") as destination:
+            result = subprocess.run([str(arg) for arg in args], cwd=ROOT, text=True,
+                                    stdout=destination)
+            destination.flush()
+            os.fsync(destination.fileno())
+        result.check_returncode()
+        return
     result = subprocess.run([str(arg) for arg in args], cwd=ROOT, text=True,
                             check=True, stdout=subprocess.PIPE if capture else None)
     return result.stdout.strip() if capture else None
@@ -47,6 +61,130 @@ def github(repo, path, optional=False):
         raise ReleaseError(f"GitHub request failed for {path} (HTTP {code or 'unavailable'}). "
                            "Check gh authentication and network access, then retry.")
     return json.loads(result.stdout.split("\n\n", 1)[1])
+
+
+def github_pages(repo, path):
+    page = 1
+    while True:
+        items = github(repo, f"{path}?per_page=100&page={page}")
+        if not isinstance(items, list):
+            raise ReleaseError(f"GitHub returned an invalid list for {path}.")
+        yield from items
+        if len(items) < 100:
+            return
+        page += 1
+
+
+def find_release(repo, tag):
+    # The published-release endpoint alone cannot reliably find drafts.
+    return next((item for item in github_pages(repo, "releases") if item["tag_name"] == tag), None)
+
+
+def atomic_write(path, text):
+    temporary = path.with_name("." + path.name + ".tmp")
+    with temporary.open("w") as destination:
+        destination.write(text)
+        destination.flush()
+        os.fsync(destination.fileno())
+    temporary.replace(path)
+
+
+def checkpoint(directory, state, **changes):
+    state.update(changes)
+    atomic_write(directory / "state.json", json.dumps(state, indent=2, sort_keys=True) + "\n")
+
+
+def load_state(directory, identity):
+    path = directory / "state.json"
+    if not path.exists():
+        return None
+    try:
+        state = json.loads(path.read_text())
+        if (not isinstance(state, dict) or state.get("schema") != 1
+                or any(state.get(key) != value for key, value in identity.items())
+                or "previous_tag" not in state
+                or not re.fullmatch(r"[0-9a-f]{32}", state.get("release_token", ""))):
+            raise ValueError("source, repository, or format differs")
+    except (ValueError, TypeError) as error:
+        raise ReleaseError(f"Cannot reuse {path}: {error}. Restore the original checkout or move "
+                           "this release directory aside before preparing again.") from error
+    return state
+
+
+@contextmanager
+def release_lock():
+    directory = ROOT / "build/release"
+    directory.mkdir(parents=True, exist_ok=True)
+    # Do not unlink the lock: another process may already have opened it.
+    with (directory / ".lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ReleaseError("Another local release command is running.") from error
+        yield
+
+
+def digest(path):
+    if path.is_symlink():
+        raise ReleaseError(f"Saved artifact must not be a symlink: {path}")
+    if path.is_file():
+        result = hashlib.sha256()
+        with path.open("rb") as source:
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                result.update(block)
+        return result.hexdigest()
+    if path.is_dir():
+        # Include names, symlink targets, and modes, but not changing timestamps.
+        entries = []
+        for child in sorted(path.rglob("*")):
+            mode = child.lstat().st_mode
+            value = ("link", os.readlink(child)) if stat.S_ISLNK(mode) else (
+                ("file", digest(child)) if stat.S_ISREG(mode) else ("directory", ""))
+            entries.append((str(child.relative_to(path)), stat.S_IMODE(mode), value))
+        return hashlib.sha256(json.dumps(entries).encode()).hexdigest()
+    raise ReleaseError(f"Saved artifact is missing: {path}. Restore it or move this release directory aside.")
+
+
+def preserved(directory, state, key, path):
+    if key not in state:
+        return False
+    if digest(path) != state[key]:
+        raise ReleaseError(f"Saved artifact changed: {path}. Refusing to reuse it; "
+                           f"restore it or move {directory} aside before preparing again.")
+    return True
+
+
+def artifact_paths(directory, version):
+    archive = directory / f"{APP_NAME}-{version}-notarized.zip"
+    return [archive, archive.with_suffix(".zip.sha256"), archive.with_suffix(".zip.source.txt"),
+            directory / "appcast.xml"]
+
+
+def verify_artifacts(directory, state):
+    artifacts = artifact_paths(directory, state["version"])
+    recorded = state.get("artifacts")
+    if not isinstance(recorded, dict) or set(recorded) != {path.name for path in artifacts}:
+        raise ReleaseError("No complete prepared release. Run make release-notarize or make release first.")
+    for path in artifacts:
+        if digest(path) != recorded[path.name]:
+            raise ReleaseError(f"Prepared release file changed: {path}. Refusing to publish it.")
+    return artifacts
+
+
+def release_marker(state):
+    return f"<!-- ViewTheWord release {state['release_token']} {state['commit']} -->"
+
+
+def verify_owned_release(existing, state):
+    # target_commitish is a creation hint and may be a branch name. The actual
+    # source is checked by resolving the remote tag in verify_destination.
+    if (not state or not state.get("artifacts")
+            or existing.get("tag_name") != state["tag"]
+            or release_marker(state) not in (existing.get("body") or "")
+            or existing.get("prerelease") is not False
+            or (state.get("release_id") is not None and existing["id"] != state["release_id"])):
+        raise ReleaseError("A release or draft already exists for this version and does not belong to "
+                           "these prepared artifacts. Inspect it on GitHub; published releases are never overwritten.")
 
 
 def source_commit(expected=None):
@@ -108,19 +246,31 @@ def verify_ci(repo, commit):
                            f"Fix the failure before releasing: {result['url']}")
 
 
-def verify_destination(repo, tag, commit):
-    if github(repo, f"releases/tags/{quote(tag, safe='')}", optional=True) is not None:
-        raise ReleaseError(f"A release already exists for {tag}. Bump VERSION; releases are never overwritten.")
+def remote_tag_commit(repo, tag):
+    # Missing refs return 404 here; the commit endpoint returns 422 instead.
+    name = quote(tag, safe="")
+    if github(repo, f"git/ref/tags/{name}", optional=True) is None:
+        return None
+    # Resolve the existing ref to a commit, including annotated tags.
+    return github(repo, f"commits/tags/{name}")["sha"]
+
+
+def verify_destination(repo, tag, commit, state=None):
+    existing = find_release(repo, tag)
+    if existing is not None:
+        verify_owned_release(existing, state)
     local = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}"],
                            cwd=ROOT, text=True, capture_output=True)
     if local.returncode == 0 and local.stdout.strip() != commit:
         raise ReleaseError(f"Local tag {tag} points to another commit. Choose a new VERSION.")
     if local.returncode not in (0, 1):
         raise ReleaseError(f"Could not inspect local tag {tag}.")
-    remote = github(repo, f"commits/tags/{quote(tag, safe='')}", optional=True)
-    if remote is not None and remote["sha"] != commit:
+    remote = remote_tag_commit(repo, tag)
+    if remote is not None and remote != commit:
         raise ReleaseError(f"GitHub tag {tag} points to another commit. Choose a new VERSION.")
-    return local.returncode == 0, remote is not None
+    if existing is not None and remote is None:
+        raise ReleaseError("The existing release's tag is missing on GitHub. Inspect it before retrying.")
+    return local.returncode == 0, remote is not None, existing
 
 
 def latest_tag(repo):
@@ -142,84 +292,232 @@ def next_build_number(previous):
     return str(build)
 
 
-def build_artifacts(repo, version, tag, commit, previous_tag, args):
-    for tool in ("xcodebuild", "xcrun", "ditto", "lipo"):
+def verify_app(app, state):
+    info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+    expected = {"CFBundleShortVersionString": state["version"], "CFBundleVersion": state["build"],
+                "VTWSourceCommit": state["commit"], "CFBundleIdentifier": "suku.ViewTheWord"}
+    if any(info.get(key) != value for key, value in expected.items()):
+        raise ReleaseError("The exported app's version/build/source does not match the verified source.")
+    run("codesign", "--verify", "--deep", "--strict", app)
+    run("lipo", app / "Contents/MacOS" / info["CFBundleExecutable"], "-verify_arch", "arm64", "x86_64")
+
+
+def notarize(directory, state, args, notary_zip):
+    work = directory / "work"
+    response_file = work / "notary-submission.json"
+    profile = ("--keychain-profile", args.notary_profile)
+    supplied = str(uuid.UUID(args.resume_notarization)) if args.resume_notarization else None
+    if supplied:
+        # An operator can recover an ID lost during submission, but cannot
+        # replace a known submission. Apple's log must match the archive hash.
+        if not state.get("submission_started") or (state.get("notary_id") not in (None, supplied)):
+            raise ReleaseError("--resume-notarization can only recover this archive's interrupted submission.")
+    if state.get("notarized"):
+        return
+    if not supplied and not state.get("notary_id"):
+        if not state.get("submission_started"):
+            checkpoint(directory, state, submission_started=True)
+            print("Submitting to Apple for notarization…", flush=True)
+            run("xcrun", "notarytool", "submit", notary_zip, *profile, "--no-wait",
+                "--output-format", "json", output=response_file)
+        try:
+            submission = str(uuid.UUID(json.loads(response_file.read_text())["id"]))
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise ReleaseError("The Apple submission outcome is unknown; it will not be uploaded again "
+                               "automatically. Find its ID with xcrun notarytool history and use "
+                               "--resume-notarization ID. See docs/releasing.md.") from error
+        checkpoint(directory, state, notary_id=submission)
+    submission = supplied or state["notary_id"]
+    uuid.UUID(submission)
+    print(f"Notarization submission: {submission}", flush=True)
+    response = json.loads(run("xcrun", "notarytool", "info", submission, *profile,
+                              "--output-format", "json", capture=True))
+    if response.get("status") == "In Progress":
+        try:
+            response = json.loads(run("xcrun", "notarytool", "wait", submission, *profile,
+                                      "--timeout", "1h", "--output-format", "json", capture=True))
+        except subprocess.CalledProcessError:
+            # A wait timeout or disconnection does not cancel Apple's work.
+            response = json.loads(run("xcrun", "notarytool", "info", submission, *profile,
+                                      "--output-format", "json", capture=True))
+    if response.get("status") == "In Progress":
+        raise ReleaseError(f"Apple is still processing {submission}. Run the same command later to resume.")
+    log_path = work / "notary-log.json"
+    run("xcrun", "notarytool", "log", submission, *profile, output=log_path)
+    log = json.loads(log_path.read_text())
+    if log.get("jobId") != submission or log.get("sha256") != state["notary_zip_hash"]:
+        raise ReleaseError(f"Apple's submission does not match the saved archive. Inspect {log_path}.")
+    if response.get("status") != "Accepted" or log.get("status") != "Accepted":
+        raise ReleaseError(f"Notarization was not accepted ({response.get('status')}). Inspect {log_path}.")
+    checkpoint(directory, state, notary_id=submission, notarized=True)
+
+
+def prepare(directory, state, args):
+    if state.get("artifacts"):
+        if args.resume_notarization:
+            raise ReleaseError("This release is already prepared; omit --resume-notarization.")
+        print("Reusing verified prepared artifacts…", flush=True)
+        return verify_artifacts(directory, state)
+    for tool in ("xcodebuild", "xcrun", "ditto", "lipo", "codesign", "security"):
         if not shutil.which(tool):
             raise ReleaseError(f"Missing {tool}. Install/select Xcode on this Mac.")
-    print(f"Building {APP_NAME} {version} on this Mac…", flush=True)
+    if not state.get("export_hash"):
+        identities = run("security", "find-identity", "-v", "-p", "codesigning", capture=True)
+        if "Developer ID Application:" not in identities:
+            raise ReleaseError("No valid Developer ID Application identity is available in this Mac's Keychain.")
+    if not state.get("notarized"):
+        run("xcrun", "notarytool", "history", "--keychain-profile", args.notary_profile,
+            "--output-format", "json", capture=True)
+    derived = ROOT / "build/ReleaseDerivedData"
     run("xcodebuild", "-resolvePackageDependencies", "-project", PROJECT,
-        "-scheme", APP_NAME, "-derivedDataPath", "build/DerivedData")
-    sparkle = ROOT / "build/DerivedData/SourcePackages/artifacts/sparkle/Sparkle/bin"
+        "-scheme", APP_NAME, "-derivedDataPath", derived)
+    sparkle = derived / "SourcePackages/artifacts/sparkle/Sparkle/bin"
     source_info = plistlib.loads((ROOT / "ViewTheWord/Info.plist").read_bytes())
     if run(sparkle / "generate_keys", "--account", KEY_ACCOUNT, "-p", capture=True) != source_info["SUPublicEDKey"]:
         raise ReleaseError("The Keychain signing key differs from Info.plist. See docs/self-updates.md.")
-    with tempfile.TemporaryDirectory(prefix="ViewTheWordRelease-") as directory:
-        temp = Path(directory)
-        previous = None
-        if previous_tag:
-            release = github(repo, f"releases/tags/{quote(previous_tag, safe='')}")
-            if any(asset["name"] == "appcast.xml" for asset in release["assets"]):
-                run("gh", "release", "download", previous_tag, "--repo", repo,
-                    "--pattern", "appcast.xml", "--dir", temp)
-                previous = temp / "appcast.xml"
+    work = directory / "work"
+    work.mkdir(exist_ok=True)
+    previous = work / "previous-appcast.xml" if state.get("previous_hash") else None
+    if previous:
+        preserved(directory, state, "previous_hash", previous)
+    if "build" not in state:
+        if state["previous_tag"]:
+            previous_release = find_release(state["repo"], state["previous_tag"])
+            if previous_release is None or previous_release["draft"]:
+                raise ReleaseError("The previous published release is no longer available.")
+            if any(asset["name"] == "appcast.xml" for asset in github_pages(
+                    state["repo"], f"releases/{previous_release['id']}/assets")):
+                with tempfile.TemporaryDirectory(dir=work) as download:
+                    run("gh", "release", "download", state["previous_tag"], "--repo", state["repo"],
+                        "--pattern", "appcast.xml", "--dir", download)
+                    previous = work / "previous-appcast.xml"
+                    (Path(download) / "appcast.xml").replace(previous)
                 run(sparkle / "sign_update", "--account", KEY_ACCOUNT, "--verify", previous)
-        build = next_build_number(previous)
-        archive = temp / f"{APP_NAME}.xcarchive"
-        source_commit(commit)
-        run("xcodebuild", "-project", PROJECT, "-scheme", APP_NAME, "-configuration", "Release",
-            "-derivedDataPath", "build/DerivedData", "-archivePath", archive, "archive",
-            "ARCHS=arm64 x86_64", "ONLY_ACTIVE_ARCH=NO", "SKIP_INSTALL=NO",
-            "STRIP_INSTALLED_PRODUCT=YES", "COPY_PHASE_STRIP=YES",
-            f"CURRENT_PROJECT_VERSION={build}", f"VTW_SOURCE_COMMIT={commit}")
-        source_commit(commit)
-        export_options = temp / "exportOptions.plist"
+                checkpoint(directory, state, previous_hash=digest(previous))
+        checkpoint(directory, state, build=next_build_number(previous))
+    if previous:
+        run(sparkle / "sign_update", "--account", KEY_ACCOUNT, "--verify", previous)
+    app = work / "export" / f"{APP_NAME}.app"
+    if not preserved(directory, state, "export_hash", app):
+        archive = work / f"{APP_NAME}.xcarchive"
+        if not preserved(directory, state, "archive_hash", archive):
+            if archive.exists():
+                shutil.rmtree(archive)
+            source_commit(state["commit"])
+            run("xcodebuild", "-project", PROJECT, "-scheme", APP_NAME, "-configuration", "Release",
+                "-derivedDataPath", derived, "-archivePath", archive, "archive",
+                "ARCHS=arm64 x86_64", "ONLY_ACTIVE_ARCH=NO", "SKIP_INSTALL=NO",
+                "STRIP_INSTALLED_PRODUCT=YES", "COPY_PHASE_STRIP=YES",
+                f"CURRENT_PROJECT_VERSION={state['build']}", f"VTW_SOURCE_COMMIT={state['commit']}")
+            source_commit(state["commit"])
+            checkpoint(directory, state, archive_hash=digest(archive))
+        if app.parent.exists():
+            shutil.rmtree(app.parent)
+        export_options = work / "exportOptions.plist"
         export_options.write_bytes(plistlib.dumps({"method": "developer-id", "signingStyle": "automatic",
                                                    "stripSwiftSymbols": True, "compileBitcode": False}))
-        run("xcodebuild", "-exportArchive", "-archivePath", archive, "-exportPath", temp / "export",
+        run("xcodebuild", "-exportArchive", "-archivePath", archive, "-exportPath", app.parent,
             "-exportOptionsPlist", export_options)
-        app = temp / "export" / f"{APP_NAME}.app"
-        info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
-        expected = {"CFBundleShortVersionString": version, "CFBundleVersion": build, "VTWSourceCommit": commit}
-        if any(info.get(key) != value for key, value in expected.items()):
-            raise ReleaseError("The exported app's version/build/source does not match the verified source.")
-        run("lipo", app / "Contents/MacOS" / info["CFBundleExecutable"], "-verify_arch", "arm64", "x86_64")
-        notary_zip = temp / "notarize.zip"
+        source_commit(state["commit"])
+        verify_app(app, state)
+        checkpoint(directory, state, export_hash=digest(app))
+    source_commit(state["commit"])
+    notary_zip = work / "notarize.zip"
+    if not preserved(directory, state, "notary_zip_hash", notary_zip):
         run("ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", app, notary_zip)
-        print("Submitting to Apple for notarization…", flush=True)
-        response = json.loads(run("xcrun", "notarytool", "submit", notary_zip,
-                                  "--keychain-profile", args.notary_profile, "--wait", "--output-format", "json",
-                                  capture=True))
-        if response.get("status") != "Accepted":
-            raise ReleaseError(f"Notarization was not accepted (submission {response.get('id', 'unknown')}).")
-        run("xcrun", "stapler", "staple", app)
-        run("xcrun", "stapler", "validate", app)
-        output = ROOT / "build/release" / tag
-        output.mkdir(parents=True, exist_ok=True)
-        final_app = output / app.name
+        checkpoint(directory, state, notary_zip_hash=digest(notary_zip))
+    notarize(directory, state, args, notary_zip)
+    final_app = directory / app.name
+    if preserved(directory, state, "app_hash", final_app):
+        # The ticket can live in extended attributes, outside the file-content
+        # checkpoint. Validate it again before packaging a saved app.
+        run("xcrun", "stapler", "validate", final_app)
+    else:
+        # Keep the submitted app unchanged. Staple a copy so an interrupted
+        # stapler command can be repeated without invalidating the checkpoint.
         if final_app.exists():
             shutil.rmtree(final_app)
         run("ditto", app, final_app)
-        final_zip = output / f"{APP_NAME}-{version}-notarized.zip"
-        run("ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", app, final_zip)
-        checksum = final_zip.with_suffix(".zip.sha256")
-        checksum.write_text(f"{hashlib.sha256(final_zip.read_bytes()).hexdigest()}  {final_zip.name}\n")
-        metadata = final_zip.with_suffix(".zip.source.txt")
-        metadata.write_text(f"source_commit={commit}\ntag={tag}\nversion={version}\nbuild={build}\n")
-        feed = output / "appcast.xml"
-        command = [sys.executable, ROOT / "scripts/update-feed.py", "--app", app, "--archive", final_zip,
-                   "--output", feed, "--repo", repo, "--tag", tag, "--sparkle-bin", sparkle]
-        if previous:
-            command.extend(["--previous", previous])
-        run(*command)
-        return [final_zip, checksum, metadata, feed]
+        run("xcrun", "stapler", "staple", final_app)
+        run("xcrun", "stapler", "validate", final_app)
+        verify_app(final_app, state)
+        checkpoint(directory, state, app_hash=digest(final_app))
+    final_zip, checksum, metadata, feed = artifact_paths(directory, state["version"])
+    if not preserved(directory, state, "zip_hash", final_zip):
+        run("ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", final_app, final_zip)
+        checkpoint(directory, state, zip_hash=digest(final_zip))
+    atomic_write(checksum, f"{state['zip_hash']}  {final_zip.name}\n")
+    atomic_write(metadata, f"source_commit={state['commit']}\ntag={state['tag']}\n"
+                 f"version={state['version']}\nbuild={state['build']}\n")
+    command = [sys.executable, ROOT / "scripts/update-feed.py", "--app", final_app, "--archive", final_zip,
+               "--output", feed, "--repo", state["repo"], "--tag", state["tag"], "--sparkle-bin", sparkle]
+    if previous:
+        command.extend(["--previous", previous])
+    run(*command)
+    source_commit(state["commit"])
+    artifacts = artifact_paths(directory, state["version"])
+    checkpoint(directory, state, artifacts={path.name: digest(path) for path in artifacts})
+    return artifacts
 
 
-def publish(repo, origin, version, tag, commit, previous_tag, artifacts, notes):
+def verify_uploaded(repo, tag, path, asset, expected):
+    if asset.get("state") != "uploaded" or asset.get("size") != path.stat().st_size:
+        raise ReleaseError(f"GitHub asset is incomplete or differs from the prepared file: {path.name}")
+    remote_digest = asset.get("digest")
+    if remote_digest is None:
+        # Older assets/API versions may omit digest. Compare the actual bytes.
+        with tempfile.TemporaryDirectory(prefix="ViewTheWordAsset-") as download:
+            run("gh", "release", "download", tag, "--repo", repo, "--pattern", path.name, "--dir", download)
+            remote_digest = "sha256:" + digest(Path(download) / path.name)
+    if remote_digest != "sha256:" + expected:
+        raise ReleaseError(f"GitHub asset differs from the prepared file: {path.name}. It was not overwritten.")
+
+
+def verify_remote_artifacts(directory, state, existing, complete=False):
+    assets = {}
+    for asset in github_pages(state["repo"], f"releases/{existing['id']}/assets"):
+        name = asset["name"]
+        if name not in state["artifacts"] or name in assets:
+            raise ReleaseError(f"Unexpected or duplicate asset on the release: {name}. Inspect the draft on GitHub.")
+        assets[name] = asset
+        if not complete and existing["draft"] and asset.get("state") == "starter" and asset.get("size") == 0:
+            continue
+        verify_uploaded(state["repo"], state["tag"], directory / name, asset, state["artifacts"][name])
+    if complete and set(assets) != set(state["artifacts"]):
+        raise ReleaseError("GitHub release is missing prepared artifacts. Retry publication to finish the draft.")
+    return assets
+
+
+def current_release(state):
+    existing = github(state["repo"], f"releases/{state['release_id']}")
+    verify_owned_release(existing, state)
+    return existing
+
+
+def verify_latest(state):
+    if latest_tag(state["repo"]) != state["previous_tag"]:
+        raise ReleaseError("The latest release changed since preparation. Saved artifacts were preserved; "
+                           "prepare a new version from the intended source and current update feed.")
+
+
+def publish(directory, state, notes):
+    repo, origin, version, tag, commit = (state[key] for key in ("repo", "origin", "version", "tag", "commit"))
+    artifacts = verify_artifacts(directory, state)
     source_commit(commit)
     verify_ci(repo, commit)
-    local_exists, remote_exists = verify_destination(repo, tag, commit)
-    if latest_tag(repo) != previous_tag:
-        raise ReleaseError("The latest release changed during the build. Retry to include its current update feed.")
+    source_commit(commit)
+    local_exists, remote_exists, existing = verify_destination(repo, tag, commit, state)
+    if existing is not None and not existing["draft"]:
+        verify_remote_artifacts(directory, state, existing, complete=True)
+        print("This exact release is already published; no changes were made.", flush=True)
+        return
+    verify_latest(state)
+    supplied_notes = notes.read_text() if notes else None
+    if "release_body" not in state:
+        text = supplied_notes if supplied_notes is not None else f"Notarized release {version} from source commit {commit}"
+        checkpoint(directory, state, notes=text, release_body=text + "\n\n" + release_marker(state))
+    elif supplied_notes is not None and supplied_notes != state["notes"]:
+        raise ReleaseError("Release notes differ from the saved draft. Retry with the original notes or omit --notes.")
     if remote_exists:
         if not local_exists:
             run("git", "fetch", "--no-tags", origin, f"refs/tags/{tag}:refs/tags/{tag}")
@@ -227,17 +525,51 @@ def publish(repo, origin, version, tag, commit, previous_tag, artifacts, notes):
         if not local_exists:
             run("git", "tag", "-a", tag, commit, "-m", f"{APP_NAME} {version}")
         run("git", "push", origin, f"refs/tags/{tag}:refs/tags/{tag}")
-    remote = github(repo, f"commits/tags/{quote(tag, safe='')}")
-    if remote["sha"] != commit:
+    if remote_tag_commit(repo, tag) != commit:
         raise ReleaseError("The GitHub tag changed before publication.")
     source_commit(commit)
-    command = ["gh", "release", "create", tag, *artifacts, "--repo", repo, "--verify-tag", "--latest",
-               "--title", f"{APP_NAME} {version}"]
-    if notes:
-        command.extend(["--notes-file", notes])
-    else:
-        command.extend(["--notes", f"Notarized release {version} from source commit {commit}"])
-    run(*command)
+    if existing is None:
+        notes_file = directory / "work/release-notes.md"
+        notes_file.parent.mkdir(exist_ok=True)
+        atomic_write(notes_file, state["release_body"])
+        run("gh", "release", "create", tag, "--repo", repo, "--verify-tag", "--target", commit,
+            "--draft", "--title", f"{APP_NAME} {version}", "--notes-file", notes_file)
+        existing = find_release(repo, tag)
+        if existing is None:
+            raise ReleaseError("The draft creation result is not visible yet. Retry the same command.")
+        verify_owned_release(existing, state)
+    checkpoint(directory, state, release_id=existing["id"])
+    for path in artifacts:
+        existing = current_release(state)
+        if not existing["draft"]:
+            verify_remote_artifacts(directory, state, existing, complete=True)
+            return
+        assets = verify_remote_artifacts(directory, state, existing)
+        asset = assets.get(path.name)
+        if asset is not None and asset["state"] == "uploaded":
+            continue
+        if asset is not None:
+            # GitHub can leave an empty 'starter' asset after an interrupted
+            # upload. Only remove that placeholder on our own unpublished draft.
+            run("gh", "api", "--method", "DELETE", f"repos/{repo}/releases/assets/{asset['id']}")
+        print(f"Uploading {path.name}…", flush=True)
+        run("gh", "release", "upload", tag, path, "--repo", repo)
+    # Check again after uploads, before the single operation that exposes the
+    # release and its Sparkle feed to users.
+    verify_ci(repo, commit)
+    _, _, existing = verify_destination(repo, tag, commit, state)
+    if existing is None:
+        raise ReleaseError("The draft disappeared during publication.")
+    verify_remote_artifacts(directory, state, existing, complete=True)
+    if existing["draft"]:
+        verify_latest(state)
+        verify_artifacts(directory, state)
+        source_commit(commit)
+        run("gh", "release", "edit", tag, "--repo", repo, "--verify-tag", "--draft=false", "--latest")
+    existing = current_release(state)
+    if existing["draft"]:
+        raise ReleaseError("GitHub still reports a draft. Retry publication; saved artifacts will be reused.")
+    verify_remote_artifacts(directory, state, existing, complete=True)
 
 
 def release(args):
@@ -260,31 +592,56 @@ def release(args):
         args.notes = args.notes.resolve()
         if not args.notes.is_file():
             raise ReleaseError(f"Release notes file does not exist: {args.notes}")
-    verify_destination(repo, tag, commit)
-    verify_ci(repo, commit)
-    source_commit(commit)
-    print(f"Release source ready: {tag} at {commit}", flush=True)
+    if args.resume_notarization and (args.check or args.publish_only):
+        raise ReleaseError("--resume-notarization requires artifact preparation.")
+    identity = dict(repo=repo, origin=origin, commit=commit, version=version, tag=tag)
+    directory = ROOT / "build/release" / tag
     if args.check:
+        state = load_state(directory, identity)
+        verify_destination(repo, tag, commit, state)
+        verify_ci(repo, commit)
+        source_commit(commit)
+        print(f"Release source ready: {tag} at {commit}", flush=True)
         return
-    previous_tag = latest_tag(repo)
-    artifacts = build_artifacts(repo, version, tag, commit, previous_tag, args)
-    source_commit(commit)
-    print(f"Signed artifacts: {artifacts[0].parent}", flush=True)
-    if not args.no_publish:
-        publish(repo, origin, version, tag, commit, previous_tag, artifacts, args.notes)
-        print(f"Release complete: https://github.com/{repo}/releases/tag/{tag}", flush=True)
+    with release_lock():
+        state = load_state(directory, identity)
+        _, _, existing = verify_destination(repo, tag, commit, state)
+        verify_ci(repo, commit)
+        source_commit(commit)
+        if state is None:
+            if args.publish_only or args.resume_notarization:
+                raise ReleaseError("No saved preparation exists. Run make release-notarize or make release first.")
+            if directory.exists() and any(directory.iterdir()):
+                raise ReleaseError(f"Unrecorded artifacts exist in {directory}. Move that directory aside before preparing again.")
+            directory.mkdir(parents=True, exist_ok=True)
+            state = dict(schema=1, **identity, previous_tag=latest_tag(repo), release_token=uuid.uuid4().hex)
+            checkpoint(directory, state)
+        print(f"Release source: {tag} at {commit}\nSaved work: {directory}", flush=True)
+        if existing is None or existing["draft"]:
+            verify_latest(state)
+        if args.publish_only:
+            verify_artifacts(directory, state)
+        else:
+            prepare(directory, state, args)
+        source_commit(commit)
+        print(f"Signed artifacts: {directory}", flush=True)
+        if not args.no_publish:
+            publish(directory, state, args.notes)
+            print(f"Release complete: https://github.com/{repo}/releases/tag/{tag}", flush=True)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--notary-profile", default="ViewTheWordNotary", help="local Keychain profile (default: ViewTheWordNotary)")
     parser.add_argument("--notes", type=Path, help="optional release notes file")
+    parser.add_argument("--resume-notarization", help="recover a lost Apple submission ID for the saved archive")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--check", action="store_true", help="only verify source, destination, and CI; do not build or publish")
     modes.add_argument("--no-publish", action="store_true", help="create signed artifacts locally without tagging or publishing")
+    modes.add_argument("--publish-only", action="store_true", help="publish already prepared artifacts without building or notarizing")
     try:
         release(parser.parse_args())
     except (ReleaseError, OSError, ValueError, KeyError, ET.ParseError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"error: {error}\n")
     except KeyboardInterrupt:
-        parser.exit(130, "Release interrupted. Existing releases and tags were not overwritten.\n")
+        parser.exit(130, "Release interrupted. Saved work is retained; rerun the same command to resume.\n")

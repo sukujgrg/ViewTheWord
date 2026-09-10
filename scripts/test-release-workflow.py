@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise release orchestration with real temporary Git repos and offline tool doubles."""
 import argparse
+import copy
 import importlib.util
 import io
 import json
@@ -10,6 +11,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import uuid
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -38,6 +40,15 @@ class ReleaseFlowTests(unittest.TestCase):
         self.git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "fixture")
         self.commit = self.git("rev-parse", "HEAD")
         self.calls = []
+        self.failures = {}
+        self.hooks = {}
+        self.assets = {}
+        self.use_asset_digests = True
+        self.submissions = {}
+        self.finished_submissions = set()
+        self.wrong_notary_hash = False
+        self.previous_release = None
+        self.previous_feed = None
         self.remote_tag = None
         self.existing_release = False
         self.conclusions = ["success"]
@@ -70,12 +81,40 @@ class ReleaseFlowTests(unittest.TestCase):
     def git(self, *args):
         return subprocess.check_output(["git", "-C", str(self.root), *args], text=True).strip()
 
+    @property
+    def existing_release(self):
+        return self.remote_release is not None
+
+    @existing_release.setter
+    def existing_release(self, value):
+        self.remote_release = ({"id": 42, "tag_name": "v4.0.1", "draft": False,
+                                "target_commitish": self.commit, "prerelease": False,
+                                "body": "Unrelated release"} if value else None)
+
+    @property
+    def directory(self):
+        return self.root / "build/release/v4.0.1"
+
+    @property
+    def state(self):
+        return json.loads((self.directory / "state.json").read_text())
+
     def api(self, repo, path, optional=False):
         self.assertEqual(repo, "sukujgrg/ViewTheWord")
-        if path.startswith("releases/tags/"):
-            return {"id": 1} if self.existing_release else None
+        if path == "releases?per_page=100&page=1":
+            return copy.deepcopy([item for item in (self.remote_release, self.previous_release) if item])
+        if path == "releases/42":
+            return copy.deepcopy(self.remote_release)
+        if path == "releases/42/assets?per_page=100&page=1":
+            return [{key: value for key, value in item.items() if key != "data"} for item in self.assets.values()]
+        if path == "releases/10/assets?per_page=100&page=1":
+            return [{"name": "appcast.xml"}]
+        if path.startswith("git/ref/tags/"):
+            return {"object": {"type": "commit", "sha": self.remote_tag}} if self.remote_tag else None
         if path.startswith("commits/tags/"):
-            return {"sha": self.remote_tag} if self.remote_tag else None
+            if self.remote_tag is None:
+                raise release.ReleaseError("GitHub request failed for missing tag (HTTP 422).")
+            return {"sha": self.remote_tag}
         if path == "commits/" + self.commit:
             return {"sha": self.commit} if self.pushed else None
         if path == "releases/latest":
@@ -85,9 +124,36 @@ class ReleaseFlowTests(unittest.TestCase):
             return {"tag_name": self.latest} if self.latest else None
         self.fail(f"Unexpected GitHub request: {path}")
 
-    def tool(self, *args, capture=False):
+    def hit(self, stage, phase):
+        hook = self.hooks.get((stage, phase))
+        if hook:
+            hook()
+        key = (stage, phase)
+        if key in self.failures:
+            self.failures[key] -= 1
+            if self.failures[key] == 0:
+                del self.failures[key]
+                raise subprocess.CalledProcessError(1, [stage, phase])
+
+    def tool(self, *args, capture=False, output=None):
         args = tuple(str(arg) for arg in args)
         self.calls.append(args)
+        if args[0] == "xcodebuild":
+            stage = "archive" if "archive" in args else "export" if "-exportArchive" in args else "resolve"
+        elif args[0] in ("gh", "xcrun") and len(args) > 2:
+            stage = args[2]
+        elif len(args) > 1 and args[1].endswith("update-feed.py"):
+            stage = "feed"
+        else:
+            stage = args[0]
+        self.hit(stage, "before")
+        result = self.fake_command(args, capture)
+        if output is not None:
+            Path(output).write_text(result or "")
+        self.hit(stage, "after")
+        return result
+
+    def fake_command(self, args, capture):
         if args[:3] in (("gh", "run", "list"), ("gh", "run", "view")):
             self.assertIn("--repo", args)
             if args[2] == "list":
@@ -108,46 +174,118 @@ class ReleaseFlowTests(unittest.TestCase):
             self.remote_tag = self.git("rev-parse", "refs/tags/v4.0.1^{commit}")
             return
         if args[:3] == ("gh", "release", "create"):
-            for artifact in args[4:args.index("--repo")]:
-                self.assertTrue(Path(artifact).is_file())
+            self.assertIn("--draft", args)
+            self.assertIn("--verify-tag", args)
             self.assertEqual(self.remote_tag, self.commit)
-            self.existing_release = True
+            self.assertIsNone(self.remote_release)
+            self.remote_release = {"id": 42, "tag_name": "v4.0.1", "draft": True, "prerelease": False,
+                                   "target_commitish": args[args.index("--target") + 1],
+                                   "body": Path(args[args.index("--notes-file") + 1]).read_text()}
+            return
+        if args[:3] == ("gh", "release", "upload"):
+            self.assertTrue(self.remote_release["draft"])
+            self.assertNotIn("--clobber", args)
+            path = Path(args[4])
+            self.assertNotIn(path.name, self.assets)
+            self.assets[path.name] = {"name": path.name, "id": len(self.assets) + 1, "state": "uploaded",
+                                      "size": path.stat().st_size, "data": path.read_bytes(),
+                                      "digest": "sha256:" + release.digest(path) if self.use_asset_digests else None}
+            return
+        if args[:3] == ("gh", "release", "edit"):
+            self.assertTrue(self.remote_release["draft"])
+            self.assertIn("--draft=false", args)
+            self.assertIn("--latest", args)
+            self.assertIn("--verify-tag", args)
+            self.assertEqual(set(self.assets), {path.name for path in release.artifact_paths(self.directory, "4.0.1")})
+            self.remote_release["draft"] = False
+            self.latest = "v4.0.1"
+            return
+        if args[:4] == ("gh", "api", "--method", "DELETE"):
+            self.assertTrue(self.remote_release["draft"])
+            identifier = int(args[-1].rsplit("/", 1)[1])
+            name = next(name for name, asset in self.assets.items() if asset["id"] == identifier)
+            self.assertEqual(self.assets[name]["state"], "starter")
+            del self.assets[name]
+            return
+        if args[:3] == ("gh", "release", "download"):
+            name = args[args.index("--pattern") + 1]
+            destination = Path(args[args.index("--dir") + 1]) / name
+            data = self.previous_feed if args[3] == "v4.0.0" else self.assets[name]["data"]
+            destination.write_bytes(data)
             return
         if args[0] == "git":
             return self.actual_run(*args, capture=capture)
+        if args[0] == "security":
+            return '1) fixture "Developer ID Application: Fixture (TEAM)"\n1 valid identities found'
+        if args[0] == "codesign":
+            self.assertTrue(Path(args[-1]).is_dir())
+            return
         if args[0] == "xcodebuild":
             if "archive" in args:
                 self.assertIn("ARCHS=arm64 x86_64", args)
                 self.assertIn("ONLY_ACTIVE_ARCH=NO", args)
                 self.assertNotIn("CODE_SIGNING_ALLOWED=NO", args)
                 self.assertFalse(any(arg.startswith("MARKETING_VERSION=") for arg in args))
-                self.build_number = next(arg.split("=", 1)[1] for arg in args if arg.startswith("CURRENT_PROJECT_VERSION="))
+                build = next(arg.split("=", 1)[1] for arg in args if arg.startswith("CURRENT_PROJECT_VERSION="))
+                archive = Path(args[args.index("-archivePath") + 1])
+                archive.mkdir(parents=True)
+                (archive / "build-number").write_text(build)
                 self.after_archive()
             elif "-exportArchive" in args:
+                archive = Path(args[args.index("-archivePath") + 1])
                 info = plistlib.loads((self.root / "ViewTheWord/Info.plist").read_bytes())
-                info.update(CFBundleShortVersionString="4.0.1", CFBundleVersion=self.build_number,
-                            VTWSourceCommit=self.commit, CFBundleExecutable="ViewTheWord")
+                info.update(CFBundleShortVersionString="4.0.1", CFBundleVersion=(archive / "build-number").read_text(),
+                            VTWSourceCommit=self.commit, CFBundleExecutable="ViewTheWord",
+                            CFBundleIdentifier="suku.ViewTheWord")
                 app = Path(args[args.index("-exportPath") + 1]) / "ViewTheWord.app/Contents"
                 app.mkdir(parents=True)
                 (app / "Info.plist").write_bytes(plistlib.dumps(info))
+                (app / "MacOS").mkdir()
+                (app / "MacOS/ViewTheWord").write_bytes(b"fixture executable")
                 options = plistlib.loads(Path(args[args.index("-exportOptionsPlist") + 1]).read_bytes())
                 self.assertEqual(options["method"], "developer-id")
             return
         if args[0].endswith("generate_keys"):
             return plistlib.loads((self.root / "ViewTheWord/Info.plist").read_bytes())["SUPublicEDKey"]
+        if args[0].endswith("sign_update"):
+            return
         if args[0] == "lipo":
             self.assertEqual(args[-3:], ("-verify_arch", "arm64", "x86_64"))
             return
         if args[0] == "ditto":
             if "-k" in args:
-                Path(args[-1]).write_bytes(b"fixture archive")
+                Path(args[-1]).write_bytes(release.digest(Path(args[-2])).encode())
             else:
                 shutil.copytree(args[-2], args[-1])
             return
-        if args[:3] == ("xcrun", "notarytool", "submit"):
+        if args[:2] == ("xcrun", "notarytool"):
             self.assertEqual(args[args.index("--keychain-profile") + 1], "ViewTheWordNotary")
-            return json.dumps({"status": self.notary_status, "id": "fixture-submission"})
+            if args[2] == "history":
+                return '{"history": []}'
+            if args[2] == "submit":
+                self.assertNotIn("--wait", args)
+                self.assertIn("--no-wait", args)
+                identifier = str(uuid.UUID(int=len(self.submissions) + 1))
+                self.submissions[identifier] = release.digest(Path(args[3]))
+                return json.dumps({"id": identifier})
+            identifier = args[3]
+            if args[2] == "wait":
+                self.assertIn(identifier, self.submissions)
+                self.finished_submissions.add(identifier)
+                return json.dumps({"id": identifier, "status": self.notary_status})
+            if args[2] == "info":
+                self.assertIn(identifier, self.submissions)
+                status = self.notary_status if identifier in self.finished_submissions else "In Progress"
+                return json.dumps({"id": identifier, "status": status})
+            if args[2] == "log":
+                return json.dumps({"jobId": identifier, "status": self.notary_status,
+                                   "sha256": "wrong" if self.wrong_notary_hash else self.submissions[identifier]})
+            self.fail(f"Unexpected notarization command: {args}")
         if args[:2] == ("xcrun", "stapler"):
+            if args[2] == "staple":
+                (Path(args[3]) / "Contents/ticket").write_text("fixture ticket")
+            else:
+                self.assertTrue((Path(args[3]) / "Contents/ticket").is_file())
             return
         if len(args) > 1 and args[1].endswith("update-feed.py"):
             if self.fail_feed:
@@ -157,7 +295,8 @@ class ReleaseFlowTests(unittest.TestCase):
         self.fail(f"Unexpected command: {args}")
 
     def invoke(self, **options):
-        args = dict(notary_profile="ViewTheWordNotary", notes=None, check=False, no_publish=False)
+        args = dict(notary_profile="ViewTheWordNotary", notes=None, check=False, no_publish=False,
+                    publish_only=False, resume_notarization=None)
         args.update(options)
         release.release(argparse.Namespace(**args))
 
@@ -198,12 +337,13 @@ class ReleaseFlowTests(unittest.TestCase):
             for label, prefix in (("notary", ("xcrun", "notarytool", "submit")),
                                   ("staple", ("xcrun", "stapler", "validate")),
                                   ("tag", ("git", "tag")), ("push", ("git", "push")),
-                                  ("publish", ("gh", "release", "create"))):
+                                  ("draft", ("gh", "release", "create")),
+                                  ("publish", ("gh", "release", "edit"))):
                 if call[:len(prefix)] == prefix:
                     positions[label] = index
             if len(call) > 1 and call[1].endswith("update-feed.py"):
                 positions["feed"] = index
-        self.assertEqual(list(positions), ["ci", "archive", "notary", "staple", "feed", "tag", "push", "publish"])
+        self.assertEqual(list(positions), ["ci", "archive", "notary", "staple", "feed", "tag", "push", "draft", "publish"])
         self.assertEqual(self.git("status", "--porcelain"), "")
         self.assertEqual((self.root / "VERSION").read_text(), "4.0.1\n")
         self.assertEqual(self.git("rev-parse", "v4.0.1^{commit}"), self.commit)
@@ -251,20 +391,24 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertTrue((self.root / "build/release/v4.0.1/appcast.xml").exists())
         self.assert_not_published()
 
-    def test_notary_or_feed_failure_does_not_tag_or_publish(self):
-        for stage in ("notary", "feed"):
-            with self.subTest(stage=stage):
-                self.notary_status = "Invalid" if stage == "notary" else "Accepted"
-                self.fail_feed = stage == "feed"
-                with self.assertRaises((release.ReleaseError, subprocess.CalledProcessError)):
-                    self.invoke()
-                self.assert_not_published()
+    def test_notary_failure_does_not_tag_or_publish(self):
+        self.notary_status = "Invalid"
+        with self.assertRaisesRegex(release.ReleaseError, "not accepted"):
+            self.invoke()
+        self.assertTrue((self.directory / "work/notary-log.json").is_file())
+        self.assert_not_published()
+
+    def test_feed_failure_does_not_tag_or_publish(self):
+        self.fail_feed = True
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        self.assert_not_published()
 
     def test_source_edit_during_build_does_not_notarize_or_tag(self):
         self.after_archive = lambda: (self.root / "VERSION").write_text("4.0.2\n")
         with self.assertRaisesRegex(release.ReleaseError, "clean working tree"):
             self.invoke()
-        self.assertFalse(any(call[:2] == ("xcrun", "notarytool") for call in self.calls))
+        self.assertFalse(any(call[:3] == ("xcrun", "notarytool", "submit") for call in self.calls))
         self.assert_not_published()
 
     def test_existing_release_and_moved_remote_tag_are_rejected_before_build(self):
@@ -308,11 +452,387 @@ class ReleaseFlowTests(unittest.TestCase):
                 self.invoke()
         self.assert_not_published()
 
+    def count(self, *prefix):
+        return sum(call[:len(prefix)] == prefix for call in self.calls)
+
+    def archive_count(self):
+        return sum(call[0] == "xcodebuild" and "archive" in call for call in self.calls)
+
+    def fail_once(self, stage, phase="before", occurrence=1):
+        self.failures[(stage, phase)] = occurrence
+
+    def test_export_failure_reuses_the_completed_archive(self):
+        self.fail_once("export")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        build = self.state["build"]
+        self.invoke()
+        self.assertEqual(self.archive_count(), 1)
+        self.assertEqual(self.state["build"], build)
+        self.assertFalse(self.remote_release["draft"])
+
+    def test_notarization_wait_failure_resumes_the_same_submission_and_app(self):
+        self.fail_once("wait")
+        with self.assertRaisesRegex(release.ReleaseError, "still processing"):
+            self.invoke()
+        identifier = self.state["notary_id"]
+        archive_hash = self.state["notary_zip_hash"]
+        self.invoke()
+        self.assertEqual(self.state["notary_id"], identifier)
+        self.assertEqual(self.state["notary_zip_hash"], archive_hash)
+        self.assertEqual(self.archive_count(), 1)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 1)
+
+    def test_lost_submission_acknowledgement_recovers_id_from_saved_stdout(self):
+        self.fail_once("submit", "after")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        self.assertNotIn("notary_id", self.state)
+        self.invoke()
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 1)
+        self.assertEqual(self.archive_count(), 1)
+
+    def test_unknown_submission_outcome_stops_instead_of_uploading_again(self):
+        self.fail_once("submit", "after")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        (self.directory / "work/notary-submission.json").write_text("incomplete response")
+        with self.assertRaisesRegex(release.ReleaseError, "outcome is unknown"):
+            self.invoke()
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 1)
+        self.assert_not_published()
+        self.invoke(resume_notarization=next(iter(self.submissions)))
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 1)
+
+    def test_manual_submission_recovery_checks_apple_archive_hash_before_adopting_id(self):
+        self.fail_once("submit", "after")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        (self.directory / "work/notary-submission.json").unlink()
+        correct_id = next(iter(self.submissions))
+        wrong_id = str(uuid.UUID(int=999))
+        self.submissions[wrong_id] = "different archive"
+        with self.assertRaisesRegex(release.ReleaseError, "does not match the saved archive"):
+            self.invoke(resume_notarization=wrong_id)
+        self.assertNotIn("notary_id", self.state)
+        self.assertEqual(self.count("xcrun", "stapler", "staple"), 0)
+        self.assert_not_published()
+        self.invoke(resume_notarization=correct_id)
+        self.assertEqual(self.state["notary_id"], correct_id)
+
+    def test_stapler_failure_preserves_original_app_and_does_not_resubmit(self):
+        self.fail_once("staple", "after")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        original = self.directory / "work/export/ViewTheWord.app"
+        self.assertEqual(release.digest(original), self.state["export_hash"])
+        self.invoke()
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 1)
+        self.assertEqual(self.count("xcrun", "notarytool", "wait"), 1)
+        self.assertEqual(self.archive_count(), 1)
+
+    def test_feed_failure_reuses_signed_app_and_zip(self):
+        self.fail_once("feed")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        saved_zip = self.state["zip_hash"]
+        self.invoke()
+        self.assertEqual(self.state["zip_hash"], saved_zip)
+        self.assertEqual(self.archive_count(), 1)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 1)
+        self.assertEqual(self.count("xcrun", "stapler", "staple"), 1)
+
+    def test_upload_failure_resumes_only_missing_assets_without_rebuilding(self):
+        self.fail_once("upload", occurrence=2)
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        self.assertTrue(self.remote_release["draft"])
+        self.assertIsNone(self.latest)
+        saved = dict(self.state["artifacts"])
+        self.invoke()
+        self.assertEqual(self.state["artifacts"], saved)
+        self.assertEqual(self.archive_count(), 1)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 1)
+        self.assertEqual(self.count("gh", "release", "create"), 1)
+        self.assertEqual(self.count("gh", "release", "upload"), 5)  # 4 successes + 1 failed attempt
+        self.assertFalse(self.remote_release["draft"])
+
+    def test_lost_draft_creation_acknowledgement_reuses_our_draft(self):
+        self.fail_once("create", "after")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        self.assertNotIn("release_id", self.state)
+        self.assertTrue(self.remote_release["draft"])
+        self.invoke(publish_only=True)
+        self.assertEqual(self.count("gh", "release", "create"), 1)
+
+    def test_draft_source_is_checked_using_the_tag_not_target_commitish_hint(self):
+        self.fail_once("create", "after")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        self.remote_release["target_commitish"] = "master"
+        self.invoke(publish_only=True)
+        self.assertEqual(self.remote_tag, self.commit)
+        self.assertFalse(self.remote_release["draft"])
+
+    def test_lost_upload_acknowledgement_does_not_upload_the_asset_twice(self):
+        self.fail_once("upload", "after")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        self.invoke(publish_only=True)
+        self.assertEqual(self.count("gh", "release", "upload"), 4)
+
+    def test_empty_starter_asset_is_recovered_only_on_our_draft(self):
+        self.fail_once("upload")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        name = release.artifact_paths(self.directory, "4.0.1")[0].name
+        self.assets[name] = {"name": name, "id": 100, "state": "starter", "size": 0, "digest": None}
+        self.invoke(publish_only=True)
+        self.assertEqual(self.count("gh", "api", "--method", "DELETE"), 1)
+        self.assertFalse(self.remote_release["draft"])
+
+    def test_conflicting_uploaded_asset_is_never_clobbered(self):
+        self.fail_once("upload", "after")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        asset = next(iter(self.assets.values()))
+        asset["digest"] = "sha256:" + "0" * 64
+        with self.assertRaisesRegex(release.ReleaseError, "differs from the prepared file"):
+            self.invoke(publish_only=True)
+        self.assertEqual(self.count("gh", "api", "--method", "DELETE"), 0)
+        self.assertEqual(self.count("gh", "release", "edit"), 0)
+        self.assertTrue(self.remote_release["draft"])
+
+    def test_missing_remote_digest_falls_back_to_comparing_downloaded_bytes(self):
+        self.use_asset_digests = False
+        self.fail_once("upload", "after")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        self.invoke(publish_only=True)
+        self.assertGreater(self.count("gh", "release", "download"), 0)
+        self.assertEqual(self.count("gh", "release", "upload"), 4)
+
+    def test_lost_publication_acknowledgement_recognizes_completed_release_without_writes(self):
+        self.fail_once("edit", "after")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        self.assertFalse(self.remote_release["draft"])
+        # A newer release may have appeared since ours finished. Recognizing
+        # completion must not promote this older release back to latest.
+        self.latest = "v4.0.2"
+        self.invoke()
+        self.assertEqual(self.count("gh", "release", "edit"), 1)
+        self.assertEqual(self.count("gh", "release", "create"), 1)
+        self.assertEqual(self.archive_count(), 1)
+        self.assertEqual(self.latest, "v4.0.2")
+
+    def test_published_release_with_missing_assets_is_not_repaired_or_overwritten(self):
+        self.invoke()
+        del self.assets["appcast.xml"]
+        with self.assertRaisesRegex(release.ReleaseError, "missing prepared artifacts"):
+            self.invoke(publish_only=True)
+        self.assertEqual(self.count("gh", "release", "upload"), 4)
+        self.assertEqual(self.count("gh", "release", "edit"), 1)
+
+    def test_publish_only_has_no_build_signing_or_apple_calls(self):
+        self.invoke(no_publish=True)
+        # Once preparation finishes only the state and final files are needed.
+        shutil.rmtree(self.directory / "work")
+        self.calls.clear()
+        self.invoke(publish_only=True)
+        self.assertFalse(any(call[0] in ("xcodebuild", "codesign", "security", "ditto", "xcrun") for call in self.calls))
+        self.assertFalse(self.remote_release["draft"])
+
+    def test_publish_only_requires_a_complete_saved_preparation(self):
+        with self.assertRaisesRegex(release.ReleaseError, "No saved preparation"):
+            self.invoke(publish_only=True)
+        self.fail_once("wait")
+        with self.assertRaises(release.ReleaseError):
+            self.invoke()
+        with self.assertRaisesRegex(release.ReleaseError, "No complete prepared release"):
+            self.invoke(publish_only=True)
+        self.assert_not_published()
+
+    def test_modified_prepared_file_stops_before_tagging_or_uploading(self):
+        self.invoke(no_publish=True)
+        (self.directory / "appcast.xml").write_text("modified feed")
+        with self.assertRaisesRegex(release.ReleaseError, "Prepared release file changed"):
+            self.invoke()
+        self.assert_not_published()
+
+    def test_modified_exported_app_cannot_resume_notarization(self):
+        self.fail_once("wait")
+        with self.assertRaises(release.ReleaseError):
+            self.invoke()
+        binary = self.directory / "work/export/ViewTheWord.app/Contents/MacOS/ViewTheWord"
+        binary.write_text("different executable")
+        with self.assertRaisesRegex(release.ReleaseError, "Saved artifact changed"):
+            self.invoke()
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 1)
+        self.assert_not_published()
+
+    def test_new_commit_with_same_version_requires_fresh_preparation(self):
+        self.invoke(no_publish=True)
+        original_commit = self.commit
+        self.git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "--quiet", "-m", "new source")
+        self.commit = self.git("rev-parse", "HEAD")
+        self.ci_sha = self.commit
+        with self.assertRaisesRegex(release.ReleaseError, "Cannot reuse.*source"):
+            self.invoke()
+        self.assertEqual(self.archive_count(), 1)
+        self.assert_not_published()
+        # Returning to the recorded source can still finish the pending release.
+        self.git("checkout", "--quiet", original_commit)
+        self.commit = self.ci_sha = original_commit
+        self.invoke(publish_only=True)
+        self.assertFalse(self.remote_release["draft"])
+
+    def test_new_source_can_keep_unreleased_version_after_old_preparation_is_moved_aside(self):
+        self.invoke(no_publish=True)
+        original = self.state
+        self.git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "--quiet", "-m", "new source")
+        self.commit = self.ci_sha = self.git("rev-parse", "HEAD")
+        backup = self.directory.with_name("v4.0.1-unfinished")
+        self.directory.rename(backup)
+        self.invoke()
+        self.assertEqual(self.state["commit"], self.commit)
+        self.assertNotEqual(self.state["commit"], original["commit"])
+        self.assertEqual(self.state["version"], original["version"])
+        self.assertTrue((backup / "state.json").exists())
+        self.assertEqual(self.archive_count(), 2)
+
+    def test_snapshot_of_release_notes_survives_retry_without_notes_argument(self):
+        notes = self.root / "build/notes.md"
+        notes.parent.mkdir(exist_ok=True)
+        notes.write_text("Release notes with `code` and $literal text.\n")
+        self.fail_once("create", "after")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke(notes=notes)
+        saved = self.remote_release["body"]
+        notes.write_text("Changed notes")
+        with self.assertRaisesRegex(release.ReleaseError, "notes differ"):
+            self.invoke(publish_only=True, notes=notes)
+        self.invoke(publish_only=True)
+        self.assertEqual(self.remote_release["body"], saved)
+
+    def test_read_only_check_does_not_create_recovery_files_or_access_apple(self):
+        self.invoke(check=True)
+        self.assertFalse((self.root / "build").exists())
+        self.assertFalse(any(call[0] in ("xcodebuild", "codesign", "security", "xcrun") for call in self.calls))
+
+    def test_source_edit_during_upload_leaves_draft_unpublished(self):
+        self.hooks[("upload", "after")] = lambda: (self.root / "VERSION").write_text("4.0.2\n")
+        with self.assertRaisesRegex(release.ReleaseError, "clean working tree"):
+            self.invoke()
+        self.assertTrue(self.remote_release["draft"])
+        self.assertEqual(self.count("gh", "release", "edit"), 0)
+
+    def test_latest_release_change_during_upload_leaves_draft_unpublished(self):
+        self.hooks[("upload", "after")] = lambda: setattr(self, "latest", "v4.0.2")
+        with self.assertRaisesRegex(release.ReleaseError, "latest release changed"):
+            self.invoke()
+        self.assertTrue(self.remote_release["draft"])
+        self.assertEqual(self.count("gh", "release", "edit"), 0)
+
+    def test_ci_failure_after_upload_leaves_draft_unpublished(self):
+        self.conclusions = ["success", "success", "failure"]
+        with self.assertRaisesRegex(release.ReleaseError, "Validate did not pass"):
+            self.invoke()
+        self.assertTrue(self.remote_release["draft"])
+        self.assertEqual(self.count("gh", "release", "edit"), 0)
+
+    def test_source_changed_during_final_ci_check_leaves_draft_unpublished(self):
+        def edit_after_final_ci():
+            if self.count("gh", "run", "list") == 3:
+                (self.root / "VERSION").write_text("4.0.2\n")
+        self.hooks[("list", "after")] = edit_after_final_ci
+        with self.assertRaisesRegex(release.ReleaseError, "clean working tree"):
+            self.invoke()
+        self.assertTrue(self.remote_release["draft"])
+        self.assertEqual(self.count("gh", "release", "edit"), 0)
+
+    def test_source_changed_during_publication_preflight_does_not_create_tag(self):
+        def edit_after_publication_ci():
+            if self.count("gh", "run", "list") == 2:
+                (self.root / "VERSION").write_text("4.0.2\n")
+        self.hooks[("list", "after")] = edit_after_publication_ci
+        with self.assertRaisesRegex(release.ReleaseError, "clean working tree"):
+            self.invoke()
+        self.assert_not_published()
+
+    def test_artifact_changed_during_final_ci_check_leaves_draft_unpublished(self):
+        def edit_after_final_ci():
+            if self.count("gh", "run", "list") == 3:
+                (self.directory / "appcast.xml").write_text("changed feed")
+        self.hooks[("list", "after")] = edit_after_final_ci
+        with self.assertRaisesRegex(release.ReleaseError, "differs from the prepared file|Prepared release file changed"):
+            self.invoke()
+        self.assertTrue(self.remote_release["draft"])
+        self.assertEqual(self.count("gh", "release", "edit"), 0)
+
+    def test_moved_remote_tag_after_upload_is_not_repaired(self):
+        self.hooks[("upload", "after")] = lambda: setattr(self, "remote_tag", "0" * 40)
+        with self.assertRaisesRegex(release.ReleaseError, "points to another commit"):
+            self.invoke()
+        self.assertTrue(self.remote_release["draft"])
+        self.assertEqual(self.count("gh", "release", "edit"), 0)
+
+    def test_unrelated_draft_is_rejected_even_with_prepared_local_artifacts(self):
+        self.invoke(no_publish=True)
+        self.existing_release = True
+        self.remote_release["draft"] = True
+        with self.assertRaisesRegex(release.ReleaseError, "does not belong"):
+            self.invoke()
+        self.assertEqual(self.count("gh", "release", "upload"), 0)
+        self.assertEqual(self.count("git", "tag"), 0)
+
+    def test_unrecorded_artifacts_are_preserved(self):
+        self.directory.mkdir(parents=True)
+        previous = self.directory / "ViewTheWord-4.0.1-notarized.zip"
+        previous.write_bytes(b"legacy artifact")
+        with self.assertRaisesRegex(release.ReleaseError, "Unrecorded artifacts"):
+            self.invoke()
+        self.assertEqual(previous.read_bytes(), b"legacy artifact")
+        self.assertEqual(self.archive_count(), 0)
+
+    def test_invalid_state_is_preserved_and_not_silently_restarted(self):
+        self.invoke(no_publish=True)
+        state = self.directory / "state.json"
+        state.write_text("broken JSON")
+        with self.assertRaisesRegex(release.ReleaseError, "Cannot reuse"):
+            self.invoke()
+        self.assertEqual(state.read_text(), "broken JSON")
+        self.assertEqual(self.archive_count(), 1)
+
+    def test_concurrent_release_command_is_rejected(self):
+        with release.release_lock():
+            with self.assertRaisesRegex(release.ReleaseError, "Another local release"):
+                self.invoke()
+        self.assertEqual(self.archive_count(), 0)
+        self.assert_not_published()
+
+    def test_bad_notary_profile_is_detected_before_archiving(self):
+        self.fail_once("history")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        self.assertEqual(self.archive_count(), 0)
+        self.assert_not_published()
+
+    def test_previous_feed_is_verified_and_build_number_advances(self):
+        self.latest = "v4.0.0"
+        self.previous_release = {"id": 10, "tag_name": "v4.0.0", "draft": False}
+        self.previous_feed = b'<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item><sparkle:version>99991231235960.2</sparkle:version></item></channel></rss>'
+        self.invoke(no_publish=True)
+        self.assertEqual(self.state["build"], "99991231235961")
+        self.assertTrue(any(call[0].endswith("sign_update") and "--verify" in call for call in self.calls))
+
+
 
 class GitHubTransportTests(unittest.TestCase):
     def test_only_confirmed_404_is_treated_as_absent(self):
         for status, body, exit_code in ((200, '{"sha":"fixture"}', 0), (404, '{}', 1),
-                                        (403, '{}', 1), (500, '{}', 1), (None, '', 1)):
+                                        (403, '{}', 1), (422, '{}', 1), (500, '{}', 1), (None, '', 1)):
             with self.subTest(status=status):
                 output = f"HTTP/2.0 {status} status\ncontent-type: application/json\n\n{body}" if status else ""
                 response = subprocess.CompletedProcess([], exit_code, output, "failure" if exit_code else "")
@@ -326,6 +846,57 @@ class GitHubTransportTests(unittest.TestCase):
                     else:
                         with self.assertRaises(release.ReleaseError):
                             release.github("owner/repo", "commits/main", optional=True)
+
+    def test_missing_tag_uses_ref_lookup_without_resolving_a_commit(self):
+        def request(args, **kwargs):
+            path = args[-1]
+            if path == "repos/owner/repo/git/ref/tags/v4.0.1":
+                return subprocess.CompletedProcess(args, 1, 'HTTP/2.0 404 Not Found\n\n{"message":"Not Found"}', "")
+            self.fail(f"A missing tag must not reach the commit endpoint, which returns 422: {path}")
+
+        with patch.object(release.subprocess, "run", side_effect=request) as transport:
+            self.assertIsNone(release.remote_tag_commit("owner/repo", "v4.0.1"))
+            self.assertEqual(transport.call_count, 1)
+
+    def test_existing_lightweight_and_annotated_tags_resolve_to_the_commit(self):
+        for kind, object_sha in (("commit", "commit-sha"), ("tag", "annotated-tag-sha")):
+            with self.subTest(kind=kind):
+                def request(args, **kwargs):
+                    path = args[-1]
+                    if path == "repos/owner/repo/git/ref/tags/v4.0.1":
+                        data = {"object": {"type": kind, "sha": object_sha}}
+                    elif path == "repos/owner/repo/commits/tags/v4.0.1":
+                        data = {"sha": "commit-sha"}
+                    else:
+                        self.fail(f"Unexpected tag request: {path}")
+                    return subprocess.CompletedProcess(args, 0, "HTTP/2.0 200 OK\n\n" + json.dumps(data), "")
+
+                with patch.object(release.subprocess, "run", side_effect=request):
+                    self.assertEqual(release.remote_tag_commit("owner/repo", "v4.0.1"), "commit-sha")
+
+    def test_tag_lookup_errors_and_disappearance_abort(self):
+        for code in (403, 422, 500):
+            for during_resolution in (False, True):
+                with self.subTest(code=code, during_resolution=during_resolution):
+                    def request(args, **kwargs):
+                        if during_resolution and "/git/ref/" in args[-1]:
+                            body = json.dumps({"object": {"type": "commit", "sha": "commit-sha"}})
+                            return subprocess.CompletedProcess(args, 0, "HTTP/2.0 200 OK\n\n" + body, "")
+                        return subprocess.CompletedProcess(args, 1, f'HTTP/2.0 {code} Error\n\n{{"message":"Failed"}}', "")
+
+                    with patch.object(release.subprocess, "run", side_effect=request):
+                        with self.assertRaises(release.ReleaseError):
+                            release.remote_tag_commit("owner/repo", "v4.0.1")
+
+    def test_release_lookup_includes_drafts_and_later_pages(self):
+        draft = {"id": 101, "tag_name": "v4.0.1", "draft": True}
+        def request(repo, path):
+            if path == "releases?per_page=100&page=1":
+                return [{"id": index, "tag_name": f"v0.0.{index}", "draft": False} for index in range(100)]
+            self.assertEqual(path, "releases?per_page=100&page=2")
+            return [draft]
+        with patch.object(release, "github", side_effect=request):
+            self.assertEqual(release.find_release("owner/repo", "v4.0.1"), draft)
 
     def test_automatic_build_number_advances_past_future_published_builds(self):
         with tempfile.TemporaryDirectory() as directory:
