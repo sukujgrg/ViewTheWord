@@ -546,7 +546,14 @@ def publish(directory, state, notes):
         atomic_write(notes_file, state["release_body"])
         run("gh", "release", "create", tag, "--repo", repo, "--verify-tag", "--target", commit,
             "--draft", "--title", f"{APP_NAME} {version}", "--notes-file", notes_file)
-        existing = find_release(repo, tag)
+        # The release list can lag behind a successful creation. Retry only
+        # reads; never repeat the create request to handle a visibility delay.
+        for delay in (0, 1, 2, 4, 8):
+            if delay:
+                time.sleep(delay)
+            existing = find_release(repo, tag)
+            if existing is not None:
+                break
         if existing is None:
             raise ReleaseError("The draft creation result is not visible yet. Retry the same command.")
         verify_owned_release(existing, state)

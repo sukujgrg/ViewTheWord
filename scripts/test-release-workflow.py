@@ -51,6 +51,7 @@ class ReleaseFlowTests(unittest.TestCase):
         self.previous_feed = None
         self.remote_tag = None
         self.existing_release = False
+        self.hidden_draft_reads = 0
         self.conclusions = ["success"]
         self.ci_sha = self.commit
         self.ci_branch = "master"
@@ -102,6 +103,9 @@ class ReleaseFlowTests(unittest.TestCase):
     def api(self, repo, path, optional=False):
         self.assertEqual(repo, "sukujgrg/ViewTheWord")
         if path == "releases?per_page=100&page=1":
+            if self.remote_release and self.remote_release["draft"] and self.hidden_draft_reads:
+                self.hidden_draft_reads -= 1
+                return copy.deepcopy([self.previous_release] if self.previous_release else [])
             return copy.deepcopy([item for item in (self.remote_release, self.previous_release) if item])
         if path == "releases/42":
             return copy.deepcopy(self.remote_release)
@@ -450,6 +454,25 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertFalse(self.remote_release["draft"])
         self.assertFalse(any(call[0] in ("xcodebuild", "xcrun", "codesign", "security", "ditto") for call in self.calls))
         self.assertFalse(any(call[:2] in (("git", "tag"), ("git", "push")) for call in self.calls))
+
+    def test_new_draft_visibility_delay_does_not_repeat_creation(self):
+        self.hidden_draft_reads = 3
+        self.invoke()
+        self.assertEqual(self.count("gh", "release", "create"), 1)
+        self.assertEqual(self.hidden_draft_reads, 0)
+        self.assertFalse(self.remote_release["draft"])
+
+    def test_draft_visibility_timeout_preserves_work_for_retry(self):
+        self.hidden_draft_reads = 5
+        with self.assertRaisesRegex(release.ReleaseError, "not visible yet"):
+            self.invoke()
+        self.assertTrue(self.remote_release["draft"])
+        self.assertEqual(self.count("gh", "release", "upload"), 0)
+        prepared = self.state["artifacts"]
+        self.invoke(publish_only=True)
+        self.assertEqual(self.count("gh", "release", "create"), 1)
+        self.assertEqual(self.state["artifacts"], prepared)
+        self.assertFalse(self.remote_release["draft"])
 
     def test_changed_latest_release_stops_before_tagging(self):
         self.latest_changed = True
