@@ -49,11 +49,21 @@ On a new machine, import the existing private key before running a release.
 
 ## Publishing
 
-Use the ordinary clean-tree, tagged release procedure in the README. The release
-script resolves Sparkle, verifies the signing key, archives a universal app,
+Edit `VERSION`, commit and merge or push the changes to `master`, then update your
+local `master` checkout and run `make release` on your Mac. The command requires a
+clean checkout and a successful **Validate** push run on `master` for that exact
+commit before starting a release build. PR checks validate the proposed merge;
+feature-branch pushes and release tags do not trigger duplicate CI. Signing and
+notarization run locally with your Keychain credentials; GitHub Actions only
+tests unsigned builds.
+
+The command resolves Sparkle, verifies the signing key, archives a universal app,
 notarizes and staples it, then creates and verifies the signed feed for the final
-zip. GitHub publication uploads `appcast.xml` alongside the zip, checksum, and
-source metadata, and marks that release as latest.
+zip. After rechecking the source, CI, and latest release, it creates and pushes
+`v<VERSION>`. GitHub publication uploads `appcast.xml` alongside the zip, checksum,
+and source metadata, and marks that release as latest. Existing tags are reused
+only when they point to the same source commit. Existing releases are never
+overwritten. Artifacts remain in `build/release/v<VERSION>/` if publication fails.
 
 `scripts/update-feed.py` checks the bundle identity, embedded feed URL and public
 key, archive signature and length, app/build versions, and minimum macOS version.
@@ -63,12 +73,15 @@ rejects build numbers that would prevent installed copies from seeing the update
 Current releases require macOS 26.0 or later; the feed takes this minimum from
 the built app's `LSMinimumSystemVersion`.
 
-Sparkle compares `CFBundleVersion`. Release builds default to a numeric UTC
-timestamp (`YYYYMMDDHHMMSS`). An explicit `--build-number` or tag's `+BUILD`
-suffix must be greater than all previously
-published update builds. The marketing version still comes from `VERSION` and
-the release tag. Local `--current-arch` archives do not generate an update feed
-and cannot be published by the GitHub release command.
+Sparkle compares `CFBundleVersion`. The release command chooses a numeric UTC
+timestamp (`YYYYMMDDHHMMSS`) and raises it above prior published builds when
+needed. The previous feed is signature-verified before its build numbers are
+used. The marketing version comes only from `VERSION`; the tag is derived from
+it. There are no manual version/build overrides or validation bypasses.
+
+`make release-check` checks source, destination, and CI without building or
+publishing. `make release-notarize` follows the same validated local signing
+process and saves the artifacts without creating a tag or GitHub release.
 
 The first release containing this feature must be installed manually by existing
 users. That release also establishes the feed; subsequent releases can be
@@ -82,6 +95,9 @@ without checking the internet or starting an installer. Native tests cover menu
 enablement, the automatic-check preference, reminders in multiple windows,
 focus preservation, and shared live output when a window closes. Python
 regressions reject older builds and feed/archive metadata mismatches.
+`scripts/test-release-workflow.py` exercises release ordering and failure paths
+using temporary Git repositories and offline command doubles; it never signs,
+notarizes, pushes to GitHub, or publishes a real release.
 
 Before publishing a release, use a signed and notarized pair of builds in
 a disposable installation to check the complete download/install/relaunch flow,
