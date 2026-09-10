@@ -18,7 +18,7 @@ Use **View The Word → Check for Updates…** to download and install new relea
 Automatic checks show an **Update** button without interrupting your work; choose
 the update and install it when you are ready to restart. You can turn automatic
 checks off in the app menu. Existing users install the first version with this
-feature manually. See [self-updates and release signing](docs/self-updates.md).
+feature manually. See [self-updates](docs/self-updates.md).
 
 In the chapter grid, arrow keys follow the current arrangement and keep focus there. Return or Space opens the selected chapter again; Command-Left/Right moves between workspace columns. In the verse list, Command-Up/Down jumps five verses, Page Up/Down jumps ten, and Home/End selects the first/last verse. Left/Right moves from the verse list to another column or search.
 
@@ -67,45 +67,10 @@ python3 scripts/test-release-workflow.py
 
 The Swift package tests the same parser, database, import, navigation, projection preparation, persistence, text fitting, and native reference-table sources used by the app. Native tests exercise keyboard events, focus, scroll restoration, and row actions. CI runs these checks plus Debug and Release builds once per PR update and on pushes to `master`; feature-branch pushes and release tags do not start a second run. New commits cancel older runs for the same PR or branch. [Manual checks](docs/manual-validation.md) cover physical keyboard/VoiceOver behavior and displays.
 
-With local Xcode signing configured, `make build` exports a universal app to `~/Applications`; `make build-for-this` builds only for this Mac's architecture. These commands preserve saved release artifacts. Run `make` to list commands, or explicitly run `make clean` to delete `build/`, including saved release artifacts.
+With local Xcode signing configured, `make build` exports a universal app to `~/Applications`; `make build-for-this` builds only for this Mac's architecture. Run `make` to list commands, or `make clean` to delete `build/`.
 
 The layered VTW app icon is editable in Icon Composer. See [the icon source and rendering guide](docs/app-icon.md) for appearance previews and build integration.
 
 The passage workspace uses native AppKit controls and an independent navigation model for each tab. One shared `LiveProjectionController` publishes output and owns the projector window. Settings, help, preview, and projected content are separate SwiftUI screens. See [the architecture guide](docs/architecture.md) for state ownership, navigation, data access, and validation boundaries.
 
-## Release and notarize
-
-Releases are built, signed, and notarized on your Mac using the existing Developer ID and Sparkle keys in Keychain. GitHub Actions runs validation only.
-
-For each release:
-
-1. Edit `VERSION` to the new `X.Y.Z` version, or use `./scripts/set-version.sh 4.0.1`.
-2. Commit the release changes and merge the PR into `master`, or push directly to `master`.
-3. Update your local `master` checkout and run `make release` on your Mac.
-
-The command waits for the latest **Validate** push run on `master` for that exact commit to pass. PR validation checks the proposed merge; the `master` run validates the committed source used for the release. It then builds the universal app, signs with Developer ID, notarizes and staples it, and generates the signed Sparkle feed. Only when the artifacts are ready does it create and push `v<VERSION>` and publish the GitHub release. Existing tags must point to the same commit; existing releases are never overwritten.
-
-`VERSION` is the single source for the app version. An Xcode build phase generates an intermediate Info.plist in DerivedData, so ordinary Xcode builds and release builds use the same version automatically. Build numbers are automatic and increase beyond every build in the previous signed feed. The repository comes from `origin` and must match the app's update-feed URL.
-
-The defaults use the existing `ViewTheWordNotary` Keychain profile. On a new release Mac, configure Xcode signing, authenticate `gh`, and store notarization credentials once:
-
-```bash
-xcrun notarytool store-credentials "ViewTheWordNotary" \
-  --apple-id "you@example.com" \
-  --team-id "YOURTEAMID" \
-  --password "app-specific-password"
-```
-
-The Sparkle signing key must also be present on that Mac; see [self-update signing requirements](docs/self-updates.md). Existing credentials need no setup changes.
-
-Optional commands:
-
-```bash
-make release-check                         # Check clean source, destination, and CI; no build or publication
-make release NOTES_FILE=release-notes.md    # Supply release notes
-make release-notarize                      # Produce signed artifacts locally; no tag or publication
-```
-
-A different local notary profile can be selected with `NOTARY_PROFILE=ProfileName`. Version, tag, build-number, and repository overrides are removed; there is no validation bypass.
-
-Artifacts are saved under `build/release/v<VERSION>/`: the app, notarized zip, checksum, source metadata, and signed `appcast.xml`. If publication fails, those local artifacts remain available. A retry rechecks CI and the destination; an existing matching tag can be reused, but a published release requires a new version. Source edits, failed CI, or a changed latest release stop publication. The command never force-pushes a tag.
+Maintainers can find signing, notarization, and publishing instructions in the [release guide](docs/releasing.md).
