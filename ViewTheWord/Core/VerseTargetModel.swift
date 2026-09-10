@@ -31,6 +31,14 @@ struct NavigationResult {
     let projection: PreparedProjection?
 }
 
+enum NavigationError: LocalizedError {
+    case chapterUnavailable
+
+    var errorDescription: String? {
+        "This chapter is unavailable in the selected translations."
+    }
+}
+
 /// Selected reference, chapter rows and their translation identities are one published value.
 /// The shared LiveProjectionController consumes prepared projection intents; this model never opens a window or publishes live content.
 @MainActor
@@ -109,8 +117,10 @@ final class VerseTargetModel: ObservableObject {
     }
     func cancelAll() { cancelLoading(); cancelProjection() }
 
+    /// Current requests complete once with success or failure. Canceled or
+    /// superseded requests never invoke completion or commit late results.
     func navigate(to reference: VerseReference, sources: BibleSources, project: Bool = false,
-                  onComplete: @escaping @MainActor (NavigationResult) -> Void) {
+                  onComplete: @escaping @MainActor (Result<NavigationResult, Error>) -> Void) {
         let id = begin()
         pendingReference = reference
         if project { cancelProjection(); isProjecting = true }
@@ -131,7 +141,9 @@ final class VerseTargetModel: ObservableObject {
                 guard let resolved = chapter.resolvedReference(reference) else {
                     self.navigation = NavigationState(reference: reference, chapter: chapter)
                     self.finishNavigationProjection(projectionID)
-                    self.message = "This chapter is unavailable in the selected translations."
+                    let error = NavigationError.chapterUnavailable
+                    self.message = error.localizedDescription
+                    onComplete(.failure(error))
                     return
                 }
                 self.navigation = NavigationState(reference: resolved, chapter: chapter)
@@ -144,7 +156,7 @@ final class VerseTargetModel: ObservableObject {
                     prepared = PreparedProjection(pair: requested, sources: sources, owner: .textInputTarget(reference))
                 }
                 self.finishNavigationProjection(projectionID)
-                onComplete(NavigationResult(reference: resolved, requestedAvailable: requested != nil, projection: prepared))
+                onComplete(.success(NavigationResult(reference: resolved, requestedAvailable: requested != nil, projection: prepared)))
             } catch {
                 guard let self, self.current(id) else { return }
                 self.isLoading = false
@@ -156,6 +168,7 @@ final class VerseTargetModel: ObservableObject {
                     self.navigation = NavigationState(reference: reference, chapter: nil)
                 }
                 self.message = error.localizedDescription
+                onComplete(.failure(error))
             }
         }
     }
@@ -208,8 +221,9 @@ final class VerseTargetModel: ObservableObject {
         }
     }
 
+    /// Started requests follow the same completion/cancellation contract as navigation.
     func search(_ request: TextSearchRequest, sources: BibleSources, loadMore: Bool = false,
-                onComplete: @escaping @MainActor () -> Void = {}) {
+                onComplete: @escaping @MainActor (Result<SearchPage, Error>) -> Void = { _ in }) {
         let previous = loadMore && searchPage?.request == request && searchPage?.sources == sources ? searchPage : nil
         guard !loadMore || previous?.hasMore == true else { return }
         let id = begin()
@@ -220,16 +234,18 @@ final class VerseTargetModel: ObservableObject {
             do {
                 let page = try await Self.loadSearchPage(request, sources: sources, primary: primary, secondary: secondary, after: previous?.cursor)
                 guard let self, self.current(id) else { return }
-                self.searchPage = SearchPage(id: previous?.id ?? page.id, request: request, sources: sources,
-                                           hits: (previous?.hits ?? []) + page.hits, hasMore: page.hasMore)
+                let result = SearchPage(id: previous?.id ?? page.id, request: request, sources: sources,
+                                        hits: (previous?.hits ?? []) + page.hits, hasMore: page.hasMore)
+                self.searchPage = result
                 self.isLoading = false
                 self.task = nil
-                onComplete()
+                onComplete(.success(result))
             } catch {
                 guard let self, self.current(id) else { return }
                 self.isLoading = false
                 self.task = nil
                 self.message = error.localizedDescription
+                onComplete(.failure(error))
             }
         }
     }

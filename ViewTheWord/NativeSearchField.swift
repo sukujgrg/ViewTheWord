@@ -5,6 +5,7 @@ final class NativeSearchFieldController: NSObject, NSSearchFieldDelegate {
     let field = ReferenceSearchField()
     private var didClearEmptyDraft = false
     private(set) var interactionRevision = 0
+    private(set) var isSendingSubmission = false
     var onTextChange: (String) -> Void = { _ in }
     var onSubmit: () -> Void = {}
     var onClear: () -> Void = {}
@@ -60,8 +61,8 @@ final class NativeSearchFieldController: NSObject, NSSearchFieldDelegate {
     }
 
     func controlTextDidEndEditing(_ notification: Notification) {
-        // Return submits before AppKit sends this notification; it is part of
-        // the same intent, not a newer focus change.
+        // AppKit can send this before or after Return's target action. It is
+        // part of the same submission, not a newer focus change.
         if notification.userInfo?[NSText.movementUserInfoKey] as? Int != NSTextMovement.return.rawValue {
             interactionRevision += 1
         }
@@ -77,6 +78,10 @@ final class NativeSearchFieldController: NSObject, NSSearchFieldDelegate {
             onClear()
         } else {
             didClearEmptyDraft = false
+            // Return can temporarily resign the field editor before sending
+            // this action. Keep that native transition within this submission.
+            isSendingSubmission = true
+            defer { isSendingSubmission = false }
             onTextChange(sender.stringValue)
             onSubmit()
         }

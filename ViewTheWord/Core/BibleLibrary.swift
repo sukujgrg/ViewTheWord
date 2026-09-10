@@ -130,6 +130,7 @@ final class BibleLibrary: ObservableObject {
     private var claimedAlertIDs = Set<UUID>()
     private var importQueue: [ImportRequest] = []
     private var activeImport: ImportRequest?
+    private var settingsPresented = false
     private let usesSuppliedCatalog: Bool
     private let importer: Importer
 
@@ -196,10 +197,12 @@ extension BibleLibrary {
     private final class ImportRequest {
         let url: URL
         let presenter: Presenter
+        var permitsReplacementPrompt: Bool
         private let scoped: Bool
-        init(url: URL, presenter: Presenter) {
+        init(url: URL, presenter: Presenter, permitsReplacementPrompt: Bool) {
             self.url = url
             self.presenter = presenter
+            self.permitsReplacementPrompt = permitsReplacementPrompt
             // Retain access while queued and while awaiting a replacement decision.
             scoped = url.startAccessingSecurityScopedResource()
         }
@@ -207,8 +210,23 @@ extension BibleLibrary {
     }
 
     func importFile(_ url: URL, presenter: Presenter) {
-        importQueue.append(ImportRequest(url: url, presenter: presenter))
+        importQueue.append(ImportRequest(url: url, presenter: presenter,
+                                         permitsReplacementPrompt: presenter != .settings || settingsPresented))
         startNextImport()
+    }
+
+    func setSettingsPresented(_ presented: Bool) {
+        settingsPresented = presented
+        guard !presented else { return }
+        // Closing Settings declines unresolved replacements, including imports
+        // that have not finished validation yet. Ordinary imports still finish.
+        if activeImport?.presenter == .settings { activeImport?.permitsReplacementPrompt = false }
+        for request in importQueue where request.presenter == .settings { request.permitsReplacementPrompt = false }
+        let replacements = alerts.compactMap { alert -> UUID? in
+            guard alert.presenter == .settings, case .replacement = alert.content else { return nil }
+            return alert.id
+        }
+        for id in replacements { completeAlert(id) }
     }
 
     private func startNextImport() {
@@ -231,9 +249,12 @@ extension BibleLibrary {
                 refresh()
                 showNotice("Imported \(BibleTranslation.name(for: imported)). It is now available in the translation pickers.", presenter: request.presenter)
             } catch BibleImportError.bibleAlreadyExists {
-                isImporting = false
-                enqueueAlert(LibraryAlert(presenter: request.presenter, content: .replacement(request.url)))
-                return
+                if request.permitsReplacementPrompt {
+                    isImporting = false
+                    enqueueAlert(LibraryAlert(presenter: request.presenter, content: .replacement(request.url)))
+                    return
+                }
+                showNotice("Import canceled. The existing \(request.url.lastPathComponent) was kept.", presenter: request.presenter)
             } catch {
                 showNotice("Could not import \(request.url.lastPathComponent): \(error.localizedDescription)", presenter: request.presenter)
             }

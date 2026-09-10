@@ -163,5 +163,10 @@ private final class ChapterItem: NSCollectionViewItem {
     override var isSelected: Bool {
         didSet { button.state = isSelected ? .on : .off }
     }
-    @objc private func choose() { activate() }
+    @objc private func choose() {
+        activate()
+        // A repeated click toggles NSButton even when collection selection is
+        // unchanged and AppKit has no reason to assign isSelected again.
+        button.state = isSelected ? .on : .off
+    }
 }

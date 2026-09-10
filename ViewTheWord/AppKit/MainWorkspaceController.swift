@@ -35,6 +35,7 @@ final class MainWorkspaceController: NSViewController {
     let loadingLabel = nativeLabel("", size: 11)
     let resultLabel = nativeLabel("", size: 12)
     let messageLabel = nativeLabel("", size: 12)
+    let dismissProjectionMessageButton = NSButton(title: "Dismiss", target: nil, action: nil)
     let emptyLabel = NSTextField(wrappingLabelWithString: "Choose a book and chapter, or enter a reference in Search.")
     let previewButton = NSButton(title: "Preview", target: nil, action: nil)
     let blankButton = NSButton(title: "Blank", target: nil, action: nil)
@@ -242,6 +243,7 @@ final class MainWorkspaceController: NSViewController {
         messageLabel.stringValue = messages.joined(separator: "  ")
         messageLabel.toolTip = messageLabel.stringValue
         footer.isHidden = messages.isEmpty
+        dismissProjectionMessageButton.isHidden = liveProjection.message == nil
         presentLibraryAlertIfNeeded()
     }
 
@@ -292,17 +294,25 @@ final class MainWorkspaceController: NSViewController {
         let originalDraft = draft
         let interactionRevision = search.interactionRevision
         let responder = view.window?.firstResponder
-        let wasEditingSearch = responder != nil && responder === search.field.currentEditor()
+        let wasEditingSearch = search.isSendingSubmission || (responder != nil && responder === search.field.currentEditor())
         let intent = project ? liveProjection.beginIntent(using: navigation) : nil
-        navigation.navigate(to: reference, sources: sources, project: project) { [weak self] result in
+        navigation.navigate(to: reference, sources: sources, project: project) { [weak self] outcome in
             guard let self else { return }
+            guard case .success(let result) = outcome else {
+                if let intent { self.liveProjection.finishIntent(intent) }
+                self.scheduleRender()
+                return
+            }
             if updateBrowsing { self.revealBook(result.reference.book) }
             if updateDraft && self.draft == originalDraft && self.search.interactionRevision == interactionRevision {
                 self.draft = result.reference.verseQuery.title
                 if focusVerses && self.focusUnchanged(from: responder, wasEditingSearch: wasEditingSearch) { self.focus(.verses) }
             }
             if recordHistory && result.requestedAvailable { self.history.append(reference.verseQuery.title) }
-            if let projection = result.projection, let intent { self.liveProjection.publish(projection, intent: intent) }
+            if let intent {
+                if let projection = result.projection { self.liveProjection.publish(projection, intent: intent) }
+                else { self.liveProjection.finishIntent(intent) }
+            }
             self.scheduleRender()
         }
         scheduleRender()
@@ -319,9 +329,9 @@ final class MainWorkspaceController: NSViewController {
                 let submittedDraft = draft
                 let interactionRevision = search.interactionRevision
                 let responder = view.window?.firstResponder
-                let wasEditingSearch = responder != nil && responder === search.field.currentEditor()
-                navigation.search(request, sources: sources) { [weak self] in
-                    guard let self, self.draft == submittedDraft,
+                let wasEditingSearch = search.isSendingSubmission || (responder != nil && responder === search.field.currentEditor())
+                navigation.search(request, sources: sources) { [weak self] outcome in
+                    guard case .success = outcome, let self, self.draft == submittedDraft,
                           self.search.interactionRevision == interactionRevision,
                           self.focusUnchanged(from: responder, wasEditingSearch: wasEditingSearch) else { return }
                     self.focus(.verses)
@@ -376,9 +386,10 @@ final class MainWorkspaceController: NSViewController {
     private func focusUnchanged(from responder: NSResponder?, wasEditingSearch: Bool) -> Bool {
         guard let window = view.window else { return false }
         if window.firstResponder === responder { return true }
-        // Return may end field editing and give first responder back to the
-        // search control or window. No other control gained focus in that case.
-        return wasEditingSearch && (window.firstResponder === search.field || window.firstResponder === window)
+        // Return can temporarily give first responder to the window and then
+        // restore the same search editor without starting a new editing session.
+        return wasEditingSearch && (window.firstResponder === search.field || window.firstResponder === window ||
+                                    window.firstResponder === search.field.currentEditor())
     }
 
     func toggleBookmark(_ reference: VerseReference) {

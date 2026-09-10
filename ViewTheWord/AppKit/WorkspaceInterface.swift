@@ -127,6 +127,15 @@ extension MainWorkspaceController: NSToolbarDelegate {
         ])
         footer.orientation = .horizontal
         footer.addArrangedSubview(messageLabel)
+        dismissProjectionMessageButton.bezelStyle = .inline
+        dismissProjectionMessageButton.controlSize = .small
+        dismissProjectionMessageButton.target = self
+        dismissProjectionMessageButton.action = #selector(dismissProjectionMessage(_:))
+        dismissProjectionMessageButton.setAccessibilityLabel("Dismiss projection message")
+        dismissProjectionMessageButton.setContentHuggingPriority(.required, for: .horizontal)
+        dismissProjectionMessageButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        footer.addArrangedSubview(dismissProjectionMessageButton)
+        footer.spacing = 8
         footer.edgeInsets = NSEdgeInsets(top: 8, left: 16, bottom: 8, right: 16)
         messageLabel.textColor = .secondaryLabelColor
         let screenRow = horizontalStack([screenLabel, NSView()])

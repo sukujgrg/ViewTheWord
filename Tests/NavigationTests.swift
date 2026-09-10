@@ -12,6 +12,14 @@ private struct MemoryBible: BibleReading {
     func search(_ request: TextSearchRequest, after: VerseCoordinate?, limit: Int) async throws -> [AVerse] { [] }
 }
 
+private struct FailingBible: BibleReading {
+    func chapter(_ reference: VerseReference) async throws -> [AVerse] { throw CocoaError(.fileReadCorruptFile) }
+    func verses(_ references: [VerseReference]) async throws -> [AVerse] { throw CocoaError(.fileReadCorruptFile) }
+    func search(_ request: TextSearchRequest, after: VerseCoordinate?, limit: Int) async throws -> [AVerse] {
+        throw CocoaError(.fileReadCorruptFile)
+    }
+}
+
 /// Deliberately ignores task cancellation to exercise the generation checks, not just cooperative cancellation.
 private actor SuspendedBible: BibleReading {
     private var chapters: [VerseReference: CheckedContinuation<[AVerse], Error>] = [:]
@@ -94,7 +102,8 @@ final class NavigationTests: XCTestCase {
         let model = VerseTargetModel(readerFactory: { _ in reader })
         let reference = verse(3, 16).reference
         let completed = expectation(description: "navigation finishes without projection")
-        model.navigate(to: reference, sources: sources, project: true) { result in
+        model.navigate(to: reference, sources: sources, project: true) { outcome in
+            guard case .success(let result) = outcome else { XCTFail("Expected navigation success"); completed.fulfill(); return }
             XCTAssertNil(result.projection)
             XCTAssertTrue(result.requestedAvailable)
             completed.fulfill()
@@ -137,7 +146,8 @@ final class NavigationTests: XCTestCase {
         await fulfillment(of: [loaded], timeout: 1)
         XCTAssertEqual(model.verseQuery.verseNumber, 15)
         let refreshed = expectation(description: "primary-only chapter")
-        model.navigate(to: reference, sources: sources) { result in
+        model.navigate(to: reference, sources: sources) { outcome in
+            guard case .success(let result) = outcome else { XCTFail("Expected a fallback verse"); refreshed.fulfill(); return }
             XCTAssertFalse(result.requestedAvailable)
             XCTAssertEqual(result.reference.verse, 14)
             refreshed.fulfill()
@@ -159,13 +169,15 @@ final class NavigationTests: XCTestCase {
         let projector = ProjectorViewModel()
         let live = verse(3, 16).reference
         let initial = expectation(description: "initial projection")
-        model.navigate(to: live, sources: sources, project: true) { result in
+        model.navigate(to: live, sources: sources, project: true) { outcome in
+            guard case .success(let result) = outcome else { XCTFail("Expected projection preparation"); initial.fulfill(); return }
             if let projection = result.projection { projector.project(projection.data, owner: projection.owner) }
             initial.fulfill()
         }
         await fulfillment(of: [initial], timeout: 1)
         let browsed = expectation(description: "browse other chapter")
-        model.navigate(to: verse(8, book: "Romans").reference, sources: sources) { result in
+        model.navigate(to: verse(8, book: "Romans").reference, sources: sources) { outcome in
+            guard case .success(let result) = outcome else { XCTFail("Expected navigation success"); browsed.fulfill(); return }
             XCTAssertNil(result.projection); browsed.fulfill()
         }
         await fulfillment(of: [browsed], timeout: 1)
@@ -221,7 +233,11 @@ final class NavigationTests: XCTestCase {
         model.navigate(to: reference, sources: sources, project: true) { _ in discarded.fulfill() }
         await reader.waitForChapter(reference)
         let completed = expectation(description: "Text search finishes")
-        model.search(TextSearchRequest(text: "love", filter: .all, kind: .phrase("love")), sources: sources) { completed.fulfill() }
+        let request = TextSearchRequest(text: "love", filter: .all, kind: .phrase("love"))
+        model.search(request, sources: sources) { result in
+            XCTAssertEqual(try? result.get().request, request)
+            completed.fulfill()
+        }
         await fulfillment(of: [completed], timeout: 1)
         XCTAssertFalse(model.isProjecting)
         await reader.finishChapter(reference, rows: [verse(3, 16)])
@@ -252,6 +268,40 @@ final class NavigationTests: XCTestCase {
     func testLoadedChapterRejectsMismatchedOrDuplicateCoordinates() {
         XCTAssertThrowsError(try LoadedChapter(reference: verse(4).reference, sources: sources, primary: [verse(3)], secondary: []))
         XCTAssertThrowsError(try LoadedChapter(reference: verse(3).reference, sources: sources, primary: [verse(3), verse(3)], secondary: []))
+    }
+
+    func testNavigationFailureCompletionReportsEmptyChaptersAndReadErrorsAfterSettling() async {
+        for readFails in [false, true] {
+            let reader: any BibleReading = readFails ? FailingBible() : MemoryBible(rows: [])
+            let model = VerseTargetModel(readerFactory: { _ in reader })
+            let completed = expectation(description: "failed navigation completes")
+            completed.assertForOverFulfill = true
+            model.navigate(to: verse(3, 16).reference, sources: sources, project: true) { outcome in
+                guard case .failure(let error) = outcome else { XCTFail("Expected failure"); completed.fulfill(); return }
+                XCTAssertFalse(model.isLoading)
+                XCTAssertFalse(model.isProjecting)
+                XCTAssertEqual(model.message, error.localizedDescription)
+                if readFails { XCTAssertEqual((error as? CocoaError)?.code, .fileReadCorruptFile) }
+                else { XCTAssertTrue(error is NavigationError) }
+                completed.fulfill()
+            }
+            await fulfillment(of: [completed], timeout: 1)
+        }
+    }
+
+    func testSearchFailureCompletionReportsTheReadErrorAfterSettling() async {
+        let model = VerseTargetModel(readerFactory: { _ in FailingBible() })
+        let completed = expectation(description: "failed search completes")
+        completed.assertForOverFulfill = true
+        model.search(TextSearchRequest(text: "hope", filter: .all, kind: .phrase("hope")), sources: sources) { outcome in
+            guard case .failure(let error) = outcome else { XCTFail("Expected failure"); completed.fulfill(); return }
+            XCTAssertEqual((error as? CocoaError)?.code, .fileReadCorruptFile)
+            XCTAssertFalse(model.isLoading)
+            XCTAssertNil(model.searchPage)
+            XCTAssertEqual(model.message, error.localizedDescription)
+            completed.fulfill()
+        }
+        await fulfillment(of: [completed], timeout: 1)
     }
 
     func testValidRowClearsValidationErrorButRejectedRowKeepsIt() async {

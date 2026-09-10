@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
+    @ObservedObject var library: BibleLibrary = .shared
     private enum Tabs: Hashable {
         case font
         case bible
@@ -14,7 +15,7 @@ struct SettingsView: View {
                     Label("Display", systemImage: "display")
                 }
                 .tag(Tabs.font)
-            BibleImportView()
+            BibleImportView(library: library)
                 .tabItem {
                     Label("Bible", systemImage: "book")
                 }
@@ -113,7 +114,7 @@ struct DisplaySettingsView: View {
 }
 
 struct BibleImportView: View {
-    @ObservedObject private var library = BibleLibrary.shared
+    @ObservedObject var library: BibleLibrary
     @AppStorage(AppDefaultsKey.primaryBibleName) private var primaryBibleName = bundledPrimaryBibleUrl?.absoluteString ?? ""
     @AppStorage(AppDefaultsKey.secondaryBibleName) private var secondaryBibleName = bundledSecondaryBibleUrl?.absoluteString ?? ""
     @State private var showImporter = false
@@ -161,7 +162,6 @@ struct BibleImportView: View {
         } message: { url in
             Text("\(BibleTranslation.name(for: url)) will be moved to Trash. A selected translation will fall back to an available Bible.")
         }
-        .modifier(BibleLibraryAlerts(presenter: .settings))
     }
 
     private func translationPicker(_ title: String, selection: Binding<String>) -> some View {
@@ -172,26 +172,5 @@ struct BibleImportView: View {
         }
         .pickerStyle(.menu)
         .accessibilityLabel("\(title) translation")
-    }
-}
-
-struct BibleLibraryAlerts: ViewModifier {
-    @ObservedObject private var library = BibleLibrary.shared
-    let presenter: BibleLibrary.Presenter
-    func body(content: Content) -> some View {
-        content
-            .alert(library.alert(for: presenter)?.title ?? "Bible Library", isPresented: Binding(
-                get: { library.alert(for: presenter) != nil },
-                // Every dismissal has an explicit button action tied to this alert's ID.
-                set: { _ in }
-            ), presenting: library.alert(for: presenter)) { alert in
-                switch alert.content {
-                case .notice:
-                    Button("OK") { library.completeAlert(alert.id) }
-                case .replacement:
-                    Button("Replace Translation", role: .destructive) { library.completeAlert(alert.id, replaceExisting: true) }
-                    Button("Cancel", role: .cancel) { library.completeAlert(alert.id) }
-                }
-            } message: { alert in Text(alert.message) }
     }
 }

@@ -131,6 +131,29 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(subject.bookmarks.contains(reference))
     }
 
+    func testChapterButtonReactivationKeepsSelectionAndHighlight() async throws {
+        let (controller, directory) = try mounted()
+        defer { controller.close(); try? FileManager.default.removeItem(at: directory) }
+        controller.workspace.browse("John")
+        try await settle(controller.workspace)
+        let chapters = controller.workspace.chapters
+        let initial = VerseReference(book: "John", chapter: 2, verse: 1)!
+        let target = VerseReference(book: "John", chapter: 3, verse: 1)!
+        var activations: [VerseReference] = []
+        chapters.onActivate = { activations.append($0) }
+        chapters.apply(book: "John", selection: initial)
+        chapters.view.layoutSubtreeIfNeeded()
+        let path = IndexPath(item: 2, section: 0)
+        let button = try XCTUnwrap(chapters.collection.item(at: path)?.view as? NSButton)
+        for count in 1...2 {
+            button.performClick(nil)
+            XCTAssertEqual(activations, Array(repeating: target, count: count))
+            XCTAssertEqual(chapters.selectedReference, target)
+            XCTAssertEqual(chapters.collection.selectionIndexPaths, [path])
+            XCTAssertEqual(button.state, .on)
+        }
+    }
+
     func testDeferredCloseDoesNotClearANewerProjection() async throws {
         let (controller, directory) = try mounted()
         defer { controller.close(); try? FileManager.default.removeItem(at: directory) }

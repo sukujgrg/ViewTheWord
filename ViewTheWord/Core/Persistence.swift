@@ -71,7 +71,9 @@ final class HistoryStore: ObservableObject {
                 if decoded.contains(where: { SearchQuery(ask: $0.title).verseQuery() == nil }) {
                     recoverUnreadableFile(historyFileURL, error: CocoaError(.fileReadCorruptFile))
                 }
-                setEntries(Self.normalized(from: decoded), incrementVersion: false)
+                let cleaned = Self.normalized(from: decoded)
+                setEntries(cleaned, incrementVersion: false)
+                if cleaned != decoded { persist() }
                 return
             }
 
@@ -350,7 +352,9 @@ final class BookmarkStore: ObservableObject {
             if decoded.contains(where: { $0.reference == nil }) {
                 recoverUnreadableFile(bookmarkFileURL, error: CocoaError(.fileReadCorruptFile))
             }
-            setEntries(Self.normalized(from: decoded), incrementVersion: false)
+            let cleaned = Self.normalized(from: decoded)
+            setEntries(cleaned, incrementVersion: false)
+            if cleaned != decoded { persist() }
         } catch {
             recoverUnreadableFile(bookmarkFileURL, error: error)
             setEntries([], incrementVersion: false)

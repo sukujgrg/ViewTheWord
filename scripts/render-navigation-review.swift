@@ -73,6 +73,7 @@ struct NativeWorkspaceReview {
         if CommandLine.arguments.contains("--history-reveal-only") { return }
         try await checkDelayedSearchFocus(output: output)
         try await checkQueuedLibraryAlerts(output: output)
+        try await checkSettingsImportLifecycle(output: output)
         window.makeKeyAndOrderFront(nil)
         try await waitUntil { window.isKeyWindow }
         try await checkTestamentSwitch(workspace, window: window)
@@ -361,12 +362,13 @@ struct NativeWorkspaceReview {
                      "Escape stops pending output without canceling another tab's chapter load")
         reviewLog("PASS window-dispatched Escape: cross-tab pending search/verse cancellation, shared loading/Stop controls, late database completion cannot reopen output")
     }
-    @MainActor static func waitUntil(_ predicate: () async -> Bool) async throws {
+    @MainActor static func waitUntil(_ predicate: () async -> Bool,
+                                     file: StaticString = #file, line: UInt = #line) async throws {
         for _ in 0..<200 {
             if await predicate() { return }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
-        preconditionFailure("Native asynchronous event did not complete")
+        preconditionFailure("Native asynchronous event did not complete", file: file, line: line)
     }
     @MainActor static func checkDelayedSearchFocus(output: URL) async throws {
         let reader = ReviewBibleGate()
@@ -434,7 +436,29 @@ struct NativeWorkspaceReview {
                 }
             }
         }
+        await reader.setReadFailure(true)
+        for mode in SearchMode.allCases {
+            subject.changeSearchMode(mode)
+            subject.focusSearch(nil)
+            let editor = subject.search.field.currentEditor() as! NSTextView
+            editor.selectAll(nil)
+            let draft = mode == .verseReference ? "John 3:16" : "hope"
+            editor.insertText(draft, replacementRange: editor.selectedRange())
+            await reader.suspend(chapters: true, lookups: false, searches: true)
+            sendKey("\r", code: 36, window: window)
+            try await waitUntil {
+                if mode == .verseReference { return await reader.hasChapter }
+                return await reader.hasSearch
+            }
+            await reader.release()
+            try await settle(subject)
+            precondition(subject.navigation.message != nil && subject.draft == draft)
+            precondition(window.firstResponder !== subject.verses.table, "Failed submissions must not focus stale rows")
+            precondition(subject.history.entries.isEmpty && live.projector.projectionOwner == nil,
+                         "Failed submissions must not record history or publish")
+        }
         reviewLog("PASS delayed Words/Phrase search: Return focuses results only without newer edits or focus changes")
+        reviewLog("PASS failed Ref/Words/Phrase submissions: visible errors, preserved draft/focus, no history or publication")
     }
 
     @MainActor static func checkQueuedLibraryAlerts(output: URL) async throws {
@@ -482,6 +506,67 @@ struct NativeWorkspaceReview {
         precondition(Set(library.urls.map(\.lastPathComponent)) == ["ENG_FIRST.bible", "ENG_EXISTINGREPLACE.bible", "ENG_LAST.bible"])
         reviewLog("PASS queued import sheets: all files, explicit Replace/Cancel, failures continue, one active-tab presenter")
     }
+    @MainActor static func checkSettingsImportLifecycle(output: URL) async throws {
+        let importer = ReviewImportGate()
+        let library = BibleLibrary(preloadedURLs: [], importer: { url, _, replace in
+            try await importer.run(url, replace: replace)
+        })
+        let settings = SettingsWindowController(library: library)
+        let window = settings.window!
+        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        defer { settings.close() }
+        for response in [NSApplication.ModalResponse.abort, .alertFirstButtonReturn] {
+            settings.showWindow(nil)
+            try await waitUntil { window.isKeyWindow }
+            let existing = output.appendingPathComponent("ENG_SETTINGS.bible")
+            let later = output.appendingPathComponent("ENG_LATER.bible")
+            library.importFile(existing, presenter: .settings)
+            library.importFile(later, presenter: .main)
+            try await waitUntil { await importer.waiting }
+            await importer.finish(.failure(BibleImportError.bibleAlreadyExists(existing.lastPathComponent)))
+            // Settings opens on Display. Its import decision must still appear.
+            try await waitUntil { window.attachedSheet != nil }
+            let prompt = library.alert(for: .settings)!
+            window.endSheet(window.attachedSheet!, returnCode: response)
+            try await waitUntil { await importer.waiting }
+            let replacing = await importer.isReplacing
+            if response == .alertFirstButtonReturn {
+                precondition(replacing, "Only explicit Replace retries the existing file")
+                await importer.finish(.success(existing))
+                try await waitUntil { await importer.waiting }
+            } else { precondition(!replacing, "A non-button dismissal cancels replacement") }
+            await importer.finish(.success(later))
+            try await waitUntil { !library.isImporting }
+            library.completeAlert(prompt.id, replaceExisting: true)
+            if response == .alertFirstButtonReturn {
+                try await waitUntil { window.attachedSheet != nil }
+                let notice = library.alert(for: .settings)!
+                window.endSheet(window.attachedSheet!, returnCode: .alertFirstButtonReturn)
+                try await waitUntil { library.alert(for: .settings)?.id != notice.id }
+            }
+            while let alert = library.alerts.first { library.completeAlert(alert.id) }
+        }
+
+        // Closing while validation is pending must release later Finder files
+        // even if Settings is reopened before that validation finishes.
+        let existing = output.appendingPathComponent("ENG_CLOSEDSETTINGS.bible")
+        let later = output.appendingPathComponent("ENG_AFTERCLOSE.bible")
+        library.importFile(existing, presenter: .settings)
+        library.importFile(later, presenter: .main)
+        try await waitUntil { await importer.waiting }
+        settings.close()
+        settings.showWindow(nil)
+        await importer.finish(.failure(BibleImportError.bibleAlreadyExists(existing.lastPathComponent)))
+        try await waitUntil { await importer.waiting }
+        let replacingAfterClose = await importer.isReplacing
+        precondition(!replacingAfterClose)
+        await importer.finish(.success(later))
+        try await waitUntil { !library.isImporting && library.urls.contains(later) }
+        precondition(!library.alerts.contains { if case .replacement = $0.content { return true }; return false })
+        if let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .abort) }
+        reviewLog("PASS Settings import sheets: Display tab presentation, non-button cancellation, explicit replacement, closing during validation resumes later files")
+    }
+
     @MainActor static func sendKey(_ key: String, code: UInt16, modifiers: NSEvent.ModifierFlags = [], window: NSWindow) {
         let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
             windowNumber: window.windowNumber, context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: code)!
@@ -717,6 +802,10 @@ struct NativeWorkspaceReview {
         reviewLog("PASS testament switch: pinned control, 39/27 books, silent filtering, automatic reference reveal, stable focus/output")
     }
     @MainActor static func checkNavigation(_ workspace: MainWorkspaceController, window: NSWindow) async throws {
+        let activate = workspace.chapters.onActivate
+        var chapterActivations = 0
+        workspace.chapters.onActivate = { reference in chapterActivations += 1; activate(reference) }
+        defer { workspace.chapters.onActivate = activate }
         for (book, firstKey, code) in [("Exodus", "\u{F703}", UInt16(124)), ("Leviticus", "\u{F701}", 125),
                                        ("John", "\u{F702}", 123), ("Psalm", "\u{F700}", 126),
                                        ("Luke", "\r", 36), ("Romans", " ", 49)] {
@@ -750,11 +839,18 @@ struct NativeWorkspaceReview {
             sendKey("\t", code: 48, window: window)
             precondition(window.firstResponder === workspace.chapters.collection)
             let item = workspace.chapters.collection.item(at: IndexPath(item: 2, section: 0))!
+            let beforeClick = chapterActivations
             click(item.view, rect: item.view.bounds, window: window)
             try await settle(workspace)
             let reference = VerseReference(book: book, chapter: 3, verse: 1)!
             precondition(workspace.navigation.navigation.reference == reference, "First chapter click must navigate to \(book) 3")
             precondition(workspace.chapters.selectedReference == reference)
+            precondition(chapterActivations == beforeClick + 1, "Each chapter click emits one navigation intent")
+            precondition((item.view as! NSButton).state == .on)
+            click(item.view, rect: item.view.bounds, window: window)
+            try await settle(workspace)
+            precondition(chapterActivations == beforeClick + 2, "An already-selected chapter also emits one intent")
+            precondition((item.view as! NSButton).state == .on, "Re-clicking the selected chapter must keep its highlight")
             precondition(workspace.verses.rows.first?.reference == reference)
             precondition(window.firstResponder === workspace.chapters.collection)
             precondition(workspace.projector.projectionOwner == nil, "Browsing must not project")
@@ -781,9 +877,26 @@ struct NativeWorkspaceReview {
 
 }
 
+private actor ReviewImportGate {
+    private var pending: CheckedContinuation<URL, Error>?
+    private(set) var isReplacing = false
+    var waiting: Bool { pending != nil }
+    func run(_ url: URL, replace: Bool) async throws -> URL {
+        precondition(pending == nil)
+        isReplacing = replace
+        return try await withCheckedThrowingContinuation { pending = $0 }
+    }
+    func finish(_ result: Result<URL, Error>) {
+        let continuation = pending
+        pending = nil
+        continuation?.resume(with: result)
+    }
+}
+
 /// Deliberately returns pending work after Escape so the native responder check
 /// verifies cancellation guards rather than a cooperative database implementation.
 private actor ReviewBibleGate: BibleReading {
+    private var readFailure = false
     private var suspendChapters = false
     private var suspendLookups = false
     private var suspendSearches = false
@@ -793,6 +906,7 @@ private actor ReviewBibleGate: BibleReading {
     var hasChapter: Bool { chapterContinuation != nil }
     var hasLookup: Bool { lookupContinuation != nil }
     var hasSearch: Bool { searchContinuation != nil }
+    func setReadFailure(_ value: Bool) { readFailure = value }
     func suspend(chapters: Bool, lookups: Bool, searches: Bool = false) {
         suspendChapters = chapters; suspendLookups = lookups; suspendSearches = searches
     }
@@ -803,14 +917,17 @@ private actor ReviewBibleGate: BibleReading {
     }
     func chapter(_ reference: VerseReference) async throws -> [AVerse] {
         if suspendChapters { await withCheckedContinuation { chapterContinuation = $0 } }
+        if readFailure { throw CocoaError(.fileReadCorruptFile) }
         return (1...30).map { AVerse(reference: VerseReference(book: reference.book, chapter: reference.chapter, verse: $0)!, verse: "Hope and faith") }
     }
     func verses(_ references: [VerseReference]) async throws -> [AVerse] {
         if suspendLookups { await withCheckedContinuation { lookupContinuation = $0 } }
+        if readFailure { throw CocoaError(.fileReadCorruptFile) }
         return references.map { AVerse(reference: $0, verse: "Hope and faith") }
     }
     func search(_ request: TextSearchRequest, after: VerseCoordinate?, limit: Int) async throws -> [AVerse] {
         if suspendSearches { await withCheckedContinuation { searchContinuation = $0 } }
+        if readFailure { throw CocoaError(.fileReadCorruptFile) }
         return (1...3).map { AVerse(reference: VerseReference(book: "John", chapter: 3, verse: $0)!, verse: "Hope and faith") }
     }
 }

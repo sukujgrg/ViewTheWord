@@ -10,7 +10,10 @@ final class NativeSearchFieldTests: XCTestCase {
         var draft = ""
         var submitted: [String] = []
         subject.onTextChange = { draft = $0 }
-        subject.onSubmit = { submitted.append(draft) }
+        subject.onSubmit = { [weak subject] in
+            XCTAssertEqual(subject?.isSendingSubmission, true)
+            submitted.append(draft)
+        }
         subject.apply(text: "", placeholder: "John 3:16", accessibilityHint: "Search")
         subject.field.stringValue = "John 3"
         subject.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: subject.field))
@@ -25,6 +28,7 @@ final class NativeSearchFieldTests: XCTestCase {
         subject.field.stringValue = "John 3:16"
         subject.field.sendAction(subject.field.action, to: subject.field.target)
         XCTAssertEqual(submitted, ["John 3:16"])
+        XCTAssertFalse(subject.isSendingSubmission)
     }
 
     func testClearAndEscapeHaveSeparateIntentsAndDoNotSubmit() {

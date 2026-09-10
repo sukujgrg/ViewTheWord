@@ -145,11 +145,81 @@ final class PassageTabsController {
     }
 }
 
+/// Import decisions belong to the Settings window, not to one SwiftUI tab.
+@MainActor
+final class SettingsWindowController: NSWindowController, NSWindowDelegate {
+    private let library: BibleLibrary
+    private var alertSubscription: AnyCancellable?
+    private var presentationTask: Task<Void, Never>?
+    private var presentingAlert = false
+
+    init(library: BibleLibrary? = nil) {
+        let library = library ?? .shared
+        self.library = library
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 440),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "Settings"
+        window.tabbingMode = .disallowed
+        window.isReleasedWhenClosed = false
+        window.contentViewController = NSHostingController(rootView: SettingsView(library: library))
+        window.center()
+        super.init(window: window)
+        window.delegate = self
+        alertSubscription = library.$alerts.sink { [weak self] _ in self?.scheduleAlertPresentation() }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    deinit { presentationTask?.cancel() }
+
+    override func showWindow(_ sender: Any?) {
+        library.setSettingsPresented(true)
+        super.showWindow(sender)
+        window?.makeKeyAndOrderFront(sender)
+        scheduleAlertPresentation()
+    }
+    func windowDidBecomeKey(_ notification: Notification) { scheduleAlertPresentation() }
+    func windowWillClose(_ notification: Notification) {
+        library.setSettingsPresented(false)
+        if presentingAlert, let sheet = window?.attachedSheet { window?.endSheet(sheet, returnCode: .cancel) }
+    }
+
+    private func scheduleAlertPresentation() {
+        guard presentationTask == nil else { return }
+        presentationTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard !Task.isCancelled, let self else { return }
+            self.presentationTask = nil
+            self.presentAlertIfNeeded()
+        }
+    }
+    private func presentAlertIfNeeded() {
+        guard !presentingAlert, let window, window.isVisible, window.isKeyWindow,
+              let request = library.claimAlert(for: .settings) else { return }
+        presentingAlert = true
+        let alert = NSAlert()
+        alert.messageText = request.title
+        alert.informativeText = request.message
+        let replacing: Bool
+        if case .replacement = request.content {
+            replacing = true
+            alert.addButton(withTitle: "Replace Translation")
+            alert.addButton(withTitle: "Cancel")
+        } else {
+            replacing = false
+            alert.addButton(withTitle: "OK")
+        }
+        alert.beginSheetModal(for: window) { [weak self, library] response in
+            self?.presentingAlert = false
+            library.completeAlert(request.id, replaceExisting: replacing && response == .alertFirstButtonReturn)
+            self?.scheduleAlertPresentation()
+        }
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var passages = PassageTabsController(updates: updates)
     private let updates: AppUpdateController?
-    private var settingsWindow: NSWindowController?
+    private var settingsWindow: SettingsWindowController?
     private var helpWindow: NSWindowController?
     private var subscriptions = Set<AnyCancellable>()
 
@@ -203,9 +273,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for url in urls { BibleLibrary.shared.importFile(url, presenter: .main) }
     }
     @objc func showSettings(_ sender: Any?) {
-        if settingsWindow == nil { settingsWindow = hostedWindow(title: "Settings", root: SettingsView(), size: NSSize(width: 540, height: 440)) }
+        if settingsWindow == nil { settingsWindow = SettingsWindowController() }
         settingsWindow?.showWindow(sender)
-        settingsWindow?.window?.makeKeyAndOrderFront(sender)
     }
     @objc func showHelp(_ sender: Any?) {
         if helpWindow == nil {

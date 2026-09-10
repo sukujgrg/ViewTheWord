@@ -90,11 +90,16 @@ final class LiveProjectionController: ObservableObject {
         return intent
     }
 
-    func publish(_ projection: PreparedProjection, intent token: UUID, preserveBlanking: Bool = false) {
+    func finishIntent(_ token: UUID) {
         guard token == intent else { return }
         preparationStatus = nil
         preparingModel = nil
         isProjecting = false
+    }
+
+    func publish(_ projection: PreparedProjection, intent token: UUID, preserveBlanking: Bool = false) {
+        guard token == intent else { return }
+        finishIntent(token)
         projector.project(projection.data, owner: projection.owner, preserveBlanking: preserveBlanking)
         openProjector()
     }
@@ -110,8 +115,12 @@ final class LiveProjectionController: ObservableObject {
             guard let self, self.intent == token else { return }
             if let projection { self.publish(projection, intent: token, preserveBlanking: preserveBlanking) }
             else {
+                self.finishIntent(token)
                 self.message = model?.message
-                if stopIfUnavailable { self.closeProjector() }
+                // The shared controller owns this error in every passage tab.
+                // Avoid retaining a second, undismissable copy in the source tab.
+                model?.message = nil
+                if stopIfUnavailable { self.closeProjector(preservingMessage: true) }
             }
         }
     }
@@ -183,7 +192,10 @@ final class LiveProjectionController: ObservableObject {
         }
         if let window = ownedProjectorWindow { applyProjectorAppearance(window) }
     }
-    func closeProjector() {
+    func dismissMessage() { message = nil }
+
+    func closeProjector(preservingMessage: Bool = false) {
+        if !preservingMessage { dismissMessage() }
         cancelPreparation()
         repositionTask?.cancel()
         repositionTask = nil
@@ -226,6 +238,7 @@ final class LiveProjectionController: ObservableObject {
 
 extension MainWorkspaceController {
     func closeProjector() { liveProjection.closeProjector() }
+    @objc func dismissProjectionMessage(_ sender: Any?) { liveProjection.dismissMessage() }
     @objc func stopProjection(_ sender: Any?) { closeProjector() }
     @objc func toggleBlank(_ sender: Any?) { liveProjection.toggleBlank() }
     @objc func showPreview(_ sender: Any?) {

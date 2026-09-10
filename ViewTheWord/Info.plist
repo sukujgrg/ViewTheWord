@@ -39,13 +39,7 @@
 			<array>
 				<string>com.viewtheword.sqlite3.database</string>
 			</array>
-			<key>NSDocumentClass</key>
-			<string>NSPersistentDocument</string>
 		</dict>
-	</array>
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict/>
 	</array>
 	<key>UTExportedTypeDeclarations</key>
 	<array>

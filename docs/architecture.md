@@ -13,6 +13,7 @@ ViewTheWord uses native AppKit controls for passage preparation and one shared l
 | [VerseTargetModel](../ViewTheWord/Core/VerseTargetModel.swift) | Own a tab's navigation snapshot, search results, lazy readers, and cancellable preparation. Prepare projection data without opening windows or publishing live content. |
 | [LiveProjectionController](../ViewTheWord/AppKit/WorkspaceProjection.swift) | Order projection intents across tabs, publish through `ProjectorViewModel`, and own the single projector `NSWindow` directly. |
 | [BibleLibrary](../ViewTheWord/Core/BibleLibrary.swift) and [persistence stores](../ViewTheWord/Core/Persistence.swift) | Share translations, bookmarks, history, and recovery/error state across workspaces. |
+| [SettingsWindowController](../ViewTheWord/AppKit/MainWindowController.swift) | Host SwiftUI Settings and own native import sheets across its tabs. Closing Settings declines unresolved replacement decisions, including validation still in flight. |
 
 Native tab groups own tab ordering and selection. Switching tabs preserves each workspace's controls, navigation, draft, results, caret, and scroll positions. Bookmarks, History, bookmark Undo, translations/preferences, and live output are shared. Preview is local to a tab and observes the shared projector model.
 
@@ -21,6 +22,8 @@ Native tab groups own tab ordering and selection. Switching tabs preserves each 
 `VerseTargetModel.verseQuery` is derived from one published navigation snapshot containing the selected reference, complete chapter rows, and translation sources. Controls emit complete `VerseReference` intents. Chapter navigation uses those references directly, and verse-row projection validates that the reference exists in the loaded chapter. Verse numbers can differ between translations; row positions are not verse identities.
 
 Snapshots update controls silently. Only explicit navigation may request focus, and only in the key passage window. Asynchronous completion also checks that the user has not changed the draft, editing session, or focus since submission; AppKit's normal Return handoff is part of that submission. Library prompts claim a shared alert before presenting so multiple tabs cannot show it at once; dismissal completes that alert by ID.
+
+Navigation and search completions return `Result` after the current request settles. Empty chapters and database failures report failure; a missing verse with an available chapter fallback reports success with `requestedAvailable = false`. Canceled or superseded requests do not call back. Failed submissions retain the draft and focus, and never record history or publish output.
 
 - [Book, bookmark, and history sidebars](../ViewTheWord/AppKit/NativeSidebar.swift) use native rows. The pinned Old Testament / New Testament switch filters visible books independently in each tab; explicit reference navigation reveals the matching testament, while translation and catalog refreshes preserve the filter and browsed book. Bookmarks and History have separate resizable panes.
 - The [chapter grid](../ViewTheWord/AppKit/ChapterGridController.swift) adapts its column count to the available width. Arrow keys follow the spatial layout. After browsing a new book, Tab changes focus without navigating; the first arrow, Return, or Space opens chapter 1. Command-Left/Right moves between workspace columns.
@@ -35,6 +38,8 @@ The shared live controller is the sole publisher through `ProjectorViewModel.pro
 
 A projection intent reserves a global generation before asynchronous preparation begins. A newer projection intent or Stop from any tab invalidates older preparation without canceling chapter browsing. Each navigation model also cancels its own superseded verse submission. Translation refresh uses a dedicated shared reader, preserves the live reference and blanking, and survives browsing or closure of the originating tab. An unavailable live reference stops output.
 
+Projection errors belong to the shared live controller and can be dismissed from any tab's footer. Explicit Stop clears the error; automatic stopping after an unavailable translation preserves the explanation until dismissal or another projection intent.
+
 The live controller owns the projector window directly, without a projector `NSWindowController`. Closing the last passage tab leaves published output running. Stop calls `close()` on the projector; Escape from the projector's own event handler defers its close request to the next run-loop tick. State cleanup after `willCloseNotification` is also deferred to avoid re-entering AppKit/SwiftUI layout during teardown. Projection-revision and window-identity guards prevent stale cleanup from clearing a newer publication, replacement window, or pending request.
 
 Screen changes use a cancellable, coalesced reposition task. Disconnected display preferences remain saved while output uses an available display. Blank hides content while retaining the window, and preview uses the output display's proportions. [Projected text layout](../ViewTheWord/Core/ProjectorTextLayout.swift) uses AppKit measurement followed by SwiftUI natural-height checks, without a fixed line-count cap.
@@ -47,7 +52,7 @@ Text search merges coordinates from both selected translations, fetches counterp
 
 The shared library publishes catalog revisions after import, replacement, or removal. Imports queue incoming URLs and retain security-scoped access until completion or a replacement decision. Each import snapshots committed SQLite/WAL data, normalizes the copy, validates canonical coverage and coordinates, creates a unique index, and installs atomically. Replacement requires an explicit choice; cancellation or failure advances the queue, and results retain their original presenter. Removal uses Trash. See [Bible translation format](bible-format.md).
 
-History capture is limited to direct reference submissions; replaying saved entries does not capture history. Bookmark changes use a shared UndoManager. Both stores preserve unreadable data as recovery copies and report persistence errors visibly.
+History capture is limited to direct reference submissions; replaying saved entries does not capture history. Bookmark changes use a shared UndoManager. Both stores preserve unreadable data as recovery copies and report persistence errors visibly. Successfully decoded files with invalid references are backed up and rewritten with valid, normalized entries, so reopening does not produce another recovery copy. A failed backup still disables saving to protect the original.
 
 ## Updates and validation
 

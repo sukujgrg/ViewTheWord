@@ -133,4 +133,40 @@ final class BibleLibraryTests: XCTestCase {
         XCTAssertNil(subject.alert(for: .main))
         XCTAssertEqual(subject.alert(for: .settings)?.message, "Earlier Settings result")
     }
+
+    func testClosingSettingsDeclinesPendingAndQueuedReplacementsAndContinuesFinderImports() async throws {
+        for promptAlreadyAvailable in [false, true] {
+            let importer = SuspendedImporter()
+            let subject = library(importer)
+            subject.setSettingsPresented(true)
+            let existing = url("EXISTING"), queued = url("QUEUED"), later = url("LATER")
+            subject.importFile(existing, presenter: .settings)
+            subject.importFile(queued, presenter: .settings)
+            subject.importFile(later, presenter: .main)
+            await importer.waitForImport()
+            var oldPrompt: BibleLibrary.LibraryAlert?
+            if promptAlreadyAvailable {
+                await importer.finish(.failure(BibleImportError.bibleAlreadyExists(existing.lastPathComponent)))
+                try await settle(subject)
+                oldPrompt = try XCTUnwrap(subject.claimAlert(for: .settings))
+            }
+            subject.setSettingsPresented(false)
+            // Reopening must not revive an unresolved decision from the closed window.
+            subject.setSettingsPresented(true)
+            if !promptAlreadyAvailable {
+                await importer.finish(.failure(BibleImportError.bibleAlreadyExists(existing.lastPathComponent)))
+            }
+            await importer.waitForImport()
+            await importer.finish(.failure(BibleImportError.bibleAlreadyExists(queued.lastPathComponent)))
+            await importer.waitForImport()
+            await importer.finish(.success(later))
+            try await settle(subject)
+            if let oldPrompt { subject.completeAlert(oldPrompt.id, replaceExisting: true) }
+            let calls = await importer.calls
+            XCTAssertEqual(calls.map(\.url), [existing, queued, later])
+            XCTAssertTrue(calls.allSatisfy { !$0.replaceExisting })
+            XCTAssertEqual(subject.urls, [later])
+            XCTAssertFalse(subject.alerts.contains { if case .replacement = $0.content { return true }; return false })
+        }
+    }
 }

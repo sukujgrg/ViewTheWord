@@ -204,6 +204,46 @@ final class PassageProjectionTests: XCTestCase {
         try await finish(f, reference: john, lookup: true, available: false)
         try await eventually { !f.live.windowOpened }
         XCTAssertNil(f.live.projector.projectionOwner)
+        XCTAssertNotNil(f.live.message, "An automatic stop must explain the unavailable translation")
+        f.second.dismissProjectionMessage(nil)
+        XCTAssertNil(f.live.message)
+    }
+
+    func testFailedSubmissionSettlesWithoutPublishingOrRecordingHistory() async throws {
+        let f = try Fixture(); defer { f.cleanUp() }
+        f.first.navigate(to: john, project: true, recordHistory: true)
+        try await finish(f, reference: john)
+        try await eventually { f.live.windowOpened }
+        let history = f.first.history.entries
+        let revision = f.live.projector.revision
+        f.first.navigate(to: romans, project: true, recordHistory: true)
+        try await finish(f, reference: romans, available: false)
+        try await eventually { !f.first.navigation.isLoading && !f.live.isProjecting }
+        XCTAssertEqual(f.live.projector.revision, revision)
+        XCTAssertEqual(f.live.projector.projectionOwner?.reference, john)
+        XCTAssertEqual(f.first.history.entries, history)
+        XCTAssertNotNil(f.first.navigation.message)
+    }
+
+    func testSharedProjectionErrorCanBeDismissedOrClearedByExplicitStop() async throws {
+        let f = try Fixture(); defer { f.cleanUp() }
+        _ = f.first.view
+        _ = f.second.view
+        for dismiss in [true, false] {
+            f.live.requestProjection(owner: .searchResult(romans), using: f.first.navigation)
+            try await finish(f, reference: romans, lookup: true, available: false)
+            try await eventually { f.live.message != nil }
+            XCTAssertNil(f.first.navigation.message, "The source tab must not retain another copy of the shared error")
+            f.first.render(); f.second.render()
+            XCTAssertFalse(f.first.dismissProjectionMessageButton.isHidden)
+            XCTAssertEqual(f.first.messageLabel.stringValue, f.second.messageLabel.stringValue)
+            if dismiss { f.second.dismissProjectionMessage(nil) }
+            else { f.second.stopProjection(nil) }
+            f.first.render(); f.second.render()
+            XCTAssertNil(f.live.message)
+            XCTAssertTrue(f.first.footer.isHidden)
+            XCTAssertTrue(f.second.footer.isHidden)
+        }
     }
 
     func testDeferredCloseClearsOldOutputWhilePreservingNewPendingRequest() async throws {

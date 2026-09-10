@@ -48,6 +48,45 @@ final class PersistenceAndLayoutTests: XCTestCase {
         XCTAssertEqual(VerseReference(query), VerseReference(book: "John", chapter: 3, verse: 16))
     }
 
+    func testSanitizedStoresPersistRepairAndDoNotRepeatRecoveryOnReload() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let historyURL = directory.appendingPathComponent("history.json")
+        let bookmarkURL = directory.appendingPathComponent("bookmarks.json")
+        let now = Date()
+        let historyData = try JSONEncoder().encode([
+            HistoryStore.Entry(title: "John 3:16", selectedAt: now),
+            HistoryStore.Entry(title: "Invalid reference", selectedAt: now)
+        ])
+        let bookmarkData = try JSONSerialization.data(withJSONObject: [
+            ["book": "John", "chapter": 3, "verse": 16, "createdAt": now.timeIntervalSinceReferenceDate],
+            ["book": "Unknown book", "chapter": 3, "verse": 16, "createdAt": now.timeIntervalSinceReferenceDate]
+        ])
+        try historyData.write(to: historyURL)
+        try bookmarkData.write(to: bookmarkURL)
+        let history = HistoryStore(fileURL: historyURL)
+        let bookmarks = BookmarkStore(fileURL: bookmarkURL)
+        XCTAssertNotNil(history.issue)
+        XCTAssertNotNil(bookmarks.issue)
+        XCTAssertEqual(history.entries.map(\.title), ["John 3:16"])
+        XCTAssertEqual(bookmarks.entries.compactMap(\.reference), [VerseReference(book: "John", chapter: 3, verse: 16)!])
+        XCTAssertEqual(try JSONDecoder().decode([HistoryStore.Entry].self, from: Data(contentsOf: historyURL)), history.entries)
+        XCTAssertEqual(try JSONDecoder().decode([BookmarkStore.Entry].self, from: Data(contentsOf: bookmarkURL)), bookmarks.entries)
+
+        let reloadedHistory = HistoryStore(fileURL: historyURL)
+        let reloadedBookmarks = BookmarkStore(fileURL: bookmarkURL)
+        XCTAssertNil(reloadedHistory.issue)
+        XCTAssertNil(reloadedBookmarks.issue)
+        XCTAssertEqual(reloadedHistory.entries, history.entries)
+        XCTAssertEqual(reloadedBookmarks.entries, bookmarks.entries)
+        let backups = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.contains("recovery-") }
+        XCTAssertEqual(backups.count, 2)
+        for backup in backups {
+            XCTAssertEqual(try Data(contentsOf: backup), backup.lastPathComponent.hasPrefix("history.") ? historyData : bookmarkData)
+        }
+    }
+
     func testClearBookmarksCanBeUndoneAndRedone() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
