@@ -10,6 +10,9 @@ validation only.
 2. Commit the release changes and merge the PR into `master`, or push directly to `master`.
 3. Update your local `master` checkout and run `make release` from the repository root.
 
+There is no manual tag step: `make release` creates and pushes `v<VERSION>`
+after the signed artifacts are ready.
+
 The command requires a clean checkout and waits for the latest **Validate** push
 run on `master` for that exact commit to pass. PR validation checks the proposed
 merge; the `master` run validates the committed source used for the release.

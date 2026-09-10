@@ -108,6 +108,15 @@ def verify_ci(repo, commit):
                            f"Fix the failure before releasing: {result['url']}")
 
 
+def remote_tag_commit(repo, tag):
+    # Missing refs return 404 here; the commit endpoint returns 422 instead.
+    name = quote(tag, safe="")
+    if github(repo, f"git/ref/tags/{name}", optional=True) is None:
+        return None
+    # Resolve the existing ref to a commit, including annotated tags.
+    return github(repo, f"commits/tags/{name}")["sha"]
+
+
 def verify_destination(repo, tag, commit):
     if github(repo, f"releases/tags/{quote(tag, safe='')}", optional=True) is not None:
         raise ReleaseError(f"A release already exists for {tag}. Bump VERSION; releases are never overwritten.")
@@ -117,8 +126,8 @@ def verify_destination(repo, tag, commit):
         raise ReleaseError(f"Local tag {tag} points to another commit. Choose a new VERSION.")
     if local.returncode not in (0, 1):
         raise ReleaseError(f"Could not inspect local tag {tag}.")
-    remote = github(repo, f"commits/tags/{quote(tag, safe='')}", optional=True)
-    if remote is not None and remote["sha"] != commit:
+    remote = remote_tag_commit(repo, tag)
+    if remote is not None and remote != commit:
         raise ReleaseError(f"GitHub tag {tag} points to another commit. Choose a new VERSION.")
     return local.returncode == 0, remote is not None
 
@@ -227,8 +236,7 @@ def publish(repo, origin, version, tag, commit, previous_tag, artifacts, notes):
         if not local_exists:
             run("git", "tag", "-a", tag, commit, "-m", f"{APP_NAME} {version}")
         run("git", "push", origin, f"refs/tags/{tag}:refs/tags/{tag}")
-    remote = github(repo, f"commits/tags/{quote(tag, safe='')}")
-    if remote["sha"] != commit:
+    if remote_tag_commit(repo, tag) != commit:
         raise ReleaseError("The GitHub tag changed before publication.")
     source_commit(commit)
     command = ["gh", "release", "create", tag, *artifacts, "--repo", repo, "--verify-tag", "--latest",

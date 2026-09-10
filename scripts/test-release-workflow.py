@@ -74,8 +74,12 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertEqual(repo, "sukujgrg/ViewTheWord")
         if path.startswith("releases/tags/"):
             return {"id": 1} if self.existing_release else None
+        if path.startswith("git/ref/tags/"):
+            return {"object": {"type": "commit", "sha": self.remote_tag}} if self.remote_tag else None
         if path.startswith("commits/tags/"):
-            return {"sha": self.remote_tag} if self.remote_tag else None
+            if self.remote_tag is None:
+                raise release.ReleaseError("GitHub request failed for missing tag (HTTP 422).")
+            return {"sha": self.remote_tag}
         if path == "commits/" + self.commit:
             return {"sha": self.commit} if self.pushed else None
         if path == "releases/latest":
@@ -312,7 +316,7 @@ class ReleaseFlowTests(unittest.TestCase):
 class GitHubTransportTests(unittest.TestCase):
     def test_only_confirmed_404_is_treated_as_absent(self):
         for status, body, exit_code in ((200, '{"sha":"fixture"}', 0), (404, '{}', 1),
-                                        (403, '{}', 1), (500, '{}', 1), (None, '', 1)):
+                                        (403, '{}', 1), (422, '{}', 1), (500, '{}', 1), (None, '', 1)):
             with self.subTest(status=status):
                 output = f"HTTP/2.0 {status} status\ncontent-type: application/json\n\n{body}" if status else ""
                 response = subprocess.CompletedProcess([], exit_code, output, "failure" if exit_code else "")
@@ -326,6 +330,47 @@ class GitHubTransportTests(unittest.TestCase):
                     else:
                         with self.assertRaises(release.ReleaseError):
                             release.github("owner/repo", "commits/main", optional=True)
+
+    def test_missing_tag_uses_ref_lookup_without_resolving_a_commit(self):
+        def request(args, **kwargs):
+            path = args[-1]
+            if path == "repos/owner/repo/git/ref/tags/v4.0.1":
+                return subprocess.CompletedProcess(args, 1, 'HTTP/2.0 404 Not Found\n\n{"message":"Not Found"}', "")
+            self.fail(f"A missing tag must not reach the commit endpoint, which returns 422: {path}")
+
+        with patch.object(release.subprocess, "run", side_effect=request) as transport:
+            self.assertIsNone(release.remote_tag_commit("owner/repo", "v4.0.1"))
+            self.assertEqual(transport.call_count, 1)
+
+    def test_existing_lightweight_and_annotated_tags_resolve_to_the_commit(self):
+        for kind, object_sha in (("commit", "commit-sha"), ("tag", "annotated-tag-sha")):
+            with self.subTest(kind=kind):
+                def request(args, **kwargs):
+                    path = args[-1]
+                    if path == "repos/owner/repo/git/ref/tags/v4.0.1":
+                        data = {"object": {"type": kind, "sha": object_sha}}
+                    elif path == "repos/owner/repo/commits/tags/v4.0.1":
+                        data = {"sha": "commit-sha"}
+                    else:
+                        self.fail(f"Unexpected tag request: {path}")
+                    return subprocess.CompletedProcess(args, 0, "HTTP/2.0 200 OK\n\n" + json.dumps(data), "")
+
+                with patch.object(release.subprocess, "run", side_effect=request):
+                    self.assertEqual(release.remote_tag_commit("owner/repo", "v4.0.1"), "commit-sha")
+
+    def test_tag_lookup_errors_and_disappearance_abort(self):
+        for code in (403, 422, 500):
+            for during_resolution in (False, True):
+                with self.subTest(code=code, during_resolution=during_resolution):
+                    def request(args, **kwargs):
+                        if during_resolution and "/git/ref/" in args[-1]:
+                            body = json.dumps({"object": {"type": "commit", "sha": "commit-sha"}})
+                            return subprocess.CompletedProcess(args, 0, "HTTP/2.0 200 OK\n\n" + body, "")
+                        return subprocess.CompletedProcess(args, 1, f'HTTP/2.0 {code} Error\n\n{{"message":"Failed"}}', "")
+
+                    with patch.object(release.subprocess, "run", side_effect=request):
+                        with self.assertRaises(release.ReleaseError):
+                            release.remote_tag_commit("owner/repo", "v4.0.1")
 
     def test_automatic_build_number_advances_past_future_published_builds(self):
         with tempfile.TemporaryDirectory() as directory:
