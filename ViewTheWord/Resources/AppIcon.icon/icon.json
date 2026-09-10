@@ -1,0 +1,119 @@
+{
+  "fill-specializations": [
+    {
+      "value": {
+        "linear-gradient": [
+          "extended-srgb:0.30588,0.29412,0.73333,1.00000",
+          "extended-srgb:0.07451,0.13725,0.36078,1.00000"
+        ]
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "linear-gradient": [
+          "extended-srgb:0.13333,0.14902,0.36471,1.00000",
+          "extended-srgb:0.03529,0.05490,0.14902,1.00000"
+        ]
+      }
+    },
+    {
+      "appearance": "tinted",
+      "value": {
+        "solid": "extended-gray:0.14000,1.00000"
+      }
+    }
+  ],
+  "groups": [
+    {
+      "name": "VTW",
+      "layers": [
+        {
+          "glass": true,
+          "image-name": "V.svg",
+          "name": "V",
+          "fill-specializations": [
+            {
+              "value": {
+                "solid": "extended-srgb:0.94902,0.96078,1.00000,1.00000"
+              }
+            },
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "extended-srgb:0.80784,0.85098,1.00000,1.00000"
+              }
+            },
+            {
+              "appearance": "tinted",
+              "value": {
+                "solid": "extended-gray:1.00000,1.00000"
+              }
+            }
+          ]
+        },
+        {
+          "glass": true,
+          "image-name": "T.svg",
+          "name": "T",
+          "fill-specializations": [
+            {
+              "value": {
+                "solid": "extended-srgb:0.94902,0.96078,1.00000,1.00000"
+              }
+            },
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "extended-srgb:0.80784,0.85098,1.00000,1.00000"
+              }
+            },
+            {
+              "appearance": "tinted",
+              "value": {
+                "solid": "extended-gray:1.00000,1.00000"
+              }
+            }
+          ]
+        },
+        {
+          "glass": true,
+          "image-name": "W.svg",
+          "name": "W",
+          "fill-specializations": [
+            {
+              "value": {
+                "solid": "extended-srgb:0.94902,0.96078,1.00000,1.00000"
+              }
+            },
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "extended-srgb:0.80784,0.85098,1.00000,1.00000"
+              }
+            },
+            {
+              "appearance": "tinted",
+              "value": {
+                "solid": "extended-gray:1.00000,1.00000"
+              }
+            }
+          ]
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.35
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.15
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}

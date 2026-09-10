@@ -2,6 +2,26 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>SUFeedURL</key>
+    <string>https://github.com/sukujgrg/ViewTheWord/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>zwlZymnWUn0xFp5k9Xg8aL4GXz7RLQ1hlp9TSoRDvBk=</string>
+    <key>SURequireSignedFeed</key>
+    <true/>
+    <key>SUVerifyUpdateBeforeExtraction</key>
+    <true/>
+    <key>SUEnableInstallerLauncherService</key>
+    <true/>
+    <key>SUEnableDownloaderService</key>
+    <true/>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUAllowsAutomaticUpdates</key>
+    <false/>
+    <key>SUShowReleaseNotes</key>
+    <false/>
+	<key>VTWSourceCommit</key>
+	<string>$(VTW_SOURCE_COMMIT)</string>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
@@ -19,13 +39,7 @@
 			<array>
 				<string>com.viewtheword.sqlite3.database</string>
 			</array>
-			<key>NSDocumentClass</key>
-			<string>NSPersistentDocument</string>
 		</dict>
-	</array>
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict/>
 	</array>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
