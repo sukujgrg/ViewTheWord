@@ -110,11 +110,13 @@ class ReleaseFlowTests(unittest.TestCase):
         if path == "releases/10/assets?per_page=100&page=1":
             return [{"name": "appcast.xml"}]
         if path.startswith("git/ref/tags/"):
-            return {"object": {"type": "commit", "sha": self.remote_tag}} if self.remote_tag else None
+            # make release pushes an annotated tag: the ref points to a tag
+            # object, whose target must be read through the Git tags API.
+            return {"object": {"type": "tag", "sha": "release-tag-sha"}} if self.remote_tag else None
+        if path == "git/tags/release-tag-sha":
+            return {"object": {"type": "commit", "sha": self.remote_tag}}
         if path.startswith("commits/tags/"):
-            if self.remote_tag is None:
-                raise release.ReleaseError("GitHub request failed for missing tag (HTTP 422).")
-            return {"sha": self.remote_tag}
+            raise release.ReleaseError("GitHub cannot resolve tags/v4.0.1 as a commit name (HTTP 422).")
         if path == "commits/" + self.commit:
             return {"sha": self.commit} if self.pushed else None
         if path == "releases/latest":
@@ -427,6 +429,27 @@ class ReleaseFlowTests(unittest.TestCase):
         self.invoke()
         self.assertFalse(any(call[:2] in (("git", "tag"), ("git", "push")) for call in self.calls))
         self.assertTrue(self.existing_release)
+
+    def test_tag_lookup_failure_after_push_resumes_prepared_release(self):
+        def request(repo, path, optional=False):
+            if path == "git/tags/release-tag-sha":
+                raise release.ReleaseError("GitHub request failed after the tag was pushed (HTTP 503).")
+            return self.api(repo, path, optional=optional)
+
+        with patch.object(release, "github", side_effect=request):
+            with self.assertRaisesRegex(release.ReleaseError, "after the tag was pushed"):
+                self.invoke()
+        self.assertEqual(self.remote_tag, self.commit)
+        self.assertIsNone(self.remote_release)
+        prepared = self.state["artifacts"]
+        submission = self.state["notary_id"]
+        self.calls.clear()
+        self.invoke(publish_only=True)
+        self.assertEqual(self.state["artifacts"], prepared)
+        self.assertEqual(self.state["notary_id"], submission)
+        self.assertFalse(self.remote_release["draft"])
+        self.assertFalse(any(call[0] in ("xcodebuild", "xcrun", "codesign", "security", "ditto") for call in self.calls))
+        self.assertFalse(any(call[:2] in (("git", "tag"), ("git", "push")) for call in self.calls))
 
     def test_changed_latest_release_stops_before_tagging(self):
         self.latest_changed = True
@@ -865,28 +888,54 @@ class GitHubTransportTests(unittest.TestCase):
                     path = args[-1]
                     if path == "repos/owner/repo/git/ref/tags/v4.0.1":
                         data = {"object": {"type": kind, "sha": object_sha}}
+                    elif path == "repos/owner/repo/git/tags/annotated-tag-sha":
+                        self.assertEqual(kind, "tag")
+                        data = {"object": {"type": "commit", "sha": "commit-sha"}}
                     elif path == "repos/owner/repo/commits/tags/v4.0.1":
-                        data = {"sha": "commit-sha"}
+                        return subprocess.CompletedProcess(args, 1,
+                            'HTTP/2.0 422 Unprocessable Entity\n\n{"message":"No commit found for SHA: tags/v4.0.1"}', "")
                     else:
                         self.fail(f"Unexpected tag request: {path}")
                     return subprocess.CompletedProcess(args, 0, "HTTP/2.0 200 OK\n\n" + json.dumps(data), "")
 
-                with patch.object(release.subprocess, "run", side_effect=request):
+                with patch.object(release.subprocess, "run", side_effect=request) as transport:
                     self.assertEqual(release.remote_tag_commit("owner/repo", "v4.0.1"), "commit-sha")
+                    self.assertEqual(transport.call_count, 1 if kind == "commit" else 2)
+
+    def test_nested_annotated_tags_resolve_to_the_commit(self):
+        objects = {
+            "git/ref/tags/v4.0.1": {"type": "tag", "sha": "outer-tag-sha"},
+            "git/tags/outer-tag-sha": {"type": "tag", "sha": "inner-tag-sha"},
+            "git/tags/inner-tag-sha": {"type": "commit", "sha": "commit-sha"},
+        }
+        with patch.object(release, "github", side_effect=lambda repo, path, **kw: {"object": objects[path]}):
+            self.assertEqual(release.remote_tag_commit("owner/repo", "v4.0.1"), "commit-sha")
+
+    def test_tags_pointing_to_non_commit_objects_are_rejected(self):
+        for kind in ("tree", "blob"):
+            with self.subTest(kind=kind):
+                with patch.object(release, "github", return_value={"object": {"type": kind, "sha": "object-sha"}}):
+                    with self.assertRaisesRegex(release.ReleaseError, "does not point to a commit"):
+                        release.remote_tag_commit("owner/repo", "v4.0.1")
+
+    def test_repeated_tag_object_is_rejected(self):
+        with patch.object(release, "github", return_value={"object": {"type": "tag", "sha": "tag-sha"}}):
+            with self.assertRaisesRegex(release.ReleaseError, "Repeated tag object"):
+                release.remote_tag_commit("owner/repo", "v4.0.1")
 
     def test_tag_lookup_errors_and_disappearance_abort(self):
-        for code in (403, 422, 500):
-            for during_resolution in (False, True):
-                with self.subTest(code=code, during_resolution=during_resolution):
-                    def request(args, **kwargs):
-                        if during_resolution and "/git/ref/" in args[-1]:
-                            body = json.dumps({"object": {"type": "commit", "sha": "commit-sha"}})
-                            return subprocess.CompletedProcess(args, 0, "HTTP/2.0 200 OK\n\n" + body, "")
-                        return subprocess.CompletedProcess(args, 1, f'HTTP/2.0 {code} Error\n\n{{"message":"Failed"}}', "")
+        cases = [(code, resolving) for code in (403, 422, 500) for resolving in (False, True)]
+        for code, during_resolution in cases + [(404, True)]:
+            with self.subTest(code=code, during_resolution=during_resolution):
+                def request(args, **kwargs):
+                    if during_resolution and "/git/ref/" in args[-1]:
+                        body = json.dumps({"object": {"type": "tag", "sha": "tag-sha"}})
+                        return subprocess.CompletedProcess(args, 0, "HTTP/2.0 200 OK\n\n" + body, "")
+                    return subprocess.CompletedProcess(args, 1, f'HTTP/2.0 {code} Error\n\n{{"message":"Failed"}}', "")
 
-                    with patch.object(release.subprocess, "run", side_effect=request):
-                        with self.assertRaises(release.ReleaseError):
-                            release.remote_tag_commit("owner/repo", "v4.0.1")
+                with patch.object(release.subprocess, "run", side_effect=request):
+                    with self.assertRaises(release.ReleaseError):
+                        release.remote_tag_commit("owner/repo", "v4.0.1")
 
     def test_release_lookup_includes_drafts_and_later_pages(self):
         draft = {"id": 101, "tag_name": "v4.0.1", "draft": True}

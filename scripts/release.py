@@ -249,10 +249,22 @@ def verify_ci(repo, commit):
 def remote_tag_commit(repo, tag):
     # Missing refs return 404 here; the commit endpoint returns 422 instead.
     name = quote(tag, safe="")
-    if github(repo, f"git/ref/tags/{name}", optional=True) is None:
+    reference = github(repo, f"git/ref/tags/{name}", optional=True)
+    if reference is None:
         return None
-    # Resolve the existing ref to a commit, including annotated tags.
-    return github(repo, f"commits/tags/{name}")["sha"]
+    # Lightweight refs point directly to commits. Annotated refs point to tag
+    # objects (possibly another tag), not commit SHAs or "tags/<name>" commits.
+    target = reference["object"]
+    seen = set()
+    while target["type"] == "tag":
+        sha = target["sha"]
+        if sha in seen:
+            raise ReleaseError(f"Repeated tag object while resolving GitHub tag {tag}.")
+        seen.add(sha)
+        target = github(repo, f"git/tags/{quote(sha, safe='')}")["object"]
+    if target["type"] != "commit":
+        raise ReleaseError(f"GitHub tag {tag} does not point to a commit.")
+    return target["sha"]
 
 
 def verify_destination(repo, tag, commit, state=None):
