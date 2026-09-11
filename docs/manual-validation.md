@@ -40,6 +40,10 @@ Regenerate the offscreen layout fixtures with `scripts/render-projector-review.s
 
 Run `scripts/render-navigation-review.sh` for the AppKit workspace fixtures in `build/review/navigation`. The script launches a fixture app through LaunchServices with a repository translation catalog. It runs a real `NSApplication` event loop and dispatches synthetic events through a key window to check book/chapter and saved-reference activation, spatial grid navigation, toolbar commands, passage tabs, and adaptive bilingual layouts. Projector window creation is suppressed. Native macOS glass is not fully captured by offscreen view caching, so appearance requires an onscreen check.
 
+During automated runs, keep Native Workspace Review in front and avoid mouse or keyboard input until the script finishes. Switching applications or windows invalidates the focus checks, even if you switch back before an assertion. The search-focus review reports this as an interruption and exits unsuccessfully without a crash report.
+
+Use `scripts/render-navigation-review.sh --search-focus-only --onscreen` for delayed search completion, Command-L, editing, and focus-preservation checks. The fixture waits for toolbar focus animations before typing and queues Return through the application event loop. Add `--stress-search-focus` to repeat the checks across 20 fresh workspaces.
+
 Use `scripts/render-navigation-review.sh --settings-only --onscreen` for native Settings screenshots in light/dark appearance, slider tracking and keyboard persistence, library selection/removal cancellation, empty catalogs, and import-sheet lifecycle checks. Use `scripts/render-navigation-review.sh --inspect-settings --onscreen` for manual inspection in the isolated Settings fixture; closing its window ends the run.
 
 Use `scripts/render-navigation-review.sh --history-reveal-only` for the focused Psalm 117:2 → History Esther 8:9 checks and screenshots at normal and compact sizes, with bilingual text and Secondary set to None.
