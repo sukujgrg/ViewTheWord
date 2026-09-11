@@ -379,6 +379,7 @@ final class PassageProjectionTests: XCTestCase {
 
     func testEmptyCatalogStopsSourceOutputAndImportDoesNotAutomaticallyReopenIt() async throws {
         let f = try Fixture(); defer { f.cleanUp() }
+        _ = f.second.view
         f.first.navigate(to: john, project: true)
         try await finish(f, reference: john)
         try await eventually { f.live.windowOpened }
@@ -398,12 +399,80 @@ final class PassageProjectionTests: XCTestCase {
         try await finish(f, reference: john)
         try await eventually { !f.first.navigation.isLoading }
         f.first.render()
+        f.second.render()
         XCTAssertFalse(f.live.windowOpened)
         XCTAssertFalse(f.first.verses.rows.isEmpty)
+        XCTAssertNil(f.live.message)
+        XCTAssertTrue(f.first.footer.isHidden)
+        XCTAssertTrue(f.second.footer.isHidden)
         f.first.activateVerse(john)
         XCTAssertTrue(f.live.windowOpened)
         XCTAssertEqual(f.live.source?.tabID, f.first.tabID)
         XCTAssertNil(f.live.message)
+    }
+
+    func testCatalogRecoveryClearsEmptyNoticeAfterAllPassageTabsClose() async throws {
+        let f = try Fixture(); defer { f.cleanUp() }
+        f.first.navigate(to: john, project: true)
+        try await finish(f, reference: john)
+        try await eventually { f.live.windowOpened }
+        f.catalog.urls = []
+        f.live.library.refresh()
+        f.first.render()
+        try await eventually { !f.live.windowOpened }
+        f.first.shutdown(); f.second.shutdown()
+        XCTAssertEqual(f.live.message, BibleLibraryError.empty.localizedDescription)
+
+        f.catalog.urls = [f.primary]
+        f.live.library.refresh()
+        try await eventually { f.live.message == nil }
+        XCTAssertFalse(f.live.windowOpened)
+        XCTAssertNil(f.live.source)
+        XCTAssertNil(f.live.projector.projectionOwner)
+        XCTAssertEqual(f.opens, 1)
+    }
+
+    func testCatalogRecoveryPreservesUnrelatedProjectionFailure() async throws {
+        let f = try Fixture(); defer { f.cleanUp() }
+        f.live.requestProjection(owner: .searchResult(romans), from: f.first.tabID,
+                                 sources: try XCTUnwrap(f.first.sources), using: f.first.navigation)
+        try await finish(f, reference: romans, lookup: true, available: false)
+        try await eventually { f.live.message != nil }
+        let message = try XCTUnwrap(f.live.message)
+        f.catalog.urls = []
+        f.live.library.refresh()
+        f.live.refreshPreferences()
+        XCTAssertEqual(f.live.message, message)
+        f.catalog.urls = [f.primary]
+        f.live.library.refresh()
+        f.live.refreshPreferences()
+        XCTAssertEqual(f.live.message, message)
+        XCTAssertFalse(f.live.windowOpened)
+    }
+
+    func testFrozenOutputCanBeStoppedFromAnEmptyWorkspace() async throws {
+        for useEscape in [false, true] {
+            let f = try Fixture(); defer { f.cleanUp() }
+            _ = f.second.view
+            f.first.navigate(to: john, project: true)
+            try await finish(f, reference: john)
+            try await eventually { f.live.windowOpened }
+            f.first.shutdown()
+            f.catalog.urls = []
+            f.live.library.refresh()
+            f.second.render()
+            XCTAssertTrue(f.second.verses.rows.isEmpty)
+            let space = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: 0, context: nil, characters: " ", charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49))
+            f.second.verses.table.keyDown(with: space)
+            XCTAssertTrue(f.live.windowOpened)
+            XCTAssertNil(f.live.source?.tabID)
+            XCTAssertTrue(f.second.stopButton.isEnabled)
+            if useEscape { f.second.verses.table.cancelOperation(nil) }
+            else { f.second.stopProjection(nil) }
+            try await eventually { !f.live.windowOpened }
+            XCTAssertNil(f.live.projector.projectionOwner)
+        }
     }
 
     func testSourceTranslationChangeWaitsForAnotherTabsExplicitProjection() async throws {
