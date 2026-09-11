@@ -75,6 +75,6 @@ With local Xcode signing configured, `make build` exports an Apple Silicon (arm6
 
 The layered VTW app icon is editable in Icon Composer. See [the icon source and rendering guide](docs/app-icon.md) for appearance previews and build integration.
 
-The passage workspace uses native AppKit controls and an independent navigation model for each tab. One shared `LiveProjectionController` publishes output and owns the projector window. Settings, help, preview, and projected content are separate SwiftUI screens. See [the architecture guide](docs/architecture.md) for state ownership, navigation, data access, and validation boundaries.
+The passage workspace uses native AppKit controls and an independent navigation model for each tab. One shared `LiveProjectionController` publishes output and owns the projector window. Settings also uses native AppKit controls. Help, preview, and projected content are separate SwiftUI screens. See [the architecture guide](docs/architecture.md) for state ownership, navigation, data access, and validation boundaries.
 
 Maintainers can find signing, notarization, and publishing instructions in the [release guide](docs/releasing.md).

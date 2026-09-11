@@ -69,6 +69,15 @@ struct NativeWorkspaceReview {
         precondition(NSApp.isRunning && NSApp.isActive && window.isKeyWindow,
                      "Window-event checks require a running AppKit application: running=\(NSApp.isRunning), active=\(NSApp.isActive), key=\(NSApp.keyWindow?.title ?? "nil"), visible=\(window.isVisible)")
         defer { tabs.shutdown(); for tab in tabs.windows { tab.close() }; defaults.removePersistentDomain(forName: "ViewTheWord.NativeWorkspaceReview") }
+        if CommandLine.arguments.contains("--inspect-settings") {
+            try await checkNativeSettings(output: output, sources: sources, inspecting: true)
+            return
+        }
+        if CommandLine.arguments.contains("--settings-only") {
+            try await checkNativeSettings(output: output, sources: sources)
+            try await checkSettingsImportLifecycle(output: output)
+            return
+        }
         if CommandLine.arguments.contains("--passage-tabs-only") {
             try await checkPassageTabs(tabs, original: controller, output: output, outputCreations: { outputCreations })
             try await checkTabTranslations(tabs, original: controller, output: output)
@@ -78,6 +87,7 @@ struct NativeWorkspaceReview {
         if CommandLine.arguments.contains("--history-reveal-only") { return }
         try await checkDelayedSearchFocus(output: output)
         try await checkQueuedLibraryAlerts(output: output)
+        try await checkNativeSettings(output: output, sources: sources)
         try await checkSettingsImportLifecycle(output: output)
         window.makeKeyAndOrderFront(nil)
         try await waitUntil { window.isKeyWindow }
@@ -586,6 +596,116 @@ struct NativeWorkspaceReview {
         precondition(Set(library.urls.map(\.lastPathComponent)) == ["ENG_FIRST.bible", "ENG_EXISTINGREPLACE.bible", "ENG_LAST.bible"])
         reviewLog("PASS queued import sheets: all files, explicit Replace/Cancel, failures continue, one active-tab presenter")
     }
+    @MainActor static func checkNativeSettings(output: URL, sources: BibleSources, inspecting: Bool = false) async throws {
+        let suite = "ViewTheWord.NativeSettingsReview"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        let keys = [AppDefaultsKey.fontSizeVerse, AppDefaultsKey.fontSizeVerseRef, AppDefaultsKey.projectorPadding]
+        for (key, value) in zip(keys, [149.0, 27.0, 59.0]) { defaults.set(value, forKey: key) }
+        let imported = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("ENG_REVIEW.bible")
+        var catalog = [sources.primary, sources.secondary!, imported]
+        let library = BibleLibrary(preloadedURLs: catalog, catalogProvider: { catalog })
+        let settings = SettingsWindowController(library: library, defaults: defaults)
+        let window = settings.window!
+        positionFixtureWindow(window)
+        settings.showWindow(nil)
+        defer { settings.close(); defaults.removePersistentDomain(forName: suite) }
+        try await waitUntil { window.isKeyWindow }
+        func descendants(_ controller: NSViewController) -> [NSViewController] { [controller] + controller.children.flatMap(descendants) }
+        precondition(!descendants(settings.settings).contains { String(describing: type(of: $0)).contains("NSHostingController") })
+        for (name, dark) in [("light", false), ("dark", true)] {
+            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            for (index, pane) in [(0, "display"), (1, "library")] {
+                settings.settings.selectedTabViewItemIndex = index
+                try await Task.sleep(nanoseconds: 100_000_000)
+                window.contentView?.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                let frame = window.contentView!.superview!
+                let bitmap = frame.bitmapImageRepForCachingDisplay(in: frame.bounds)!
+                frame.cacheDisplay(in: frame.bounds, to: bitmap)
+                try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("settings-\(pane)-\(name).png"))
+            }
+        }
+        settings.settings.selectedTabViewItemIndex = 0
+        try await waitUntil { settings.settings.display.rows[0].slider.window === window }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        window.contentView?.layoutSubtreeIfNeeded()
+        if inspecting {
+            while window.isVisible { try await Task.sleep(nanoseconds: 200_000_000) }
+            return
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        try await waitUntil { window.isKeyWindow && NSApp.isActive }
+        for (row, key) in zip(settings.settings.display.rows, keys) {
+            let slider = row.slider
+            let before = defaults.double(forKey: key)
+            let target = slider.target
+            let action = slider.action!
+            var trackingActions = 0
+            let audit = ReviewSliderAction { sender in
+                NSApp.sendAction(action, to: target, from: sender)
+                if slider.isTrackingMouse {
+                    trackingActions += 1
+                    precondition(defaults.double(forKey: key) == before, "Tracking must keep the saved value unchanged until mouse-up")
+                    precondition(row.valueLabel.stringValue == "\(Int(slider.doubleValue.rounded())) pts", "The readout must follow the tracked value")
+                }
+            }
+            slider.target = audit
+            slider.action = #selector(ReviewSliderAction.changed(_:))
+            click(slider, rect: NSRect(x: slider.bounds.width * 0.85, y: 0, width: 1, height: slider.bounds.height), window: window)
+            slider.target = target
+            slider.action = action
+            precondition(trackingActions > 0 && slider.doubleValue > before,
+                         "The slider must receive the window-dispatched track click: actions=\(trackingActions), before=\(before), after=\(slider.doubleValue)")
+            precondition(defaults.double(forKey: key) == slider.doubleValue && slider.doubleValue.rounded() == slider.doubleValue)
+            window.makeFirstResponder(slider)
+            for modifiers: NSEvent.ModifierFlags in [[], .option] {
+                for initial in [slider.minValue, ((slider.minValue + slider.maxValue) / 2).rounded(), slider.maxValue] {
+                    slider.doubleValue = initial
+                    slider.sendAction(slider.action, to: slider.target)
+                    for (key, code, step) in [("\u{F702}", UInt16(123), -1.0), ("\u{F703}", 124, 1.0),
+                                              ("\u{F700}", 126, 1.0), ("\u{F701}", 125, -1.0)] {
+                        let expected = min(slider.maxValue, max(slider.minValue, slider.doubleValue + step))
+                        sendKey(key, code: code, modifiers: modifiers, window: window)
+                        precondition(slider.doubleValue == expected,
+                                     "Arrow keys must move exactly one point within the range: expected=\(expected), actual=\(slider.doubleValue)")
+                    }
+                    precondition(defaults.double(forKey: key) == slider.doubleValue,
+                                 "Keyboard adjustments must save immediately")
+                }
+            }
+        }
+        let saved = keys.map { defaults.double(forKey: $0) }
+        settings.close()
+        settings.showWindow(nil)
+        precondition(settings.settings.display.rows.map { $0.slider.doubleValue } == saved, "Reopening Settings must restore the saved values")
+
+        settings.settings.selectedTabViewItemIndex = 1
+        let pane = settings.settings.bibleLibrary
+        try await waitUntil { pane.table.numberOfRows == 3 }
+        let sorted = catalog.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        pane.table.selectRowIndexes(IndexSet(integer: sorted.firstIndex(of: sources.primary)!), byExtendingSelection: false)
+        precondition(!pane.removeButton.isEnabled, "Included translations cannot be removed")
+        pane.table.selectRowIndexes(IndexSet(integer: sorted.firstIndex(of: imported)!), byExtendingSelection: false)
+        precondition(pane.removeButton.isEnabled, "Imported translations can be removed")
+        pane.removeButton.performClick(nil)
+        try await waitUntil { window.attachedSheet != nil }
+        window.endSheet(window.attachedSheet!, returnCode: .alertSecondButtonReturn)
+        try await waitUntil { window.attachedSheet == nil }
+        precondition(library.urls.contains(imported), "Cancel must retain the imported translation")
+        catalog = []
+        library.refresh()
+        try await waitUntil { pane.table.numberOfRows == 0 }
+        precondition(!pane.emptyLabel.isHidden && !pane.removeButton.isEnabled && pane.importButton.isEnabled)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let frame = window.contentView!.superview!
+        let bitmap = frame.bitmapImageRepForCachingDisplay(in: frame.bounds)!
+        frame.cacheDisplay(in: frame.bounds, to: bitmap)
+        try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("settings-library-empty.png"))
+        reviewLog("PASS native Settings: light/dark panes, tracking drafts, one-point arrows and Option-arrows with range limits, keyboard commits, reopening, library selection, removal cancellation, empty catalog")
+    }
     @MainActor static func checkSettingsImportLifecycle(output: URL) async throws {
         let importer = ReviewImportGate()
         let library = BibleLibrary(preloadedURLs: [], importer: { url, _, replace in
@@ -960,6 +1080,13 @@ struct NativeWorkspaceReview {
         reviewLog("PASS native chapter grid arrows and toolbar search responder command")
     }
 
+}
+
+@MainActor
+private final class ReviewSliderAction: NSObject {
+    private let action: (NSSlider) -> Void
+    init(_ action: @escaping (NSSlider) -> Void) { self.action = action }
+    @objc func changed(_ sender: NSSlider) { action(sender) }
 }
 
 private actor ReviewImportGate {

@@ -98,13 +98,13 @@ extension MainWorkspaceController: NSToolbarDelegate {
             let stack = NSStackView(views: [label, picker])
             stack.orientation = .vertical
             stack.alignment = alignment
-            stack.spacing = 2
+            stack.spacing = 6
             return stack
         }
         let primaryControl = translationControl("Primary", picker: primaryPicker, alignment: .leading)
         let secondaryControl = translationControl("Secondary", picker: secondaryPicker, alignment: .trailing)
-        let heading = horizontalStack([primaryControl, NSView(), referenceTitle, NSView(), secondaryControl], spacing: 10)
-        heading.edgeInsets = NSEdgeInsets(top: 2, left: 16, bottom: 10, right: 16)
+        let heading = horizontalStack([primaryControl, NSView(), referenceTitle, NSView(), secondaryControl], spacing: 16)
+        heading.edgeInsets = NSEdgeInsets(top: 8, left: 16, bottom: 18, right: 16)
         // Keep the title centered even when the picker selections have different widths.
         referenceTitle.alignment = .center
         referenceTitle.centerXAnchor.constraint(equalTo: heading.centerXAnchor).isActive = true
