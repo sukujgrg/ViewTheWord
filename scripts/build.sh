@@ -2,27 +2,20 @@
 
 set -euo pipefail
 
-BUILD_CURRENT_ARCH_ONLY=false
-
 usage() {
   cat <<'EOF'
-Usage: ./scripts/build.sh [--current-arch] [--help]
+Usage: ./scripts/build.sh [--help]
 
-Build and export a local app to ~/Applications. Defaults to a universal app.
+Build and export an Apple Silicon (arm64) app to ~/Applications.
 Use make release to sign, notarize, and publish a distribution release.
 
 Options:
-  --current-arch  Build only for the current machine architecture.
-  --help          Show this help text.
+  --help  Show this help text.
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --current-arch)
-      BUILD_CURRENT_ARCH_ONLY=true
-      shift
-      ;;
     --help|-h)
       usage
       exit 0
@@ -36,19 +29,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 cd "$(dirname "$0")/.."
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/ViewTheWord.XXXXXX")"
-trap 'rm -rf "$TMP"' EXIT
-ARCHIVE_PATH="$TMP/ViewTheWord.xcarchive"
-EXPORT_PLIST="$TMP/ViewTheWord-export.plist"
+BUILD_TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ViewTheWord.XXXXXX")"
+trap 'rm -rf "$BUILD_TEMP_DIR"' EXIT
+ARCHIVE_PATH="$BUILD_TEMP_DIR/ViewTheWord.xcarchive"
+EXPORT_PLIST="$BUILD_TEMP_DIR/ViewTheWord-export.plist"
 EXPORT_PATH="$HOME/Applications"
 
 mkdir -p "$EXPORT_PATH"
-
-if [[ "$BUILD_CURRENT_ARCH_ONLY" == true ]]; then
-  BUILD_ARGS=(ARCHS="$(uname -m)" ONLY_ACTIVE_ARCH=YES)
-else
-  BUILD_ARGS=("ARCHS=arm64 x86_64" ONLY_ACTIVE_ARCH=NO)
-fi
 
 xcodebuild \
   -project ViewTheWord.xcodeproj \
@@ -58,7 +45,8 @@ xcodebuild \
   archive \
   STRIP_INSTALLED_PRODUCT=YES \
   COPY_PHASE_STRIP=YES \
-  "${BUILD_ARGS[@]}"
+  ARCHS=arm64 \
+  ONLY_ACTIVE_ARCH=NO
 
 cat > "$EXPORT_PLIST" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

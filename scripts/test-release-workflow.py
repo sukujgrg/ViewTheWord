@@ -46,11 +46,17 @@ class ReleaseFlowTests(unittest.TestCase):
         self.use_asset_digests = True
         self.submissions = {}
         self.finished_submissions = set()
-        self.wrong_notary_hash = False
+        self.notary_hash_transform = lambda value: value
         self.previous_release = None
         self.previous_feed = None
+        self.signing_team = "TEAM"
+        self.signature_overrides = {}
+        self.missing_arm_binary = None
+        self.main_architectures = "arm64"
+        self.missing_binary = None
         self.remote_tag = None
         self.existing_release = False
+        self.hidden_draft_reads = 0
         self.conclusions = ["success"]
         self.ci_sha = self.commit
         self.ci_branch = "master"
@@ -99,22 +105,27 @@ class ReleaseFlowTests(unittest.TestCase):
     def state(self):
         return json.loads((self.directory / "state.json").read_text())
 
-    def api(self, repo, path, optional=False):
+    def api(self, repo, path, optional=False, expected_type=dict):
         self.assertEqual(repo, "sukujgrg/ViewTheWord")
         if path == "releases?per_page=100&page=1":
+            if self.remote_release and self.remote_release["draft"] and self.hidden_draft_reads:
+                self.hidden_draft_reads -= 1
+                return copy.deepcopy([self.previous_release] if self.previous_release else [])
             return copy.deepcopy([item for item in (self.remote_release, self.previous_release) if item])
         if path == "releases/42":
             return copy.deepcopy(self.remote_release)
         if path == "releases/42/assets?per_page=100&page=1":
             return [{key: value for key, value in item.items() if key != "data"} for item in self.assets.values()]
         if path == "releases/10/assets?per_page=100&page=1":
-            return [{"name": "appcast.xml"}]
+            return [{"name": "appcast.xml"}] if self.previous_feed is not None else []
         if path.startswith("git/ref/tags/"):
-            return {"object": {"type": "commit", "sha": self.remote_tag}} if self.remote_tag else None
+            # make release pushes an annotated tag: the ref points to a tag
+            # object, whose target must be read through the Git tags API.
+            return {"object": {"type": "tag", "sha": "release-tag-sha"}} if self.remote_tag else None
+        if path == "git/tags/release-tag-sha":
+            return {"object": {"type": "commit", "sha": self.remote_tag}}
         if path.startswith("commits/tags/"):
-            if self.remote_tag is None:
-                raise release.ReleaseError("GitHub request failed for missing tag (HTTP 422).")
-            return {"sha": self.remote_tag}
+            raise release.ReleaseError("GitHub cannot resolve tags/v4.0.1 as a commit name (HTTP 422).")
         if path == "commits/" + self.commit:
             return {"sha": self.commit} if self.pushed else None
         if path == "releases/latest":
@@ -135,9 +146,11 @@ class ReleaseFlowTests(unittest.TestCase):
                 del self.failures[key]
                 raise subprocess.CalledProcessError(1, [stage, phase])
 
-    def tool(self, *args, capture=False, output=None):
+    def tool(self, *args, capture=False, output=None, include_stderr=False):
         args = tuple(str(arg) for arg in args)
         self.calls.append(args)
+        if args[:2] == ("codesign", "-dv"):
+            self.assertTrue(capture and include_stderr)
         if args[0] == "xcodebuild":
             stage = "archive" if "archive" in args else "export" if "-exportArchive" in args else "resolve"
         elif args[0] in ("gh", "xcrun") and len(args) > 2:
@@ -218,11 +231,29 @@ class ReleaseFlowTests(unittest.TestCase):
         if args[0] == "security":
             return '1) fixture "Developer ID Application: Fixture (TEAM)"\n1 valid identities found'
         if args[0] == "codesign":
-            self.assertTrue(Path(args[-1]).is_dir())
-            return
+            binary = Path(args[-1])
+            if "--verify" in args:
+                self.assertTrue(binary.is_dir())
+                return
+            self.assertTrue(binary.is_file())
+            arch = args[args.index("--arch") + 1]
+            override = self.signature_overrides.get((binary.name, arch), {})
+            if "-dv" in args:
+                flags = "0x10000(runtime)" if override.get("runtime", True) else "0x0(none)"
+                return f"CodeDirectory v=20500 flags={flags}\nTeamIdentifier={override.get('team', self.signing_team)}"
+            self.assertIn("--xml", args)
+            entitlements = ({"com.apple.security.app-sandbox": True,
+                             "com.apple.security.temporary-exception.mach-lookup.global-name":
+                             ["suku.ViewTheWord-spks", "suku.ViewTheWord-spki"]}
+                            if binary.name == "ViewTheWord" else {})
+            entitlements = override.get("entitlements", entitlements)
+            return plistlib.dumps(entitlements).decode() if entitlements else ""
         if args[0] == "xcodebuild":
+            if "-showBuildSettings" in args:
+                self.assertEqual(args[args.index("-configuration") + 1], "Release")
+                return json.dumps([{"target": "ViewTheWord", "buildSettings": {"DEVELOPMENT_TEAM": self.signing_team}}])
             if "archive" in args:
-                self.assertIn("ARCHS=arm64 x86_64", args)
+                self.assertIn("ARCHS=arm64", args)
                 self.assertIn("ONLY_ACTIVE_ARCH=NO", args)
                 self.assertNotIn("CODE_SIGNING_ALLOWED=NO", args)
                 self.assertFalse(any(arg.startswith("MARKETING_VERSION=") for arg in args))
@@ -242,6 +273,14 @@ class ReleaseFlowTests(unittest.TestCase):
                 (app / "Info.plist").write_bytes(plistlib.dumps(info))
                 (app / "MacOS").mkdir()
                 (app / "MacOS/ViewTheWord").write_bytes(b"fixture executable")
+                framework = app / "Frameworks/Sparkle.framework"
+                for name in ("Sparkle", "Autoupdate", "Updater.app/Contents/MacOS/Updater",
+                             "XPCServices/Installer.xpc/Contents/MacOS/Installer",
+                             "XPCServices/Downloader.xpc/Contents/MacOS/Downloader"):
+                    binary = framework / name
+                    if binary.name != self.missing_binary:
+                        binary.parent.mkdir(parents=True, exist_ok=True)
+                        binary.write_bytes(b"fixture Sparkle executable")
                 options = plistlib.loads(Path(args[args.index("-exportOptionsPlist") + 1]).read_bytes())
                 self.assertEqual(options["method"], "developer-id")
             return
@@ -250,7 +289,12 @@ class ReleaseFlowTests(unittest.TestCase):
         if args[0].endswith("sign_update"):
             return
         if args[0] == "lipo":
-            self.assertEqual(args[-3:], ("-verify_arch", "arm64", "x86_64"))
+            if args[-1] == "-archs":
+                self.assertEqual(Path(args[1]).name, "ViewTheWord")
+                return self.main_architectures
+            self.assertEqual(args[-2:], ("-verify_arch", "arm64"))
+            if Path(args[1]).name == self.missing_arm_binary:
+                raise subprocess.CalledProcessError(1, args)
             return
         if args[0] == "ditto":
             if "-k" in args:
@@ -279,7 +323,7 @@ class ReleaseFlowTests(unittest.TestCase):
                 return json.dumps({"id": identifier, "status": status})
             if args[2] == "log":
                 return json.dumps({"jobId": identifier, "status": self.notary_status,
-                                   "sha256": "wrong" if self.wrong_notary_hash else self.submissions[identifier]})
+                                   "sha256": self.notary_hash_transform(self.submissions[identifier])})
             self.fail(f"Unexpected notarization command: {args}")
         if args[:2] == ("xcrun", "stapler"):
             if args[2] == "staple":
@@ -428,6 +472,46 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertFalse(any(call[:2] in (("git", "tag"), ("git", "push")) for call in self.calls))
         self.assertTrue(self.existing_release)
 
+    def test_tag_lookup_failure_after_push_resumes_prepared_release(self):
+        def request(repo, path, optional=False, expected_type=dict):
+            if path == "git/tags/release-tag-sha":
+                raise release.ReleaseError("GitHub request failed after the tag was pushed (HTTP 503).")
+            return self.api(repo, path, optional=optional, expected_type=expected_type)
+
+        with patch.object(release, "github", side_effect=request):
+            with self.assertRaisesRegex(release.ReleaseError, "after the tag was pushed"):
+                self.invoke()
+        self.assertEqual(self.remote_tag, self.commit)
+        self.assertIsNone(self.remote_release)
+        prepared = self.state["artifacts"]
+        submission = self.state["notary_id"]
+        self.calls.clear()
+        self.invoke(publish_only=True)
+        self.assertEqual(self.state["artifacts"], prepared)
+        self.assertEqual(self.state["notary_id"], submission)
+        self.assertFalse(self.remote_release["draft"])
+        self.assertFalse(any(call[0] in ("xcodebuild", "xcrun", "codesign", "security", "ditto") for call in self.calls))
+        self.assertFalse(any(call[:2] in (("git", "tag"), ("git", "push")) for call in self.calls))
+
+    def test_new_draft_visibility_delay_does_not_repeat_creation(self):
+        self.hidden_draft_reads = 3
+        self.invoke()
+        self.assertEqual(self.count("gh", "release", "create"), 1)
+        self.assertEqual(self.hidden_draft_reads, 0)
+        self.assertFalse(self.remote_release["draft"])
+
+    def test_draft_visibility_timeout_preserves_work_for_retry(self):
+        self.hidden_draft_reads = 5
+        with self.assertRaisesRegex(release.ReleaseError, "not visible yet"):
+            self.invoke()
+        self.assertTrue(self.remote_release["draft"])
+        self.assertEqual(self.count("gh", "release", "upload"), 0)
+        prepared = self.state["artifacts"]
+        self.invoke(publish_only=True)
+        self.assertEqual(self.count("gh", "release", "create"), 1)
+        self.assertEqual(self.state["artifacts"], prepared)
+        self.assertFalse(self.remote_release["draft"])
+
     def test_changed_latest_release_stops_before_tagging(self):
         self.latest_changed = True
         with self.assertRaises(release.ReleaseError):
@@ -446,11 +530,43 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_unsupported_push_destinations_are_rejected(self):
-        for origin in ("https://example.invalid/repo.git", "https://github.com/elsewhere/app.git"):
+        for origin in ("https://example.invalid/repo.git", "https://github.com/elsewhere/app.git",
+                       "git@github.com:sukujgrg/ViewTheWord.git", "ssh://git@github.com/sukujgrg/ViewTheWord.git",
+                       "http://github.com/sukujgrg/ViewTheWord.git"):
             self.git("remote", "set-url", "origin", origin)
             with self.assertRaises(release.ReleaseError):
                 self.invoke()
         self.assert_not_published()
+
+    def test_https_remotes_with_or_without_git_suffix_are_supported(self):
+        for origin in ("https://github.com/sukujgrg/ViewTheWord", "https://github.com/sukujgrg/ViewTheWord.git"):
+            with self.subTest(origin=origin):
+                self.git("remote", "set-url", "origin", origin)
+                self.invoke(check=True)
+                self.assertEqual(release.release_repository(), ("sukujgrg/ViewTheWord", origin))
+        self.assertEqual(self.archive_count(), 0)
+
+    def test_push_url_must_be_one_https_url_even_when_fetch_url_is_valid(self):
+        self.git("config", "remote.origin.pushurl", "git@github.com:sukujgrg/ViewTheWord.git")
+        with self.assertRaisesRegex(release.ReleaseError, "one HTTPS GitHub push URL"):
+            self.invoke(check=True)
+        self.git("config", "remote.origin.pushurl", "https://github.com/sukujgrg/ViewTheWord.git")
+        self.git("config", "--add", "remote.origin.pushurl", "https://github.com/sukujgrg/ViewTheWord")
+        with self.assertRaisesRegex(release.ReleaseError, "one HTTPS GitHub push URL"):
+            self.invoke(check=True)
+        self.assertEqual(self.archive_count(), 0)
+
+    def test_resume_keeps_the_exact_https_push_url(self):
+        self.invoke(no_publish=True)
+        original = self.state
+        self.git("remote", "set-url", "origin", "https://github.com/sukujgrg/ViewTheWord")
+        with self.assertRaisesRegex(release.ReleaseError, "Cannot reuse"):
+            self.invoke(publish_only=True)
+        self.assertEqual(self.state, original)
+        self.assert_not_published()
+        self.git("remote", "set-url", "origin", original["origin"])
+        self.invoke(publish_only=True)
+        self.assertEqual(self.archive_count(), 1)
 
     def count(self, *prefix):
         return sum(call[:len(prefix)] == prefix for call in self.calls)
@@ -519,6 +635,42 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assert_not_published()
         self.invoke(resume_notarization=correct_id)
         self.assertEqual(self.state["notary_id"], correct_id)
+
+    def test_manual_submission_recovery_accepts_uppercase_sha256(self):
+        self.fail_once("submit", "after")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.invoke()
+        (self.directory / "work/notary-submission.json").unlink()
+        self.notary_hash_transform = str.upper
+        identifier = next(iter(self.submissions))
+        self.invoke(resume_notarization=identifier)
+        self.assertEqual(self.state["notary_id"], identifier)
+        self.assertTrue(self.state["notarized"])
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 1)
+
+    def test_missing_malformed_and_different_apple_hashes_still_reject_recovery(self):
+        for value in (None, [], 42, "", "0" * 64, "A" * 63 + "G"):
+            with self.subTest(hash=value):
+                self.notary_hash_transform = lambda recorded: value
+                with self.assertRaisesRegex(release.ReleaseError, "does not match the saved archive"):
+                    self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "stapler", "staple"), 0)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 1)
+        self.assert_not_published()
+
+    def test_git_tag_signing_failure_preserves_prepared_artifacts_and_the_signing_preference(self):
+        self.git("config", "tag.gpgsign", "true")
+        self.git("config", "gpg.format", "openpgp")
+        self.git("config", "gpg.program", "/usr/bin/false")
+        self.git("config", "user.signingkey", "fixture-unavailable-key")
+        for options in ({}, {"publish_only": True}):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.invoke(**options)
+            release.verify_artifacts(self.directory, self.state)
+            self.assertEqual(self.git("config", "--bool", "tag.gpgsign"), "true")
+            self.assert_not_published()
+        self.assertEqual(self.archive_count(), 1)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 1)
 
     def test_stapler_failure_preserves_original_app_and_does_not_resubmit(self):
         self.fail_once("staple", "after")
@@ -702,10 +854,15 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertTrue((backup / "state.json").exists())
         self.assertEqual(self.archive_count(), 2)
 
-    def test_snapshot_of_release_notes_survives_retry_without_notes_argument(self):
-        notes = self.root / "build/notes.md"
-        notes.parent.mkdir(exist_ok=True)
+    def external_notes(self):
+        directory = tempfile.TemporaryDirectory(prefix="ViewTheWord notes ")
+        self.addCleanup(directory.cleanup)
+        notes = Path(directory.name) / "release notes.md"
         notes.write_text("Release notes with `code` and $literal text.\n")
+        return notes
+
+    def test_snapshot_of_release_notes_survives_retry_without_notes_argument(self):
+        notes = self.external_notes()
         self.fail_once("create", "after")
         with self.assertRaises(subprocess.CalledProcessError):
             self.invoke(notes=notes)
@@ -715,6 +872,61 @@ class ReleaseFlowTests(unittest.TestCase):
             self.invoke(publish_only=True, notes=notes)
         self.invoke(publish_only=True)
         self.assertEqual(self.remote_release["body"], saved)
+
+    def test_external_notes_are_read_before_preparation(self):
+        notes = self.external_notes()
+        text = notes.read_text()
+        self.after_archive = notes.unlink
+        self.invoke(notes=notes)
+        self.assertEqual(self.state["notes"], text)
+        self.assertTrue(self.remote_release["body"].startswith(text))
+
+    def test_notes_inside_checkout_are_rejected_before_the_dirty_check_or_build(self):
+        for notes in (self.root / "release-notes.md", self.root / "build/notes.md", self.root / "VERSION"):
+            with self.subTest(notes=notes):
+                notes.parent.mkdir(parents=True, exist_ok=True)
+                if not notes.exists():
+                    notes.write_text("Local notes")
+                with self.assertRaisesRegex(release.ReleaseError, "Keep release notes outside the checkout"):
+                    self.invoke(notes=notes)
+        self.assertEqual(self.calls, [])
+        self.assert_not_published()
+
+    def test_external_symlink_cannot_point_to_notes_inside_checkout(self):
+        notes = self.external_notes()
+        notes.unlink()
+        notes.symlink_to(self.root / "VERSION")
+        with self.assertRaisesRegex(release.ReleaseError, "outside the checkout"):
+            self.invoke(notes=notes)
+        self.assertEqual(self.calls, [])
+
+    def test_missing_external_notes_are_rejected_before_build_work(self):
+        notes = self.external_notes()
+        notes.unlink()
+        with self.assertRaisesRegex(release.ReleaseError, "Release notes file does not exist"):
+            self.invoke(notes=notes)
+        self.assertEqual(self.calls, [])
+
+    def test_finder_metadata_outside_saved_packages_does_not_invalidate_recovery(self):
+        self.fail_once("wait")
+        with self.assertRaises(release.ReleaseError):
+            self.invoke()
+        for directory in (self.root / "build/release", self.directory, self.directory / "work"):
+            (directory / ".DS_Store").write_bytes(b"Finder folder view")
+        self.invoke()
+        self.assertEqual(self.archive_count(), 1)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 1)
+
+    def test_finder_metadata_inside_saved_app_is_still_a_checkpoint_change(self):
+        self.fail_once("wait")
+        with self.assertRaises(release.ReleaseError):
+            self.invoke()
+        app = self.directory / "work/export/ViewTheWord.app"
+        (app / "Contents/.DS_Store").write_bytes(b"Finder package view")
+        with self.assertRaisesRegex(release.ReleaseError, "Saved artifact changed"):
+            self.invoke()
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 1)
+        self.assert_not_published()
 
     def test_read_only_check_does_not_create_recovery_files_or_access_apple(self):
         self.invoke(check=True)
@@ -819,6 +1031,144 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertEqual(self.archive_count(), 0)
         self.assert_not_published()
 
+    def test_signing_team_must_be_configured_before_archiving(self):
+        self.signing_team = ""
+        with self.assertRaisesRegex(release.ReleaseError, "DEVELOPMENT_TEAM"):
+            self.invoke(no_publish=True)
+        self.assertEqual(self.archive_count(), 0)
+
+    def test_every_shipped_binary_must_support_arm64(self):
+        for name in ("ViewTheWord", "Sparkle", "Autoupdate", "Updater", "Installer", "Downloader"):
+            with self.subTest(binary=name):
+                self.missing_arm_binary = name
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+        self.assert_not_published()
+
+    def test_universal_main_executable_is_rejected(self):
+        self.main_architectures = "x86_64 arm64"
+        with self.assertRaisesRegex(release.ReleaseError, "arm64 only"):
+            self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+        self.assert_not_published()
+
+    def test_missing_sparkle_binaries_are_rejected_before_notarization(self):
+        for name in ("Sparkle", "Autoupdate", "Updater", "Installer", "Downloader"):
+            with self.subTest(binary=name):
+                self.missing_binary = name
+                with self.assertRaisesRegex(release.ReleaseError, "Required executable is missing"):
+                    self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+
+    def test_wrong_team_in_helper_is_rejected(self):
+        self.signature_overrides[("Installer", "arm64")] = {"team": "OTHERTEAM"}
+        with self.assertRaisesRegex(release.ReleaseError, "Signing team differs"):
+            self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+
+    def test_missing_hardened_runtime_in_helper_is_rejected(self):
+        self.signature_overrides[("Autoupdate", "arm64")] = {"runtime": False}
+        with self.assertRaisesRegex(release.ReleaseError, "Hardened runtime is missing"):
+            self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+
+    def test_debuggable_helper_is_rejected(self):
+        self.signature_overrides[("Updater", "arm64")] = {"entitlements": {"com.apple.security.get-task-allow": True}}
+        with self.assertRaisesRegex(release.ReleaseError, "Debugging entitlement"):
+            self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+
+    def test_app_sandbox_and_both_sparkle_mach_lookups_are_required(self):
+        key = "com.apple.security.temporary-exception.mach-lookup.global-name"
+        for entitlements in ({}, {"com.apple.security.app-sandbox": True},
+                             {"com.apple.security.app-sandbox": True, key: ["suku.ViewTheWord-spks"]},
+                             {"com.apple.security.app-sandbox": True, key: ["suku.ViewTheWord-spki"]},
+                             {key: ["suku.ViewTheWord-spks", "suku.ViewTheWord-spki"]}):
+            with self.subTest(entitlements=entitlements):
+                self.signature_overrides = {("ViewTheWord", "arm64"): {"entitlements": entitlements}}
+                with self.assertRaisesRegex(release.ReleaseError, "App Sandbox or Sparkle communication"):
+                    self.invoke(no_publish=True)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+
+    def make_clean(self):
+        scripts = self.root / "scripts"
+        scripts.mkdir(exist_ok=True)
+        shutil.copy2(ROOT / "scripts/release.py", scripts / "release.py")
+        shutil.copy2(ROOT / "Makefile", self.root / "Makefile")
+        return subprocess.run(["make", "clean"], cwd=self.root, text=True, capture_output=True)
+
+    def test_make_clean_preserves_saved_releases_and_does_not_follow_cache_symlinks(self):
+        self.directory.mkdir(parents=True)
+        saved = self.directory / "state.json"
+        saved.write_bytes(b"saved recovery record")
+        for name in ("DerivedData", "ReleaseDerivedData", "SwiftPM"):
+            cache = self.root / "build" / name
+            cache.mkdir()
+            (cache / "artifact").write_bytes(b"disposable cache")
+        external = self.root / "external"
+        external.mkdir()
+        (external / "keep").write_bytes(b"outside build")
+        (self.root / "build/linked-cache").symlink_to(external, target_is_directory=True)
+        result = self.make_clean()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(saved.read_bytes(), b"saved recovery record")
+        self.assertEqual([p.name for p in (self.root / "build").iterdir()], ["release"])
+        self.assertEqual((external / "keep").read_bytes(), b"outside build")
+
+    def test_make_clean_refuses_while_another_process_holds_the_release_lock(self):
+        cache = self.root / "build/keep"
+        cache.parent.mkdir()
+        cache.write_bytes(b"active build")
+        with release.release_lock():
+            result = self.make_clean()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Another local release or cleanup", result.stderr)
+        self.assertEqual(cache.read_bytes(), b"active build")
+
+    def test_release_lock_survives_removal_of_build_directory(self):
+        build = self.root / "build"
+        build.mkdir()
+        with release.release_lock():
+            shutil.rmtree(build)
+            build.mkdir()
+            with self.assertRaisesRegex(release.ReleaseError, "Another local release"):
+                with release.release_lock():
+                    self.fail("The held lock must survive deletion of build/")
+
+    def test_linked_worktrees_share_the_release_and_cleanup_lock(self):
+        with tempfile.TemporaryDirectory(prefix="ViewTheWord worktree ") as directory:
+            worktree = Path(directory) / "checkout"
+            self.git("worktree", "add", "--quiet", "--detach", str(worktree), self.commit)
+            cache = worktree / "build/keep"
+            cache.parent.mkdir()
+            cache.write_bytes(b"active worktree build")
+            with release.release_lock():
+                with patch.object(release, "ROOT", worktree):
+                    with self.assertRaisesRegex(release.ReleaseError, "Another local release"):
+                        release.clean_build()
+            self.assertEqual(cache.read_bytes(), b"active worktree build")
+
+    def test_clean_refuses_a_symlink_as_the_build_directory(self):
+        external = self.root / "external"
+        external.mkdir()
+        marker = external / "keep"
+        marker.write_bytes(b"external files")
+        (self.root / "build").symlink_to(external, target_is_directory=True)
+        with self.assertRaisesRegex(release.ReleaseError, "build directory that is a symlink"):
+            release.clean_build()
+        self.assertEqual(marker.read_bytes(), b"external files")
+
+    def test_previous_release_without_appcast_stops_before_archiving(self):
+        self.latest = "v4.0.0"
+        self.previous_release = {"id": 10, "tag_name": "v4.0.0", "draft": False}
+        with self.assertRaisesRegex(release.ReleaseError, "has no appcast.xml"):
+            self.invoke(no_publish=True)
+        self.assertNotIn("build", self.state)
+        self.assertEqual(self.archive_count(), 0)
+        self.assertEqual(self.count("xcrun", "notarytool", "submit"), 0)
+        self.assert_not_published()
+
     def test_previous_feed_is_verified_and_build_number_advances(self):
         self.latest = "v4.0.0"
         self.previous_release = {"id": 10, "tag_name": "v4.0.0", "draft": False}
@@ -830,6 +1180,30 @@ class ReleaseFlowTests(unittest.TestCase):
 
 
 class GitHubTransportTests(unittest.TestCase):
+    def test_malformed_success_responses_stop_with_a_recoverable_error(self):
+        outputs = ["HTTP/2.0 200 OK\ncontent-type: application/json", "HTTP/2.0 200 OK\n\n"]
+        outputs += ["HTTP/2.0 200 OK\n\n" + body for body in ("{", "not JSON", "null", "42", '"string"', "[]")]
+        for output in outputs:
+            with self.subTest(output=output):
+                response = subprocess.CompletedProcess([], 0, output, "")
+                with patch.object(release.subprocess, "run", return_value=response):
+                    with self.assertRaisesRegex(release.ReleaseError, "malformed response.*completed work is retained"):
+                        release.github("owner/repo", "releases/latest", optional=True)
+
+    def test_crlf_headers_and_list_responses_are_supported(self):
+        output = 'HTTP/2.0 200 OK\r\ncontent-type: application/json\r\n\r\n[{"tag_name":"v4.0.1"}]'
+        response = subprocess.CompletedProcess([], 0, output, "")
+        with patch.object(release.subprocess, "run", return_value=response):
+            self.assertEqual(list(release.github_pages("owner/repo", "releases")), [{"tag_name": "v4.0.1"}])
+
+    def test_malformed_list_contents_are_rejected(self):
+        for body in ("{}", "[null]", "[42]", '["v4.0.1"]'):
+            with self.subTest(body=body):
+                response = subprocess.CompletedProcess([], 0, "HTTP/2.0 200 OK\n\n" + body, "")
+                with patch.object(release.subprocess, "run", return_value=response):
+                    with self.assertRaises(release.ReleaseError):
+                        list(release.github_pages("owner/repo", "releases"))
+
     def test_only_confirmed_404_is_treated_as_absent(self):
         for status, body, exit_code in ((200, '{"sha":"fixture"}', 0), (404, '{}', 1),
                                         (403, '{}', 1), (422, '{}', 1), (500, '{}', 1), (None, '', 1)):
@@ -865,32 +1239,59 @@ class GitHubTransportTests(unittest.TestCase):
                     path = args[-1]
                     if path == "repos/owner/repo/git/ref/tags/v4.0.1":
                         data = {"object": {"type": kind, "sha": object_sha}}
+                    elif path == "repos/owner/repo/git/tags/annotated-tag-sha":
+                        self.assertEqual(kind, "tag")
+                        data = {"object": {"type": "commit", "sha": "commit-sha"}}
                     elif path == "repos/owner/repo/commits/tags/v4.0.1":
-                        data = {"sha": "commit-sha"}
+                        return subprocess.CompletedProcess(args, 1,
+                            'HTTP/2.0 422 Unprocessable Entity\n\n{"message":"No commit found for SHA: tags/v4.0.1"}', "")
                     else:
                         self.fail(f"Unexpected tag request: {path}")
                     return subprocess.CompletedProcess(args, 0, "HTTP/2.0 200 OK\n\n" + json.dumps(data), "")
 
-                with patch.object(release.subprocess, "run", side_effect=request):
+                with patch.object(release.subprocess, "run", side_effect=request) as transport:
                     self.assertEqual(release.remote_tag_commit("owner/repo", "v4.0.1"), "commit-sha")
+                    self.assertEqual(transport.call_count, 1 if kind == "commit" else 2)
+
+    def test_nested_annotated_tags_resolve_to_the_commit(self):
+        objects = {
+            "git/ref/tags/v4.0.1": {"type": "tag", "sha": "outer-tag-sha"},
+            "git/tags/outer-tag-sha": {"type": "tag", "sha": "inner-tag-sha"},
+            "git/tags/inner-tag-sha": {"type": "commit", "sha": "commit-sha"},
+        }
+        with patch.object(release, "github", side_effect=lambda repo, path, **kw: {"object": objects[path]}):
+            self.assertEqual(release.remote_tag_commit("owner/repo", "v4.0.1"), "commit-sha")
+
+    def test_tags_pointing_to_non_commit_objects_are_rejected(self):
+        for kind in ("tree", "blob"):
+            with self.subTest(kind=kind):
+                with patch.object(release, "github", return_value={"object": {"type": kind, "sha": "object-sha"}}):
+                    with self.assertRaisesRegex(release.ReleaseError, "does not point to a commit"):
+                        release.remote_tag_commit("owner/repo", "v4.0.1")
+
+    def test_repeated_tag_object_is_rejected(self):
+        with patch.object(release, "github", return_value={"object": {"type": "tag", "sha": "tag-sha"}}):
+            with self.assertRaisesRegex(release.ReleaseError, "Repeated tag object"):
+                release.remote_tag_commit("owner/repo", "v4.0.1")
 
     def test_tag_lookup_errors_and_disappearance_abort(self):
-        for code in (403, 422, 500):
-            for during_resolution in (False, True):
-                with self.subTest(code=code, during_resolution=during_resolution):
-                    def request(args, **kwargs):
-                        if during_resolution and "/git/ref/" in args[-1]:
-                            body = json.dumps({"object": {"type": "commit", "sha": "commit-sha"}})
-                            return subprocess.CompletedProcess(args, 0, "HTTP/2.0 200 OK\n\n" + body, "")
-                        return subprocess.CompletedProcess(args, 1, f'HTTP/2.0 {code} Error\n\n{{"message":"Failed"}}', "")
+        cases = [(code, resolving) for code in (403, 422, 500) for resolving in (False, True)]
+        for code, during_resolution in cases + [(404, True)]:
+            with self.subTest(code=code, during_resolution=during_resolution):
+                def request(args, **kwargs):
+                    if during_resolution and "/git/ref/" in args[-1]:
+                        body = json.dumps({"object": {"type": "tag", "sha": "tag-sha"}})
+                        return subprocess.CompletedProcess(args, 0, "HTTP/2.0 200 OK\n\n" + body, "")
+                    return subprocess.CompletedProcess(args, 1, f'HTTP/2.0 {code} Error\n\n{{"message":"Failed"}}', "")
 
-                    with patch.object(release.subprocess, "run", side_effect=request):
-                        with self.assertRaises(release.ReleaseError):
-                            release.remote_tag_commit("owner/repo", "v4.0.1")
+                with patch.object(release.subprocess, "run", side_effect=request):
+                    with self.assertRaises(release.ReleaseError):
+                        release.remote_tag_commit("owner/repo", "v4.0.1")
 
     def test_release_lookup_includes_drafts_and_later_pages(self):
         draft = {"id": 101, "tag_name": "v4.0.1", "draft": True}
-        def request(repo, path):
+        def request(repo, path, expected_type=dict):
+            self.assertIs(expected_type, list)
             if path == "releases?per_page=100&page=1":
                 return [{"id": index, "tag_name": f"v0.0.{index}", "draft": False} for index in range(100)]
             self.assertEqual(path, "releases?per_page=100&page=2")

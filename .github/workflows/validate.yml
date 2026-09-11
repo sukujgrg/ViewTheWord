@@ -34,6 +34,18 @@ jobs:
         run: xcodebuild -project ViewTheWord.xcodeproj -scheme ViewTheWord -configuration Debug -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build
       - name: Release build
         run: xcodebuild -project ViewTheWord.xcodeproj -scheme ViewTheWord -configuration Release -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build
+      - name: Verify Apple Silicon binaries
+        run: |
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          from release import verify_arm64_app
+          for configuration in ("Debug", "Release"):
+              app = Path("build/DerivedData/Build/Products") / configuration / "ViewTheWord.app"
+              for binary in verify_arm64_app(app):
+                  print(f"arm64: {binary}")
+          PY
       - name: Verify built app versions
         run: |
           python3 - <<'PY'

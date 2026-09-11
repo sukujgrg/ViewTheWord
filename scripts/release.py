@@ -33,7 +33,7 @@ class ReleaseError(Exception):
     pass
 
 
-def run(*args, capture=False, output=None):
+def run(*args, capture=False, output=None, include_stderr=False):
     if output is not None:
         # Keep Apple's response even if the process is interrupted before the
         # caller can checkpoint its submission ID.
@@ -45,11 +45,12 @@ def run(*args, capture=False, output=None):
         result.check_returncode()
         return
     result = subprocess.run([str(arg) for arg in args], cwd=ROOT, text=True,
-                            check=True, stdout=subprocess.PIPE if capture else None)
+                            check=True, stdout=subprocess.PIPE if capture else None,
+                            stderr=subprocess.STDOUT if include_stderr else None)
     return result.stdout.strip() if capture else None
 
 
-def github(repo, path, optional=False):
+def github(repo, path, optional=False, expected_type=dict):
     """Only a confirmed HTTP 404 means absent; network/auth failures must stop."""
     result = subprocess.run(["gh", "api", "--include", f"repos/{repo}/{path}"],
                             cwd=ROOT, text=True, capture_output=True)
@@ -60,14 +61,22 @@ def github(repo, path, optional=False):
     if result.returncode or code != 200:
         raise ReleaseError(f"GitHub request failed for {path} (HTTP {code or 'unavailable'}). "
                            "Check gh authentication and network access, then retry.")
-    return json.loads(result.stdout.split("\n\n", 1)[1])
+    try:
+        body = re.split(r"\r?\n\r?\n", result.stdout, maxsplit=1)[1]
+        data = json.loads(body)
+        if not isinstance(data, expected_type):
+            raise ValueError("unexpected response type")
+    except (IndexError, TypeError, ValueError) as error:
+        raise ReleaseError(f"GitHub returned a malformed response for {path}. "
+                           "Retry the same command; completed work is retained.") from error
+    return data
 
 
 def github_pages(repo, path):
     page = 1
     while True:
-        items = github(repo, f"{path}?per_page=100&page={page}")
-        if not isinstance(items, list):
+        items = github(repo, f"{path}?per_page=100&page={page}", expected_type=list)
+        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
             raise ReleaseError(f"GitHub returned an invalid list for {path}.")
         yield from items
         if len(items) < 100:
@@ -113,15 +122,33 @@ def load_state(directory, identity):
 
 @contextmanager
 def release_lock():
-    directory = ROOT / "build/release"
-    directory.mkdir(parents=True, exist_ok=True)
-    # Do not unlink the lock: another process may already have opened it.
-    with (directory / ".lock").open("a") as lock:
+    # Linked worktrees share this directory. Keep the lock outside build/ so
+    # cleanup cannot unlink it while another process still holds the old inode.
+    directory = Path(run("git", "rev-parse", "--git-common-dir", capture=True))
+    if not directory.is_absolute():
+        directory = ROOT / directory
+    with (directory / "viewtheword-release.lock").open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
-            raise ReleaseError("Another local release command is running.") from error
+            raise ReleaseError("Another local release or cleanup command is running for this repository.") from error
         yield
+
+
+def clean_build():
+    with release_lock():
+        build = ROOT / "build"
+        if build.is_symlink():
+            raise ReleaseError("Refusing to clean a build directory that is a symlink.")
+        if build.exists():
+            for path in build.iterdir():
+                if path.name == "release":
+                    continue
+                if path.is_symlink() or not path.is_dir():
+                    path.unlink()
+                else:
+                    shutil.rmtree(path)
+        print("Build caches removed; saved release artifacts were preserved.", flush=True)
 
 
 def digest(path):
@@ -202,11 +229,23 @@ def source_commit(expected=None):
 def release_repository():
     # Push to the exact URL we checked, including repositories using a pushurl.
     origin = run("git", "remote", "get-url", "--push", "--all", "origin", capture=True)
-    match = re.fullmatch(r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
+    match = re.fullmatch(r"https://github\.com/"
                          r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?", origin)
     if not match:
-        raise ReleaseError("origin must have one GitHub push URL (HTTPS or SSH).")
+        raise ReleaseError("origin must have one HTTPS GitHub push URL: https://github.com/OWNER/REPO.git")
     return match[1], origin
+
+
+def read_release_notes(path):
+    if path is None:
+        return None
+    path = path.expanduser().resolve()
+    if path.is_relative_to(ROOT.resolve()):
+        raise ReleaseError("Keep release notes outside the checkout. Use NOTES_FILE=/tmp/viewtheword-notes.md "
+                           "(or --notes with that path) so the release source stays clean.")
+    if not path.is_file():
+        raise ReleaseError(f"Release notes file does not exist: {path}")
+    return path.read_text()
 
 
 def verify_ci(repo, commit):
@@ -249,10 +288,22 @@ def verify_ci(repo, commit):
 def remote_tag_commit(repo, tag):
     # Missing refs return 404 here; the commit endpoint returns 422 instead.
     name = quote(tag, safe="")
-    if github(repo, f"git/ref/tags/{name}", optional=True) is None:
+    reference = github(repo, f"git/ref/tags/{name}", optional=True)
+    if reference is None:
         return None
-    # Resolve the existing ref to a commit, including annotated tags.
-    return github(repo, f"commits/tags/{name}")["sha"]
+    # Lightweight refs point directly to commits. Annotated refs point to tag
+    # objects (possibly another tag), not commit SHAs or "tags/<name>" commits.
+    target = reference["object"]
+    seen = set()
+    while target["type"] == "tag":
+        sha = target["sha"]
+        if sha in seen:
+            raise ReleaseError(f"Repeated tag object while resolving GitHub tag {tag}.")
+        seen.add(sha)
+        target = github(repo, f"git/tags/{quote(sha, safe='')}")["object"]
+    if target["type"] != "commit":
+        raise ReleaseError(f"GitHub tag {tag} does not point to a commit.")
+    return target["sha"]
 
 
 def verify_destination(repo, tag, commit, state=None):
@@ -292,14 +343,63 @@ def next_build_number(previous):
     return str(build)
 
 
-def verify_app(app, state):
+def verify_arm64_app(app):
+    info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+    framework = app / "Contents/Frameworks/Sparkle.framework"
+    binaries = [app / "Contents/MacOS" / info["CFBundleExecutable"]]
+    binaries.extend(framework / path for path in (
+        "Sparkle", "Autoupdate", "Updater.app/Contents/MacOS/Updater",
+        "XPCServices/Installer.xpc/Contents/MacOS/Installer",
+        "XPCServices/Downloader.xpc/Contents/MacOS/Downloader"))
+    for binary in binaries:
+        if not binary.is_file() or not binary.resolve().is_relative_to(app.resolve()):
+            raise ReleaseError(f"Required executable is missing or outside the app: {binary}")
+        run("lipo", binary, "-verify_arch", "arm64")
+    # Sparkle ships prebuilt universal helpers; require their arm64 slice without
+    # rewriting third-party binaries. Our executable must be arm64 only.
+    if run("lipo", binaries[0], "-archs", capture=True).split() != ["arm64"]:
+        raise ReleaseError("ViewTheWord must be built for arm64 only.")
+    return binaries
+
+
+def release_team(derived):
+    settings = json.loads(run("xcodebuild", "-project", PROJECT, "-scheme", APP_NAME,
+                              "-configuration", "Release", "-derivedDataPath", derived,
+                              "-showBuildSettings", "-json", capture=True))
+    targets = [item["buildSettings"] for item in settings if item.get("target") == APP_NAME]
+    if len(targets) != 1 or not targets[0].get("DEVELOPMENT_TEAM"):
+        raise ReleaseError("The Release target must configure DEVELOPMENT_TEAM.")
+    return targets[0]["DEVELOPMENT_TEAM"]
+
+
+def verify_app(app, state, team):
     info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
     expected = {"CFBundleShortVersionString": state["version"], "CFBundleVersion": state["build"],
                 "VTWSourceCommit": state["commit"], "CFBundleIdentifier": "suku.ViewTheWord"}
     if any(info.get(key) != value for key, value in expected.items()):
         raise ReleaseError("The exported app's version/build/source does not match the verified source.")
+    if info.get("SUEnableInstallerLauncherService") is not True or info.get("SUEnableDownloaderService") is not True:
+        raise ReleaseError("The exported app must enable Sparkle's installer and downloader services.")
+    binaries = verify_arm64_app(app)
     run("codesign", "--verify", "--deep", "--strict", app)
-    run("lipo", app / "Contents/MacOS" / info["CFBundleExecutable"], "-verify_arch", "arm64", "x86_64")
+    for binary in binaries:
+        details = run("codesign", "-dv", "--verbose=4", "--arch", "arm64", binary,
+                      capture=True, include_stderr=True)
+        flags = re.search(r"\bflags=0x([0-9a-fA-F]+)\b", details)
+        identity = re.search(r"^TeamIdentifier=(.+)$", details, re.MULTILINE)
+        if not flags or not int(flags[1], 16) & 0x10000:
+            raise ReleaseError(f"Hardened runtime is missing for {binary} (arm64).")
+        if not identity or identity[1] != team:
+            raise ReleaseError(f"Signing team differs from DEVELOPMENT_TEAM for {binary} (arm64).")
+        xml = run("codesign", "-d", "--arch", "arm64", "--entitlements", "-", "--xml", binary, capture=True)
+        entitlements = plistlib.loads(xml.encode()) if xml else {}
+        if entitlements.get("com.apple.security.get-task-allow"):
+            raise ReleaseError(f"Debugging entitlement is present in {binary} (arm64).")
+        if binary == binaries[0]:
+            expected_lookups = {info["CFBundleIdentifier"] + suffix for suffix in ("-spks", "-spki")}
+            lookups = entitlements.get("com.apple.security.temporary-exception.mach-lookup.global-name", [])
+            if entitlements.get("com.apple.security.app-sandbox") is not True or not expected_lookups.issubset(lookups):
+                raise ReleaseError("App Sandbox or Sparkle communication entitlements are missing (arm64).")
 
 
 def notarize(directory, state, args, notary_zip):
@@ -345,7 +445,8 @@ def notarize(directory, state, args, notary_zip):
     log_path = work / "notary-log.json"
     run("xcrun", "notarytool", "log", submission, *profile, output=log_path)
     log = json.loads(log_path.read_text())
-    if log.get("jobId") != submission or log.get("sha256") != state["notary_zip_hash"]:
+    if (not isinstance(log, dict) or log.get("jobId") != submission
+            or not isinstance(log.get("sha256"), str) or log["sha256"].lower() != state["notary_zip_hash"]):
         raise ReleaseError(f"Apple's submission does not match the saved archive. Inspect {log_path}.")
     if response.get("status") != "Accepted" or log.get("status") != "Accepted":
         raise ReleaseError(f"Notarization was not accepted ({response.get('status')}). Inspect {log_path}.")
@@ -371,6 +472,7 @@ def prepare(directory, state, args):
     derived = ROOT / "build/ReleaseDerivedData"
     run("xcodebuild", "-resolvePackageDependencies", "-project", PROJECT,
         "-scheme", APP_NAME, "-derivedDataPath", derived)
+    team = release_team(derived)
     sparkle = derived / "SourcePackages/artifacts/sparkle/Sparkle/bin"
     source_info = plistlib.loads((ROOT / "ViewTheWord/Info.plist").read_bytes())
     if run(sparkle / "generate_keys", "--account", KEY_ACCOUNT, "-p", capture=True) != source_info["SUPublicEDKey"]:
@@ -385,20 +487,25 @@ def prepare(directory, state, args):
             previous_release = find_release(state["repo"], state["previous_tag"])
             if previous_release is None or previous_release["draft"]:
                 raise ReleaseError("The previous published release is no longer available.")
-            if any(asset["name"] == "appcast.xml" for asset in github_pages(
+            if not any(asset["name"] == "appcast.xml" for asset in github_pages(
                     state["repo"], f"releases/{previous_release['id']}/assets")):
-                with tempfile.TemporaryDirectory(dir=work) as download:
-                    run("gh", "release", "download", state["previous_tag"], "--repo", state["repo"],
-                        "--pattern", "appcast.xml", "--dir", download)
-                    previous = work / "previous-appcast.xml"
-                    (Path(download) / "appcast.xml").replace(previous)
-                run(sparkle / "sign_update", "--account", KEY_ACCOUNT, "--verify", previous)
-                checkpoint(directory, state, previous_hash=digest(previous))
+                raise ReleaseError(f"The latest release {state['previous_tag']} has no appcast.xml. "
+                                   "Cannot establish previous update builds; inspect the release before retrying.")
+            with tempfile.TemporaryDirectory(dir=work) as download:
+                run("gh", "release", "download", state["previous_tag"], "--repo", state["repo"],
+                    "--pattern", "appcast.xml", "--dir", download)
+                previous = work / "previous-appcast.xml"
+                (Path(download) / "appcast.xml").replace(previous)
+            run(sparkle / "sign_update", "--account", KEY_ACCOUNT, "--verify", previous)
+            checkpoint(directory, state, previous_hash=digest(previous))
         checkpoint(directory, state, build=next_build_number(previous))
+    if state["previous_tag"] and previous is None:
+        raise ReleaseError("Saved preparation is missing its previous signed feed. Restore the saved work before retrying.")
     if previous:
         run(sparkle / "sign_update", "--account", KEY_ACCOUNT, "--verify", previous)
     app = work / "export" / f"{APP_NAME}.app"
-    if not preserved(directory, state, "export_hash", app):
+    exported = preserved(directory, state, "export_hash", app)
+    if not exported:
         archive = work / f"{APP_NAME}.xcarchive"
         if not preserved(directory, state, "archive_hash", archive):
             if archive.exists():
@@ -406,7 +513,7 @@ def prepare(directory, state, args):
             source_commit(state["commit"])
             run("xcodebuild", "-project", PROJECT, "-scheme", APP_NAME, "-configuration", "Release",
                 "-derivedDataPath", derived, "-archivePath", archive, "archive",
-                "ARCHS=arm64 x86_64", "ONLY_ACTIVE_ARCH=NO", "SKIP_INSTALL=NO",
+                "ARCHS=arm64", "ONLY_ACTIVE_ARCH=NO", "SKIP_INSTALL=NO",
                 "STRIP_INSTALLED_PRODUCT=YES", "COPY_PHASE_STRIP=YES",
                 f"CURRENT_PROJECT_VERSION={state['build']}", f"VTW_SOURCE_COMMIT={state['commit']}")
             source_commit(state["commit"])
@@ -419,7 +526,8 @@ def prepare(directory, state, args):
         run("xcodebuild", "-exportArchive", "-archivePath", archive, "-exportPath", app.parent,
             "-exportOptionsPlist", export_options)
         source_commit(state["commit"])
-        verify_app(app, state)
+    verify_app(app, state, team)
+    if not exported:
         checkpoint(directory, state, export_hash=digest(app))
     source_commit(state["commit"])
     notary_zip = work / "notarize.zip"
@@ -440,7 +548,7 @@ def prepare(directory, state, args):
         run("ditto", app, final_app)
         run("xcrun", "stapler", "staple", final_app)
         run("xcrun", "stapler", "validate", final_app)
-        verify_app(final_app, state)
+        verify_app(final_app, state, team)
         checkpoint(directory, state, app_hash=digest(final_app))
     final_zip, checksum, metadata, feed = artifact_paths(directory, state["version"])
     if not preserved(directory, state, "zip_hash", final_zip):
@@ -500,7 +608,7 @@ def verify_latest(state):
                            "prepare a new version from the intended source and current update feed.")
 
 
-def publish(directory, state, notes):
+def publish(directory, state, supplied_notes):
     repo, origin, version, tag, commit = (state[key] for key in ("repo", "origin", "version", "tag", "commit"))
     artifacts = verify_artifacts(directory, state)
     source_commit(commit)
@@ -512,7 +620,6 @@ def publish(directory, state, notes):
         print("This exact release is already published; no changes were made.", flush=True)
         return
     verify_latest(state)
-    supplied_notes = notes.read_text() if notes else None
     if "release_body" not in state:
         text = supplied_notes if supplied_notes is not None else f"Notarized release {version} from source commit {commit}"
         checkpoint(directory, state, notes=text, release_body=text + "\n\n" + release_marker(state))
@@ -534,7 +641,14 @@ def publish(directory, state, notes):
         atomic_write(notes_file, state["release_body"])
         run("gh", "release", "create", tag, "--repo", repo, "--verify-tag", "--target", commit,
             "--draft", "--title", f"{APP_NAME} {version}", "--notes-file", notes_file)
-        existing = find_release(repo, tag)
+        # The release list can lag behind a successful creation. Retry only
+        # reads; never repeat the create request to handle a visibility delay.
+        for delay in (0, 1, 2, 4, 8):
+            if delay:
+                time.sleep(delay)
+            existing = find_release(repo, tag)
+            if existing is not None:
+                break
         if existing is None:
             raise ReleaseError("The draft creation result is not visible yet. Retry the same command.")
         verify_owned_release(existing, state)
@@ -579,6 +693,7 @@ def release(args):
     for tool in ("git", "gh"):
         if not shutil.which(tool):
             raise ReleaseError(f"Install {tool} before releasing.")
+    supplied_notes = read_release_notes(args.notes)
     commit = source_commit()
     version = (ROOT / "VERSION").read_text().strip()
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
@@ -588,10 +703,6 @@ def release(args):
     info = plistlib.loads((ROOT / "ViewTheWord/Info.plist").read_bytes())
     if info["SUFeedURL"] != f"https://github.com/{repo}/releases/latest/download/appcast.xml":
         raise ReleaseError("origin's push repository differs from the app's update feed.")
-    if args.notes:
-        args.notes = args.notes.resolve()
-        if not args.notes.is_file():
-            raise ReleaseError(f"Release notes file does not exist: {args.notes}")
     if args.resume_notarization and (args.check or args.publish_only):
         raise ReleaseError("--resume-notarization requires artifact preparation.")
     identity = dict(repo=repo, origin=origin, commit=commit, version=version, tag=tag)
@@ -626,22 +737,29 @@ def release(args):
         source_commit(commit)
         print(f"Signed artifacts: {directory}", flush=True)
         if not args.no_publish:
-            publish(directory, state, args.notes)
+            publish(directory, state, supplied_notes)
             print(f"Release complete: https://github.com/{repo}/releases/tag/{tag}", flush=True)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--notary-profile", default="ViewTheWordNotary", help="local Keychain profile (default: ViewTheWordNotary)")
-    parser.add_argument("--notes", type=Path, help="optional release notes file")
+    parser.add_argument("--notes", type=Path, help="optional release notes file outside the checkout")
     parser.add_argument("--resume-notarization", help="recover a lost Apple submission ID for the saved archive")
     modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--clean", action="store_true", help="remove build caches while preserving saved releases; refuse during a release")
     modes.add_argument("--check", action="store_true", help="only verify source, destination, and CI; do not build or publish")
     modes.add_argument("--no-publish", action="store_true", help="create signed artifacts locally without tagging or publishing")
     modes.add_argument("--publish-only", action="store_true", help="publish already prepared artifacts without building or notarizing")
     try:
-        release(parser.parse_args())
-    except (ReleaseError, OSError, ValueError, KeyError, ET.ParseError, subprocess.CalledProcessError) as error:
+        args = parser.parse_args()
+        if args.clean:
+            if args.notes or args.resume_notarization:
+                raise ReleaseError("--clean cannot be combined with release notes or notarization recovery.")
+            clean_build()
+        else:
+            release(args)
+    except (ReleaseError, OSError, ValueError, KeyError, TypeError, IndexError, ET.ParseError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"error: {error}\n")
     except KeyboardInterrupt:
         parser.exit(130, "Release interrupted. Saved work is retained; rerun the same command to resume.\n")
