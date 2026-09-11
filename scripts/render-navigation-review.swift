@@ -344,7 +344,7 @@ struct NativeWorkspaceReview {
         try await settle(b); a.render()
         precondition(a.translations == choices && b.translations.primary == originalChoices.primary && !b.primaryOnly)
         precondition(live.projector.revision == revision && live.projector.projectorViewData == projected)
-        precondition(b.sources.secondary == originalChoices.primary, "Choosing a secondary translation restores both texts")
+        precondition(b.sources?.secondary == originalChoices.primary, "Choosing a secondary translation restores both texts")
         precondition(a.library.defaultTranslations(a.defaults) == b.translations, "Remember explicit picker choices for the next first passage")
         let third = tabs.open(after: second)
         try await settle(third.workspace)

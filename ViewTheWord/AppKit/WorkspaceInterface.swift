@@ -230,12 +230,11 @@ extension MainWorkspaceController: NSToolbarDelegate {
                      recentsName: AppDefaultsKey.searchRecents + "." + searchMode.rawValue)
         searchModeControl.selectedSegment = SearchMode.allCases.firstIndex(of: searchMode) ?? 0
     }
-    func renderTranslationPickers(_ sources: BibleSources) {
-        let urls = Array(Set(library.urls + [sources.primary] + [sources.secondary].compactMap { $0 }))
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        let translations = urls.map { (title: BibleTranslation.name(for: $0), value: $0.absoluteString) }
-        for (picker, selected) in [(primaryPicker, Optional(sources.primary)), (secondaryPicker, sources.secondary)] {
-            let choices = picker === secondaryPicker ? [(title: "None", value: "")] + translations : translations
+    func renderTranslationPickers(_ sources: BibleSources?) {
+        let entries = library.urls.map { (title: BibleTranslation.name(for: $0), value: $0.absoluteString) }
+        for (picker, selected) in [(primaryPicker, sources?.primary), (secondaryPicker, sources?.secondary)] {
+            let choices = picker === secondaryPicker ? [(title: "None", value: "")] + entries
+                : entries.isEmpty ? [(title: "No translations", value: "")] : entries
             if picker.itemArray.compactMap({ $0.representedObject as? String }) != choices.map(\.value) {
                 picker.removeAllItems()
                 for choice in choices {
@@ -245,6 +244,14 @@ extension MainWorkspaceController: NSToolbarDelegate {
             }
             if let index = picker.itemArray.firstIndex(where: { ($0.representedObject as? String) == (selected?.absoluteString ?? "") }) {
                 picker.selectItem(at: index)
+            }
+            picker.isEnabled = sources != nil
+            let preferred = picker === primaryPicker ? translations.primary : translations.primaryOnly ? nil : translations.secondary
+            if let preferred, let selected, preferred.lastPathComponent != selected.lastPathComponent {
+                picker.toolTip = "\(BibleTranslation.name(for: preferred)) is unavailable. Using \(BibleTranslation.name(for: selected)) until it is imported again."
+            } else {
+                picker.toolTip = picker === primaryPicker ? "Primary translation for this tab"
+                    : "Secondary translation for this tab. Choose None to show only the primary translation."
             }
         }
     }
@@ -263,19 +270,20 @@ extension MainWorkspaceController: NSToolbarDelegate {
         screenLabel.stringValue = "Output: \(screen?.localizedName ?? "No display")\(disconnected ? " · preferred display disconnected" : "")"
     }
 
-    func renderTabHeading(_ sources: BibleSources) {
+    func renderTabHeading(_ sources: BibleSources?) {
         guard let window = view.window else { return }
         let reference = navigation.refreshReference
-        let passage = navigation.searchRequest != nil ? "Search"
+        let searchPage = visibleSearchPage
+        let passage = searchPage != nil ? "Search"
             : reference.flatMap { browsedBook == nil || $0.book == browsedBook ? $0.verseQuery.title : nil } ?? browsedBook ?? "New Passage"
-        let urls = [sources.primary] + [sources.secondary].compactMap { $0 }
+        let urls = [sources?.primary, sources?.secondary].compactMap { $0 }
         let shortNames = urls.map(BibleTranslation.shortName)
         // Identical edition abbreviations in different languages need the language
         // code as well. Full translation names remain available in the tooltip.
         let names = zip(urls, shortNames).map { url, name in
             Set(urls).count > 1 && Set(shortNames).count < shortNames.count ? url.deletingPathExtension().lastPathComponent : name
         }.joined(separator: " / ")
-        let heading = "\(passage) · \(names)"
+        let heading = "\(passage) · \(names.isEmpty ? "No translations" : names)"
         let ownsOutput = windowOpened && projector.projectionOwner != nil && liveProjection.source?.tabID == tabID
         let status = ownsOutput ? (projector.isBlanked ? "● Blanked" : "● Live") : nil
         let title = status.map { "\($0) · \(heading)" } ?? heading
@@ -287,7 +295,7 @@ extension MainWorkspaceController: NSToolbarDelegate {
                                     range: NSRange(location: 0, length: (status as NSString).length))
             window.tab.attributedTitle = attributed
         } else { window.tab.attributedTitle = nil }
-        let detail = navigation.searchRequest.map { "Search: " + $0.text } ?? passage
+        let detail = searchPage.map { "Search: " + $0.request.text } ?? passage
         let liveDetail = ownsOutput ? "\n\(projector.isBlanked ? "Blanked" : "Live") from this tab: \(projector.projectorViewData.title)" : ""
         window.tab.toolTip = detail + "\n" + urls.map(BibleTranslation.name).joined(separator: " / ") + liveDetail
     }
@@ -306,7 +314,7 @@ extension MainWorkspaceController: NSToolbarDelegate {
         }
     }
     @objc func loadMore(_ sender: Any?) {
-        guard let request = navigation.searchRequest, !navigation.isLoading else { return }
+        guard let sources, let request = navigation.searchRequest, !navigation.isLoading else { return }
         navigation.search(request, sources: sources, loadMore: true)
     }
     func setPreference(_ value: Any, key: String) {

@@ -63,6 +63,7 @@ final class VerseTargetModel: ObservableObject {
     private var generation = UUID()
     private var projectionGeneration = UUID()
     private var navigationProjectionID: UUID?
+    private var projectionCancellation: (@MainActor () -> Void)?
     private var readers: [URL: any BibleReading] = [:]
     private var libraryRevision: Int?
     private let readerFactory: @Sendable (URL) -> any BibleReading
@@ -95,11 +96,14 @@ final class VerseTargetModel: ObservableObject {
 
     @discardableResult
     func cancelProjection(updateStatus: Bool = true) -> UUID {
+        let onCancel = projectionCancellation
+        projectionCancellation = nil
         projectionTask?.cancel()
         projectionTask = nil
         projectionGeneration = UUID()
         navigationProjectionID = nil
         if updateStatus && isProjecting { isProjecting = false }
+        onCancel?()
         return projectionGeneration
     }
     func finishProjectionCancellation(_ cancellationID: UUID) {
@@ -120,10 +124,15 @@ final class VerseTargetModel: ObservableObject {
     /// Current requests complete once with success or failure. Canceled or
     /// superseded requests never invoke completion or commit late results.
     func navigate(to reference: VerseReference, sources: BibleSources, project: Bool = false,
+                  onProjectionCancelled: @escaping @MainActor () -> Void = {},
                   onComplete: @escaping @MainActor (Result<NavigationResult, Error>) -> Void) {
         let id = begin()
         pendingReference = reference
-        if project { cancelProjection(); isProjecting = true }
+        if project {
+            cancelProjection()
+            projectionCancellation = onProjectionCancelled
+            isProjecting = true
+        }
         let projectionID = projectionGeneration
         if project { navigationProjectionID = projectionID }
         searchPage = nil
@@ -176,6 +185,7 @@ final class VerseTargetModel: ObservableObject {
     private func finishNavigationProjection(_ id: UUID) {
         if navigationProjectionID == id && projectionGeneration == id {
             navigationProjectionID = nil
+            projectionCancellation = nil
             isProjecting = false
         }
     }
@@ -190,9 +200,11 @@ final class VerseTargetModel: ObservableObject {
     }
 
     func requestProjection(owner: ProjectionOwner, sources: BibleSources,
+                           onCancelled: @escaping @MainActor () -> Void = {},
                            onComplete: @escaping @MainActor (PreparedProjection?) -> Void) {
         cancelProjection()
         let id = projectionGeneration
+        projectionCancellation = onCancelled
         isProjecting = true
         // Clear the previous attempt's error now, so a later successful lookup
         // cannot erase an error from newer, independent navigation work.
@@ -204,6 +216,7 @@ final class VerseTargetModel: ObservableObject {
                 async let second = secondary?.verses([owner.reference])
                 let pairs = try await LoadedChapter.merge(primary: first, secondary: second ?? [])
                 guard let self, id == self.projectionGeneration, !Task.isCancelled else { return }
+                self.projectionCancellation = nil
                 self.isProjecting = false
                 self.projectionTask = nil
                 let prepared = pairs.first(where: { $0.reference == owner.reference }).flatMap {
@@ -213,6 +226,7 @@ final class VerseTargetModel: ObservableObject {
                 onComplete(prepared)
             } catch {
                 guard let self, id == self.projectionGeneration, !Task.isCancelled else { return }
+                self.projectionCancellation = nil
                 self.isProjecting = false
                 self.projectionTask = nil
                 self.message = error.localizedDescription

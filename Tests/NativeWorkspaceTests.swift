@@ -14,9 +14,29 @@ private struct WorkspaceBible: BibleReading {
     }
 }
 
+private actor WorkspaceReadAudit: BibleReading {
+    private(set) var reads = 0
+    var failsSearch = true
+    func allowSearch() { failsSearch = false }
+    func chapter(_ reference: VerseReference) async throws -> [AVerse] {
+        reads += 1
+        return try await WorkspaceBible().chapter(reference)
+    }
+    func verses(_ references: [VerseReference]) async throws -> [AVerse] {
+        reads += 1
+        return try await WorkspaceBible().verses(references)
+    }
+    func search(_ request: TextSearchRequest, after: VerseCoordinate?, limit: Int) async throws -> [AVerse] {
+        reads += 1
+        if failsSearch { throw BibleError.database("Search failed") }
+        return try await WorkspaceBible().search(request, after: after, limit: limit)
+    }
+}
+
 @MainActor
 final class NativeWorkspaceTests: XCTestCase {
-    private func mounted() throws -> (MainWindowController, URL) {
+    private func mounted(library: BibleLibrary? = nil,
+                         readerFactory: @escaping @Sendable (URL) -> any BibleReading = { _ in WorkspaceBible() }) throws -> (MainWindowController, URL) {
         _ = NSApplication.shared
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -25,8 +45,8 @@ final class NativeWorkspaceTests: XCTestCase {
         let alternate = directory.appendingPathComponent("ENG_ALT.bible")
         defaults.set(source.primary.absoluteString, forKey: AppDefaultsKey.primaryBibleName)
         defaults.set(alternate.absoluteString, forKey: AppDefaultsKey.secondaryBibleName)
-        let library = BibleLibrary(preloadedURLs: [source.primary, alternate])
-        let workspace = MainWorkspaceController(navigation: VerseTargetModel(readerFactory: { _ in WorkspaceBible() }),
+        let library = library ?? BibleLibrary(preloadedURLs: [source.primary, alternate])
+        let workspace = MainWorkspaceController(navigation: VerseTargetModel(readerFactory: readerFactory),
             history: HistoryStore(fileURL: directory.appendingPathComponent("history.json")),
             bookmarks: BookmarkStore(fileURL: directory.appendingPathComponent("bookmarks.json")),
             library: library, defaults: defaults)
@@ -119,6 +139,110 @@ final class NativeWorkspaceTests: XCTestCase {
         }
     }
 
+    func testSearchHeadingMatchesVisibleRowsDuringLoadingFailureAndRetry() async throws {
+        let reader = WorkspaceReadAudit()
+        let (controller, directory) = try mounted(readerFactory: { _ in reader })
+        defer { controller.close(); try? FileManager.default.removeItem(at: directory) }
+        let subject = controller.workspace
+        let john = VerseReference(book: "John", chapter: 3, verse: 1)!
+        subject.navigate(to: john, focusVerses: false)
+        try await settle(subject)
+        let passageTitle = controller.window?.tab.title
+        subject.changeSearchMode(.wordSearch)
+        let request = TextSearchRequest(text: "hope", filter: .all, kind: .words(.term("hope")))
+        subject.navigation.search(request, sources: try XCTUnwrap(subject.sources))
+        subject.render()
+        XCTAssertTrue(subject.navigation.isLoading)
+        XCTAssertEqual(controller.window?.tab.title, passageTitle)
+        XCTAssertFalse(controller.window?.tab.toolTip.hasPrefix("Search:") == true)
+        XCTAssertTrue(subject.resultsHeader.isHidden)
+        XCTAssertEqual(subject.verses.rows.count, 5)
+        try await settle(subject)
+        XCTAssertNotNil(subject.navigation.message)
+        XCTAssertEqual(controller.window?.tab.title, passageTitle)
+        XCTAssertTrue(subject.resultsHeader.isHidden)
+        XCTAssertEqual(subject.verses.rows.count, 5)
+        XCTAssertEqual(subject.navigation.searchRequest, request)
+
+        await reader.allowSearch()
+        subject.refreshSources()
+        try await settle(subject)
+        XCTAssertFalse(subject.resultsHeader.isHidden)
+        XCTAssertEqual(controller.window?.tab.title, "Search · TEST / ALT")
+        XCTAssertTrue(controller.window?.tab.toolTip.hasPrefix("Search: hope") == true)
+        XCTAssertNil(subject.navigation.message)
+    }
+
+    func testEmptyLibraryDoesNotReadAndRecoversWhenCatalogBecomesAvailable() async throws {
+        var catalog: [URL] = []
+        let library = BibleLibrary(catalogProvider: { catalog })
+        let reader = WorkspaceReadAudit()
+        let (controller, directory) = try mounted(library: library, readerFactory: { _ in reader })
+        defer { controller.close(); try? FileManager.default.removeItem(at: directory) }
+        let subject = controller.workspace
+        let john = VerseReference(book: "John", chapter: 3, verse: 1)!
+        let preferred = subject.translations
+        XCTAssertNil(subject.sources)
+        XCTAssertFalse(subject.emptyLabel.isHidden)
+        XCTAssertEqual(subject.emptyLabel.stringValue, BibleLibraryError.empty.localizedDescription)
+        XCTAssertFalse(subject.primaryPicker.isEnabled)
+        XCTAssertFalse(subject.secondaryPicker.isEnabled)
+        XCTAssertFalse(subject.secondaryPicker.isHidden)
+        subject.navigate(to: john, project: true, recordHistory: true)
+        subject.activateVerse(john)
+        subject.changeSearchMode(.wordSearch)
+        subject.search.field.stringValue = "hope"
+        subject.search.field.sendAction(subject.search.field.action, to: subject.search.field.target)
+        try await settle(subject)
+        let reads = await reader.reads
+        XCTAssertEqual(reads, 0)
+        XCTAssertNil(subject.projector.projectionOwner)
+        XCTAssertTrue(subject.history.entries.isEmpty)
+        XCTAssertEqual(subject.emptyLabel.stringValue, BibleLibraryError.empty.localizedDescription)
+
+        catalog = [directory.appendingPathComponent("ENG_TEST.bible"), directory.appendingPathComponent("ENG_ALT.bible")]
+        library.refresh()
+        try await settle(subject)
+        XCTAssertNotNil(subject.sources)
+        XCTAssertTrue(subject.primaryPicker.isEnabled)
+        XCTAssertTrue(subject.secondaryPicker.isEnabled)
+        XCTAssertEqual(subject.translations, preferred)
+        XCTAssertNil(subject.navigation.message)
+        subject.navigate(to: john, project: true)
+        try await settle(subject)
+        XCTAssertEqual(subject.projector.projectionOwner?.reference, john)
+        subject.changeSearchMode(.verseReference)
+        try await settle(subject)
+        XCTAssertFalse(subject.verses.rows.isEmpty)
+        XCTAssertTrue(subject.emptyLabel.isHidden)
+        subject.liveProjection.shutdown()
+    }
+
+    func testChoosingDisplayedFallbackReplacesMissingPreference() async throws {
+        let primary = URL(fileURLWithPath: "/fixtures/ENG_TEST.bible")
+        let alternate = URL(fileURLWithPath: "/fixtures/ENG_ALT.bible")
+        var catalog = [primary, alternate]
+        let library = BibleLibrary(catalogProvider: { catalog })
+        let (controller, directory) = try mounted(library: library)
+        defer { controller.close(); try? FileManager.default.removeItem(at: directory) }
+        let subject = controller.workspace
+        let preferred = subject.translations.primary
+        catalog = [alternate]
+        library.refresh()
+        try await settle(subject)
+        XCTAssertEqual(subject.sources?.primary, alternate)
+        XCTAssertEqual(subject.translations.primary, preferred)
+        // Choosing the already-displayed fallback is an explicit preference change.
+        subject.primaryPicker.sendAction(subject.primaryPicker.action, to: subject.primaryPicker.target)
+        XCTAssertEqual(subject.translations.primary, alternate)
+        XCTAssertEqual(subject.defaults.string(forKey: AppDefaultsKey.primaryBibleName), alternate.absoluteString)
+        catalog = [primary, alternate]
+        library.refresh()
+        try await settle(subject)
+        XCTAssertEqual(subject.sources?.primary, alternate)
+        XCTAssertEqual(subject.library.defaultTranslations(subject.defaults).primary, alternate)
+    }
+
     func testTranslationPickersAndTabHeadingsFollowOnlyTheirOwnPassageAndLiveOwnership() async throws {
         let (first, directory) = try mounted()
         let a = first.workspace
@@ -150,13 +274,13 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(a.projector.revision, originalRevision)
         XCTAssertEqual(second.window?.tab.title, "Psalm 23:2 · ALT")
         XCTAssertEqual(b.translations.secondary, originalChoices.primary)
-        XCTAssertNil(b.sources.secondary)
+        XCTAssertNil(b.sources?.secondary)
         XCTAssertFalse(b.secondaryPicker.isHidden)
         XCTAssertEqual(b.secondaryPicker.selectedItem?.title, "None")
         XCTAssertTrue(second.window?.tab.toolTip.contains("English · ALT") == true)
         try choose(originalChoices.primary, in: b.secondaryPicker)
         try await settle(b); a.render()
-        XCTAssertEqual(b.sources.secondary, originalChoices.primary, "Choosing a secondary translation immediately restores both texts")
+        XCTAssertEqual(b.sources?.secondary, originalChoices.primary, "Choosing a secondary translation immediately restores both texts")
         XCTAssertTrue(b.verses.rows.allSatisfy { $0.secondaryText != nil })
         XCTAssertEqual(second.window?.tab.title, "Psalm 23:2 · ALT / TEST")
         XCTAssertEqual(a.projector.revision, originalRevision)

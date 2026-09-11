@@ -75,7 +75,7 @@ final class MainWorkspaceController: NSViewController {
         self.bookmarks = bookmarks ?? .shared
         self.library = liveProjection.library
         self.defaults = liveProjection.defaults
-        self.translations = liveProjection.library.resolve(translations ?? liveProjection.library.defaultTranslations(liveProjection.defaults))
+        self.translations = translations ?? liveProjection.library.defaultTranslations(liveProjection.defaults)
         self.updates = updates
         super.init(nibName: nil, bundle: nil)
         liveProjection.updateSources(sources, from: tabID)
@@ -84,19 +84,22 @@ final class MainWorkspaceController: NSViewController {
     deinit { renderTask?.cancel() }
 
     var primaryOnly: Bool { translations.primaryOnly }
-    var sources: BibleSources { library.sources(for: translations) }
+    var sources: BibleSources? { library.sources(for: translations) }
+    var visibleSearchPage: SearchPage? {
+        guard let sources, let page = navigation.searchPage, page.sources == sources else { return nil }
+        return page
+    }
 
     func setTranslations(_ selection: PassageTranslations) {
         guard !shuttingDown else { return }
-        let resolved = library.resolve(selection)
-        guard translations != resolved else { return }
+        guard translations != selection else { return }
         let priorSources = sources
-        translations = resolved
+        translations = selection
         // Remember explicit choices for the next first passage. Open tabs keep
         // their own values and never read these preferences during rendering.
-        defaults.set(resolved.primary.absoluteString, forKey: AppDefaultsKey.primaryBibleName)
-        defaults.set(resolved.secondary.absoluteString, forKey: AppDefaultsKey.secondaryBibleName)
-        defaults.set(resolved.primaryOnly, forKey: AppDefaultsKey.showOnlyPrimary)
+        defaults.set(selection.primary?.absoluteString, forKey: AppDefaultsKey.primaryBibleName)
+        defaults.set(selection.secondary?.absoluteString, forKey: AppDefaultsKey.secondaryBibleName)
+        defaults.set(selection.primaryOnly, forKey: AppDefaultsKey.showOnlyPrimary)
         if sources != priorSources {
             liveProjection.updateSources(sources, from: tabID)
             if isViewLoaded {
@@ -214,9 +217,8 @@ final class MainWorkspaceController: NSViewController {
     func render() {
         guard isViewLoaded, !shuttingDown else { return }
         liveProjection.refreshPreferences()
-        translations = library.resolve(translations)
         let sources = sources
-        if let previousSources, previousSources != sources {
+        if previousSources != sources {
             self.previousSources = sources
             liveProjection.updateSources(sources, from: tabID)
             refreshSources()
@@ -236,7 +238,7 @@ final class MainWorkspaceController: NSViewController {
         renderSaved()
         renderSearchField()
         renderTranslationPickers(sources)
-        if let page = navigation.searchPage, page.sources == sources {
+        if let sources, let page = visibleSearchPage {
             let rows = page.hits.map { hit in
                 var row = makeVerseRow(hit.pair, sources: sources)
                 let matches = [(hit.matchedPrimary, Optional(sources.primary)), (hit.matchedSecondary, sources.secondary)]
@@ -254,7 +256,7 @@ final class MainWorkspaceController: NSViewController {
             loadMoreButton.isHidden = !page.hasMore
             loadMoreButton.isEnabled = !navigation.isLoading
             emptyLabel.stringValue = "No matches. Try another phrase or change the search mode."
-        } else {
+        } else if let sources {
             let chapter = navigation.navigation.chapter
             let rows = chapter?.sources == sources ? chapter?.rows ?? [] : []
             verses.activatesOnSelection = true
@@ -265,6 +267,12 @@ final class MainWorkspaceController: NSViewController {
             resultsHeader.isHidden = true
             loadMoreButton.isHidden = true
             emptyLabel.stringValue = navigation.isLoading ? "Loading chapter…" : "Choose a book and chapter, or enter a reference in Search."
+        } else {
+            verses.apply(rows: [], selection: nil, style: .verses(fontSize: rowFontSize, dual: false), enabled: false)
+            referenceTitle.stringValue = "Bible Library"
+            resultsHeader.isHidden = true
+            loadMoreButton.isHidden = true
+            emptyLabel.stringValue = BibleLibraryError.empty.localizedDescription
         }
         renderTabHeading(sources)
         emptyLabel.isHidden = !verses.rows.isEmpty
@@ -323,12 +331,15 @@ final class MainWorkspaceController: NSViewController {
 
     func navigate(to reference: VerseReference, project: Bool = false, recordHistory: Bool = false,
                   updateDraft: Bool = true, focusVerses: Bool = true, updateBrowsing: Bool = true) {
+        guard let sources else { showEmptyLibrary(); return }
         let originalDraft = draft
         let interactionRevision = search.interactionRevision
         let responder = view.window?.firstResponder
         let wasEditingSearch = search.isSendingSubmission || (responder != nil && responder === search.field.currentEditor())
         let intent = project ? liveProjection.beginIntent(from: tabID, sources: sources, using: navigation) : nil
-        navigation.navigate(to: reference, sources: sources, project: project) { [weak self] outcome in
+        navigation.navigate(to: reference, sources: sources, project: project, onProjectionCancelled: { [weak self] in
+            if let intent { self?.liveProjection.finishIntent(intent) }
+        }) { [weak self] outcome in
             guard let self else { return }
             guard case .success(let result) = outcome else {
                 if let intent { self.liveProjection.finishIntent(intent) }
@@ -351,6 +362,7 @@ final class MainWorkspaceController: NSViewController {
     }
 
     func submitSearch() {
+        guard let sources else { showEmptyLibrary(); return }
         do {
             switch try SearchQuery(ask: draft).searchType(mode: searchMode) {
             case .verse(let query):
@@ -392,7 +404,8 @@ final class MainWorkspaceController: NSViewController {
     }
 
     func activateVerse(_ reference: VerseReference) {
-        if navigation.searchPage != nil {
+        guard let sources else { showEmptyLibrary(); return }
+        if visibleSearchPage != nil {
             liveProjection.requestProjection(owner: .searchResult(reference), from: tabID, sources: sources, using: navigation)
         } else {
             guard let projection = navigation.prepareRowProjection(reference, sources: sources) else { return }
@@ -403,11 +416,20 @@ final class MainWorkspaceController: NSViewController {
     }
 
     func refreshSources() {
+        guard let sources else { showEmptyLibrary(); return }
         if let request = navigation.searchRequest { navigation.search(request, sources: sources) }
         else if let reference = navigation.refreshReference {
             navigate(to: reference, updateDraft: false, focusVerses: false, updateBrowsing: false)
         }
         else { navigation.cancelLoading() }
+    }
+
+    private func showEmptyLibrary() {
+        navigation.cancelAll()
+        // The empty-state view owns this explanation; do not retain a stale
+        // database error after a catalog change or duplicate it in the footer.
+        navigation.message = nil
+        scheduleRender()
     }
 
     private func revealBook(_ book: String) {

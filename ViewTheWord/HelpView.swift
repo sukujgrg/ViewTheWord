@@ -5,6 +5,12 @@ struct KeyboardShortcutsView: View {
     var dismiss: () -> Void = {}
 
     let searchTips: [(category: String, items: [(example: String, description: String)])] = [
+        ("Translations and Live Output", [
+            ("Primary / Secondary", "Each passage keeps its own translations. New tabs and windows copy the current tab."),
+            ("Secondary: None", "Show only the primary translation."),
+            ("● Live / ● Blanked", "Marks the tab supplying output. Only that tab's translation changes update the live verse."),
+            ("Bible Library", "Import or remove translations in Settings.")
+        ]),
         ("Mode Toggle", [
             ("Ref / Words / Phrase", "Use the toggle to the right of search field")
         ]),
@@ -33,6 +39,7 @@ struct KeyboardShortcutsView: View {
     let keyboardShortcuts: [(category: String, items: [(keys: String, description: String)])] = [
         ("Passage Tabs", [
             ("⌘ T", "New passage tab"),
+            ("⌘ N", "New passage window"),
             ("⌘ Return", "Open selected passage in a new tab"),
             ("⌘ W", "Close tab; live output continues"),
             ("⌃ Tab / ⌃ ⇧ Tab", "Next/previous tab"),
@@ -49,7 +56,7 @@ struct KeyboardShortcutsView: View {
             ("⌥ ↑ / ⌥ ↓", "Previous/next chapter"),
             ("Page Up/Down", "Jump 10 verses"),
             ("Home / End", "First/last verse"),
-            ("Space", "Toggle projector"),
+            ("Space", "Project selected verse; stop if already live in these translations"),
             ("Tab / ⇧ Tab", "Move between controls")
         ]),
         ("Search Results", [
@@ -198,4 +205,3 @@ struct KeyboardShortcutsView: View {
         .frame(width: 900, height: 600)
     }
 }
-

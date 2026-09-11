@@ -63,8 +63,8 @@ struct BibleSources: Equatable, Sendable {
 /// A value copied when opening a passage, then edited independently in that tab.
 /// Keep the last secondary URL when None is selected, including in saved preferences.
 struct PassageTranslations: Equatable, Sendable {
-    var primary: URL
-    var secondary: URL
+    var primary: URL?
+    var secondary: URL?
     var primaryOnly: Bool
 }
 
