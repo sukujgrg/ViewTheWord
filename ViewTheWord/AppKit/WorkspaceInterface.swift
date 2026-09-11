@@ -69,8 +69,8 @@ extension MainWorkspaceController: NSToolbarDelegate {
         secondaryPicker.action = #selector(translationChanged(_:))
         primaryPicker.setAccessibilityLabel("Primary translation")
         secondaryPicker.setAccessibilityLabel("Secondary translation")
-        primaryPicker.toolTip = "Primary translation"
-        secondaryPicker.toolTip = "Secondary translation"
+        primaryPicker.toolTip = "Primary translation for this tab"
+        secondaryPicker.toolTip = "Secondary translation for this tab. Choose None to show only the primary translation."
         for button in [previewButton, blankButton, stopButton, loadMoreButton] { button.bezelStyle = .rounded; button.target = self }
         previewButton.action = #selector(showPreview(_:))
         blankButton.action = #selector(toggleBlank(_:))
@@ -92,11 +92,20 @@ extension MainWorkspaceController: NSToolbarDelegate {
 
     private func makeDetailView() -> NSView {
         let content = NSView()
-        let heading = horizontalStack([primaryPicker, NSView(), referenceTitle, NSView(), secondaryPicker], spacing: 10)
+        func translationControl(_ title: String, picker: NSPopUpButton, alignment: NSLayoutConstraint.Attribute) -> NSStackView {
+            let label = nativeLabel(title, size: 11)
+            label.textColor = .secondaryLabelColor
+            let stack = NSStackView(views: [label, picker])
+            stack.orientation = .vertical
+            stack.alignment = alignment
+            stack.spacing = 2
+            return stack
+        }
+        let primaryControl = translationControl("Primary", picker: primaryPicker, alignment: .leading)
+        let secondaryControl = translationControl("Secondary", picker: secondaryPicker, alignment: .trailing)
+        let heading = horizontalStack([primaryControl, NSView(), referenceTitle, NSView(), secondaryControl], spacing: 10)
         heading.edgeInsets = NSEdgeInsets(top: 2, left: 16, bottom: 10, right: 16)
-        // Keep the title centered even when translation names have different widths
-        // or the secondary translation is hidden.
-        heading.detachesHiddenViews = false
+        // Keep the title centered even when the picker selections have different widths.
         referenceTitle.alignment = .center
         referenceTitle.centerXAnchor.constraint(equalTo: heading.centerXAnchor).isActive = true
         referenceTitle.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
@@ -222,20 +231,22 @@ extension MainWorkspaceController: NSToolbarDelegate {
         searchModeControl.selectedSegment = SearchMode.allCases.firstIndex(of: searchMode) ?? 0
     }
     func renderTranslationPickers(_ sources: BibleSources) {
+        let urls = Array(Set(library.urls + [sources.primary] + [sources.secondary].compactMap { $0 }))
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        let translations = urls.map { (title: BibleTranslation.name(for: $0), value: $0.absoluteString) }
         for (picker, selected) in [(primaryPicker, Optional(sources.primary)), (secondaryPicker, sources.secondary)] {
-            let urls = Array(Set(library.urls + [sources.primary] + [sources.secondary].compactMap { $0 })).sorted { $0.lastPathComponent < $1.lastPathComponent }
-            if picker.itemArray.compactMap({ $0.representedObject as? String }) != urls.map(\.absoluteString) {
+            let choices = picker === secondaryPicker ? [(title: "None", value: "")] + translations : translations
+            if picker.itemArray.compactMap({ $0.representedObject as? String }) != choices.map(\.value) {
                 picker.removeAllItems()
-                for url in urls {
-                    picker.addItem(withTitle: BibleTranslation.name(for: url))
-                    picker.lastItem?.representedObject = url.absoluteString
+                for choice in choices {
+                    picker.addItem(withTitle: choice.title)
+                    picker.lastItem?.representedObject = choice.value
                 }
             }
-            if let index = picker.itemArray.firstIndex(where: { ($0.representedObject as? String) == selected?.absoluteString }) {
+            if let index = picker.itemArray.firstIndex(where: { ($0.representedObject as? String) == (selected?.absoluteString ?? "") }) {
                 picker.selectItem(at: index)
             }
         }
-        secondaryPicker.isHidden = primaryOnly
     }
     func renderStatus() {
         let live = windowOpened && projector.projectionOwner != nil
@@ -251,13 +262,48 @@ extension MainWorkspaceController: NSToolbarDelegate {
         let disconnected = preferredDisplayID != 0 && !NSScreen.screens.contains { $0.displayID == preferredDisplayID }
         screenLabel.stringValue = "Output: \(screen?.localizedName ?? "No display")\(disconnected ? " · preferred display disconnected" : "")"
     }
+
+    func renderTabHeading(_ sources: BibleSources) {
+        guard let window = view.window else { return }
+        let reference = navigation.refreshReference
+        let passage = navigation.searchRequest != nil ? "Search"
+            : reference.flatMap { browsedBook == nil || $0.book == browsedBook ? $0.verseQuery.title : nil } ?? browsedBook ?? "New Passage"
+        let urls = [sources.primary] + [sources.secondary].compactMap { $0 }
+        let shortNames = urls.map(BibleTranslation.shortName)
+        // Identical edition abbreviations in different languages need the language
+        // code as well. Full translation names remain available in the tooltip.
+        let names = zip(urls, shortNames).map { url, name in
+            Set(urls).count > 1 && Set(shortNames).count < shortNames.count ? url.deletingPathExtension().lastPathComponent : name
+        }.joined(separator: " / ")
+        let heading = "\(passage) · \(names)"
+        let ownsOutput = windowOpened && projector.projectionOwner != nil && liveProjection.source?.tabID == tabID
+        let status = ownsOutput ? (projector.isBlanked ? "● Blanked" : "● Live") : nil
+        let title = status.map { "\($0) · \(heading)" } ?? heading
+        window.title = heading
+        window.tab.title = title
+        if let status {
+            let attributed = NSMutableAttributedString(string: title)
+            attributed.addAttribute(.foregroundColor, value: projector.isBlanked ? NSColor.secondaryLabelColor : NSColor.systemGreen,
+                                    range: NSRange(location: 0, length: (status as NSString).length))
+            window.tab.attributedTitle = attributed
+        } else { window.tab.attributedTitle = nil }
+        let detail = navigation.searchRequest.map { "Search: " + $0.text } ?? passage
+        let liveDetail = ownsOutput ? "\n\(projector.isBlanked ? "Blanked" : "Live") from this tab: \(projector.projectorViewData.title)" : ""
+        window.tab.toolTip = detail + "\n" + urls.map(BibleTranslation.name).joined(separator: " / ") + liveDetail
+    }
     @objc private func searchModeChanged(_ sender: NSSegmentedControl) {
         guard SearchMode.allCases.indices.contains(sender.selectedSegment) else { return }
         changeSearchMode(SearchMode.allCases[sender.selectedSegment])
     }
     @objc private func translationChanged(_ sender: NSPopUpButton) {
         guard let value = sender.selectedItem?.representedObject as? String else { return }
-        setPreference(value, key: sender === primaryPicker ? AppDefaultsKey.primaryBibleName : AppDefaultsKey.secondaryBibleName)
+        if sender === secondaryPicker {
+            setSecondaryTranslation(value.isEmpty ? nil : URL(string: value))
+        } else if sender === primaryPicker, let url = URL(string: value) {
+            var selection = translations
+            selection.primary = url
+            setTranslations(selection)
+        }
     }
     @objc func loadMore(_ sender: Any?) {
         guard let request = navigation.searchRequest, !navigation.isLoading else { return }

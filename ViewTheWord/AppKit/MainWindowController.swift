@@ -107,6 +107,7 @@ final class PassageTabsController {
     @discardableResult
     func open(reference: VerseReference? = nil, after origin: MainWindowController? = nil) -> MainWindowController {
         let workspace = MainWorkspaceController(navigation: navigationFactory(), history: history, bookmarks: bookmarks,
+                                                translations: (origin ?? selected)?.workspace.translations,
                                                 liveProjection: liveProjection, updates: updates)
         let controller = MainWindowController(workspace: workspace, savesFrame: savesFrames, bookmarkUndo: bookmarkUndo)
         controller.passages = self

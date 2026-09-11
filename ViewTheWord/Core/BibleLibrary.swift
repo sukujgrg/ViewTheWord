@@ -112,6 +112,12 @@ final class BibleUrl {
 
 
 enum BibleTranslation {
+    static func shortName(for url: URL) -> String {
+        let name = url.deletingPathExtension().lastPathComponent
+        let parts = name.split(separator: "_")
+        return parts.count == 2 ? String(parts[1]) : name
+    }
+
     static func name(for url: URL) -> String {
         let parts = url.deletingPathExtension().lastPathComponent.split(separator: "_").map(String.init)
         guard parts.count == 2 else { return url.deletingPathExtension().lastPathComponent }
@@ -162,13 +168,36 @@ final class BibleLibrary: ObservableObject {
         revision += 1
     }
     func sources(primary: String, secondary: String, primaryOnly: Bool) -> BibleSources {
-        let defaults = BibleUrl()
-        func resolve(_ value: String, fallback: URL) -> URL {
+        func resolve(_ value: String) -> URL? {
             let filename = URL(string: value)?.lastPathComponent ?? ""
-            return urls.first { $0.lastPathComponent == filename } ?? fallback
+            return urls.first { $0.lastPathComponent == filename }
         }
-        return BibleSources(primary: resolve(primary, fallback: defaults.primaryBibleUrl),
-                            secondary: primaryOnly ? nil : resolve(secondary, fallback: defaults.secondaryBibleUrl), revision: revision)
+        // Fallbacks depend on the catalog, never another tab's saved preferences.
+        // Supplied test catalogs also avoid discovering the user's Documents.
+        let first = resolve(primary) ?? resolve(bundledPrimaryBibleUrl?.absoluteString ?? "")
+            ?? urls.first ?? URL(fileURLWithPath: "/dev/null")
+        let second = resolve(secondary) ?? resolve(bundledSecondaryBibleUrl?.absoluteString ?? "")
+            ?? urls.first(where: { $0 != first }) ?? first
+        return BibleSources(primary: first, secondary: primaryOnly ? nil : second, revision: revision)
+    }
+
+    func defaultTranslations(_ defaults: UserDefaults) -> PassageTranslations {
+        let sources = sources(primary: defaults.string(forKey: AppDefaultsKey.primaryBibleName) ?? "",
+                              secondary: defaults.string(forKey: AppDefaultsKey.secondaryBibleName) ?? "", primaryOnly: false)
+        return PassageTranslations(primary: sources.primary, secondary: sources.secondary ?? sources.primary,
+                                   primaryOnly: defaults.bool(forKey: AppDefaultsKey.showOnlyPrimary))
+    }
+
+    func resolve(_ translations: PassageTranslations) -> PassageTranslations {
+        let sources = sources(primary: translations.primary.absoluteString, secondary: translations.secondary.absoluteString,
+                              primaryOnly: false)
+        return PassageTranslations(primary: sources.primary, secondary: sources.secondary ?? sources.primary,
+                                   primaryOnly: translations.primaryOnly)
+    }
+
+    func sources(for translations: PassageTranslations) -> BibleSources {
+        sources(primary: translations.primary.absoluteString, secondary: translations.secondary.absoluteString,
+                primaryOnly: translations.primaryOnly)
     }
 }
 

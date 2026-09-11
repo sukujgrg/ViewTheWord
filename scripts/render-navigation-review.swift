@@ -31,9 +31,9 @@ struct NativeWorkspaceReview {
         let menuDelegate = AppDelegate()
         menuDelegate.buildMenu()
         defer { withExtendedLifetime(menuDelegate) {} }
-        let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [sources.primary, sources.secondary!]), defaults: defaults, sourceResolver: { primaryOnly in
-            BibleSources(primary: sources.primary, secondary: primaryOnly ? nil : sources.secondary, revision: 1)
-        })
+        defaults.set(sources.primary.absoluteString, forKey: AppDefaultsKey.primaryBibleName)
+        defaults.set(sources.secondary!.absoluteString, forKey: AppDefaultsKey.secondaryBibleName)
+        let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [sources.primary, sources.secondary!]), defaults: defaults)
         // Exercise logical output lifetime without sending fixture content to a display.
         var outputCreations = 0
         live.projectorWindowFactory = { _ in outputCreations += 1; return nil }
@@ -54,7 +54,7 @@ struct NativeWorkspaceReview {
             workspace.history.append(reference.verseQuery.title)
         }
         let window = controller.window!
-        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        positionFixtureWindow(window)
         window.orderBack(nil)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
@@ -69,6 +69,11 @@ struct NativeWorkspaceReview {
         precondition(NSApp.isRunning && NSApp.isActive && window.isKeyWindow,
                      "Window-event checks require a running AppKit application: running=\(NSApp.isRunning), active=\(NSApp.isActive), key=\(NSApp.keyWindow?.title ?? "nil"), visible=\(window.isVisible)")
         defer { tabs.shutdown(); for tab in tabs.windows { tab.close() }; defaults.removePersistentDomain(forName: "ViewTheWord.NativeWorkspaceReview") }
+        if CommandLine.arguments.contains("--passage-tabs-only") {
+            try await checkPassageTabs(tabs, original: controller, output: output, outputCreations: { outputCreations })
+            try await checkTabTranslations(tabs, original: controller, output: output)
+            return
+        }
         try await checkHistoryVerseReveal(workspace, window: window, output: output)
         if CommandLine.arguments.contains("--history-reveal-only") { return }
         try await checkDelayedSearchFocus(output: output)
@@ -81,6 +86,7 @@ struct NativeWorkspaceReview {
         try await checkSavedActivation(workspace, window: window)
         try await checkBookmarkRemoval(workspace, window: window)
         try await checkPassageTabs(tabs, original: controller, output: output, outputCreations: { outputCreations })
+        try await checkTabTranslations(tabs, original: controller, output: output)
         try await checkTabCancellation(output: output)
         window.makeKeyAndOrderFront(nil)
         try await settle(workspace)
@@ -175,8 +181,8 @@ struct NativeWorkspaceReview {
         invoke("Open in New Tab", in: first.savedMenu(for: savedNode)!)
         let second = tabs.selected!
         try await settle(second.workspace)
-        precondition(second.window!.tab.title == "Psalm 23")
-        precondition(firstWindow.tab.title == "John 3")
+        precondition(second.window!.tab.title == "Psalm 23:1 · BSI / UKJV")
+        precondition(firstWindow.tab.title == "● Live · John 3:16 · BSI / UKJV")
         precondition(firstWindow.tabGroup?.windows.count == 2)
         precondition(second.workspace.navigation.navigation.reference == psalm)
         precondition(first.navigation.navigation.reference == john && first.verses.rows == rows)
@@ -251,15 +257,15 @@ struct NativeWorkspaceReview {
         invoke("Open in New Tab", in: secondWorkspace.savedMenu(for: historyNode)!)
         let third = tabs.selected!
         try await settle(third.workspace)
-        precondition(third.window!.tab.title == "Romans 8" && live.projector.revision == beforeNewTab)
+        precondition(third.window!.tab.title == "Romans 8:28 · BSI / UKJV" && live.projector.revision == beforeNewTab)
         activateSaved(romans, in: third.workspace.savedHistory, window: third.window!)
         try await settle(third.workspace)
         precondition(live.projector.projectionOwner?.reference == romans)
         precondition(first.history.entries == historyBefore, "Saved activations in all tabs remain history-neutral")
         precondition(NSApp.sendAction(#selector(MainWindowController.moveTabLeft(_:)), to: nil, from: nil))
-        precondition(firstWindow.tabGroup?.windows.map(\.tab.title) == ["John 3", "Romans 8", "Psalm 23"])
+        precondition(firstWindow.tabGroup?.windows == [firstWindow, third.window!, second.window!])
         precondition(NSApp.sendAction(#selector(MainWindowController.moveTabRight(_:)), to: nil, from: nil))
-        precondition(firstWindow.tabGroup?.windows.map(\.tab.title) == ["John 3", "Psalm 23", "Romans 8"])
+        precondition(firstWindow.tabGroup?.windows == [firstWindow, second.window!, third.window!])
         precondition(outputCreations() == resumedCount, "All passages share one output lifetime")
         let frame = third.window!.contentView!.superview!
         frame.layoutSubtreeIfNeeded()
@@ -304,14 +310,91 @@ struct NativeWorkspaceReview {
         firstWindow.makeKeyAndOrderFront(nil)
         reviewLog("PASS native passage tabs: new/close/reorder, context and keyboard opening, independent draft/caret/scroll/search, shared saved activation and output, Blank/Preview/Stop, originating-tab close")
     }
+    @MainActor static func checkTabTranslations(_ tabs: PassageTabsController, original: MainWindowController, output: URL) async throws {
+        func choose(_ url: URL?, in picker: NSPopUpButton) {
+            let index = picker.itemArray.firstIndex { ($0.representedObject as? String) == (url?.absoluteString ?? "") }!
+            picker.selectItem(at: index)
+            picker.sendAction(picker.action, to: picker.target)
+        }
+        let a = original.workspace
+        let originalChoices = a.translations
+        let live = tabs.liveProjection
+        let john = VerseReference(book: "John", chapter: 3, verse: 16)!
+        var choices = originalChoices
+        choices.primary = originalChoices.secondary
+        choices.secondary = originalChoices.primary
+        choices.primaryOnly = true
+        a.setTranslations(choices)
+        try await settle(a)
+        a.navigate(to: john, project: true, focusVerses: false)
+        try await settle(a)
+        let projected = live.projector.projectorViewData
+        let revision = live.projector.revision
+        let second = tabs.open(after: original)
+        let b = second.workspace
+        try await settle(b)
+        precondition(b.translations == a.translations, "New tabs copy all translation choices, including Secondary None")
+        precondition(!b.secondaryPicker.isHidden && b.secondaryPicker.selectedItem?.title == "None")
+        precondition(second.window!.tab.title == "New Passage · UKJV")
+        precondition(original.window!.tab.title == "● Live · John 3:16 · UKJV")
+        precondition(live.source?.tabID == a.tabID, "Selecting a new tab cannot transfer live ownership")
+
+        choose(originalChoices.primary, in: b.primaryPicker)
+        choose(originalChoices.primary, in: b.secondaryPicker)
+        try await settle(b); a.render()
+        precondition(a.translations == choices && b.translations.primary == originalChoices.primary && !b.primaryOnly)
+        precondition(live.projector.revision == revision && live.projector.projectorViewData == projected)
+        precondition(b.sources.secondary == originalChoices.primary, "Choosing a secondary translation restores both texts")
+        precondition(a.library.defaultTranslations(a.defaults) == b.translations, "Remember explicit picker choices for the next first passage")
+        let third = tabs.open(after: second)
+        try await settle(third.workspace)
+        precondition(third.workspace.translations == b.translations && third.workspace.translations != a.translations)
+        third.close()
+        b.setTranslations(originalChoices)
+        b.navigate(to: VerseReference(book: "Psalm", chapter: 23, verse: 1)!, project: true, focusVerses: false)
+        try await settle(b); a.render()
+        precondition(live.source?.tabID == b.tabID && original.window!.tab.attributedTitle == nil)
+        precondition(second.window!.tab.title == "● Live · Psalm 23:1 · BSI / UKJV")
+        a.toggleBlank(nil)
+        try await settle(b)
+        precondition(second.window!.tab.title == "● Blanked · Psalm 23:1 · BSI / UKJV")
+        choose(nil, in: b.secondaryPicker)
+        try await settle(b)
+        precondition(live.projector.isBlanked && live.projector.projectorViewData.secondaryText == nil)
+        precondition(!b.secondaryPicker.isHidden && b.secondaryPicker.selectedItem?.title == "None")
+        precondition(a.library.defaultTranslations(a.defaults) == b.translations)
+        precondition(second.window!.tab.title == "● Blanked · Psalm 23:1 · BSI")
+        for (name, dark) in [("native-translation-tabs-live", false), ("native-translation-tabs-blanked-dark", true)] {
+            a.toggleBlank(nil)
+            original.window!.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            second.window!.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            // Capture the owning tab while a different tab has native selection.
+            original.window!.makeKeyAndOrderFront(nil)
+            try await settle(a); b.render()
+            let frame = original.window!.contentView!.superview!
+            frame.layoutSubtreeIfNeeded()
+            let bitmap = frame.bitmapImageRepForCachingDisplay(in: frame.bounds)!
+            frame.cacheDisplay(in: frame.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(name + ".png"))
+        }
+        let beforeClose = live.projector.revision
+        second.close()
+        a.setTranslations(originalChoices)
+        try await settle(a)
+        precondition(live.source?.tabID == nil && live.projector.revision == beforeClose && live.projector.isBlanked)
+        precondition(original.window!.tab.attributedTitle == nil)
+        a.closeProjector()
+        try await settle(a)
+        reviewLog("PASS tab translations: copied choices, independent Primary/Secondary/None pickers, remembered choices, source-only live refresh, native Live/Blanked headings, closed-source output retained")
+    }
+
     @MainActor static func checkTabCancellation(output: URL) async throws {
         let reader = ReviewBibleGate()
         let defaultsName = "ViewTheWord.TabCancellationReview"
         let defaults = UserDefaults(suiteName: defaultsName)!
         defaults.removePersistentDomain(forName: defaultsName)
-        let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: []), defaults: defaults, sourceResolver: { _ in
-            BibleSources(primary: output.appendingPathComponent("ENG_TEST.bible"), secondary: nil, revision: 1)
-        })
+        defaults.set(true, forKey: AppDefaultsKey.showOnlyPrimary)
+        let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [output.appendingPathComponent("ENG_TEST.bible")]), defaults: defaults)
         var opens = 0
         live.projectorWindowFactory = { _ in opens += 1; return nil }
         let tabs = PassageTabsController(liveProjection: live,
@@ -319,7 +402,7 @@ struct NativeWorkspaceReview {
             bookmarks: BookmarkStore(fileURL: output.appendingPathComponent("cancel-bookmarks.json")), savesFrames: false,
             navigationFactory: { VerseTargetModel(readerFactory: { _ in reader }) })
         let first = tabs.open()
-        first.window!.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        positionFixtureWindow(first.window!)
         first.workspace.changeSearchMode(.wordSearch)
         first.workspace.search.field.stringValue = "hope"
         first.workspace.search.field.sendAction(first.workspace.search.field.action, to: first.workspace.search.field.target)
@@ -375,9 +458,8 @@ struct NativeWorkspaceReview {
         await reader.suspend(chapters: false, lookups: false, searches: true)
         let defaultsName = "ViewTheWord.DelayedSearchReview"
         let defaults = UserDefaults(suiteName: defaultsName)!
-        let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: []), defaults: defaults, sourceResolver: { _ in
-            BibleSources(primary: output.appendingPathComponent("ENG_TEST.bible"), secondary: nil, revision: 1)
-        })
+        defaults.set(true, forKey: AppDefaultsKey.showOnlyPrimary)
+        let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [output.appendingPathComponent("ENG_TEST.bible")]), defaults: defaults)
         live.projectorWindowFactory = { _ in nil }
         let tabs = PassageTabsController(liveProjection: live,
             history: HistoryStore(fileURL: output.appendingPathComponent("focus-history.json")),
@@ -386,7 +468,7 @@ struct NativeWorkspaceReview {
         let controller = tabs.open()
         let subject = controller.workspace
         let window = controller.window!
-        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        positionFixtureWindow(window)
         try await waitUntil { NSApp.isActive && window.isKeyWindow }
         defer {
             for tab in tabs.windows { tab.close() }
@@ -471,9 +553,7 @@ struct NativeWorkspaceReview {
         })
         let defaultsName = "ViewTheWord.QueuedImportsReview"
         let defaults = UserDefaults(suiteName: defaultsName)!
-        let live = LiveProjectionController(library: library, defaults: defaults, sourceResolver: { _ in
-            BibleSources(primary: output.appendingPathComponent("ENG_TEST.bible"), secondary: nil, revision: library.revision)
-        })
+        let live = LiveProjectionController(library: library, defaults: defaults)
         live.projectorWindowFactory = { _ in nil }
         let tabs = PassageTabsController(liveProjection: live,
             history: HistoryStore(fileURL: output.appendingPathComponent("import-history.json")),
@@ -481,7 +561,7 @@ struct NativeWorkspaceReview {
         let inactive = tabs.open()
         let active = tabs.open(after: inactive)
         let window = active.window!
-        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        positionFixtureWindow(window)
         try await waitUntil { window.isKeyWindow }
         defer {
             for tab in tabs.windows { tab.close() }
@@ -513,7 +593,7 @@ struct NativeWorkspaceReview {
         })
         let settings = SettingsWindowController(library: library)
         let window = settings.window!
-        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        positionFixtureWindow(window)
         defer { settings.close() }
         for response in [NSApplication.ModalResponse.abort, .alertFirstButtonReturn] {
             settings.showWindow(nil)
@@ -640,7 +720,7 @@ struct NativeWorkspaceReview {
         ] {
             window.setContentSize(NSSize(width: width, height: height))
             workspace.defaults.set(fontSize, forKey: AppDefaultsKey.verseRowFontSize)
-            workspace.defaults.set(primaryOnly, forKey: AppDefaultsKey.showOnlyPrimary)
+            workspace.setSecondaryTranslation(primaryOnly ? nil : workspace.translations.secondary)
             workspace.render()
             try await settle(workspace)
             // Repeat to cover a click on the already-selected History entry.
@@ -669,7 +749,7 @@ struct NativeWorkspaceReview {
             reviewLog("PASS \(name): Psalm 117:2 → History Esther 8:9, measured verse reveal and same-row reactivation")
         }
         precondition(workspace.history.entries == historyBefore)
-        workspace.defaults.set(false, forKey: AppDefaultsKey.showOnlyPrimary)
+        workspace.setSecondaryTranslation(workspace.translations.secondary)
         workspace.closeProjector()
         try await settle(workspace)
     }
@@ -739,6 +819,11 @@ struct NativeWorkspaceReview {
         NSApp.postEvent(up, atStart: true)
         window.sendEvent(down)
     }
+    @MainActor static func positionFixtureWindow(_ window: NSWindow) {
+        if CommandLine.arguments.contains("--onscreen") { window.center() }
+        else { window.setFrameOrigin(NSPoint(x: -10000, y: -10000)) }
+    }
+
     @MainActor static func settle(_ workspace: MainWorkspaceController) async throws {
         for _ in 0..<100 {
             try await Task.sleep(nanoseconds: 10_000_000)

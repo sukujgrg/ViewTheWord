@@ -8,9 +8,11 @@ A local macOS app for browsing and projecting Bible verses in one or two transla
 2. Click a verse to project it. In the verse list, Up/Down projects the previous/next verse; Option-Up/Down loads the previous/next chapter. Space toggles the selected verse's projection.
 3. Select the output display in the projection controls. A disconnected preferred display stays saved and is restored when it reconnects. Auto uses an available display, so select an explicit display when using several screens.
 4. Watch the **Live** reference and output display above the verse list. **Preview** shows the output layout; **Blank** hides the content while keeping the window open; **Stop** or Escape closes projection and cancels pending projection requests. With a transparent background, Blank reveals the underlying screen content.
-5. Open Settings with Command-comma to adjust font sizes and padding or import translations. Primary Only hides the secondary translation in both browsing and projection. Changing translations preserves the live reference; projection stops if that reference is unavailable.
+5. Choose **Primary** and **Secondary** translations in each passage tab. Choose **None** under Secondary to show only the primary translation. Changing translations in the tab supplying live output refreshes the projected verse and preserves blanking; projection stops if that verse is unavailable. Open Settings with Command-comma to adjust font sizes and padding or manage the Bible Library.
 
-Use **Command-T** to keep another passage ready in a native tab. **Open in New Tab** in a reference's context menu (or **Command-Return** for the selected passage) prepares it without changing output. Switch with **Control-Tab / Control-Shift-Tab**, drag tabs to reorder, and close with **Command-W**. Each tab retains its navigation, search, and scrolling. Bookmarks, History, translations, and Live output are shared; closing the tab that projected a verse leaves output running.
+Use **Command-T** to keep another passage ready in a native tab. **Open in New Tab** in a reference's context menu (or **Command-Return** for the selected passage) prepares it without changing output. Switch with **Control-Tab / Control-Shift-Tab**, drag tabs to reorder, and close with **Command-W**. Each tab retains its navigation, search, scrolling, and translation choices. New tabs start with a copy of the opening tab's translations. Bookmarks, History, the translation library, and Live output are shared; closing the tab that projected a verse leaves output running.
+
+Tab headings show the passage and translation abbreviations. A green **● Live** marker identifies the tab supplying output; **● Blanked** keeps that identity while output is hidden. Selecting another tab leaves output unchanged. Only projecting from another tab transfers the marker and control of live translations. After the source tab closes, output keeps its last content until another projection or Stop.
 
 The verse and chapter highlights show your current selection, including after projection stops. **Live** shows which reference is being projected when you browse elsewhere.
 
@@ -50,7 +52,7 @@ The native search field submits on Return or the search action. Its magnifying-g
 
 ## Translations
 
-Use **Settings → Bible → Import Bible**, or open a `.bible` file with ViewTheWord. Primary and secondary translation pickers in Settings remain available while viewing search results. Imported translations immediately appear in every picker. Re-importing a filename offers replacement; the existing copy survives a failed validation. Remove moves an imported translation to Trash. Included translations cannot be replaced.
+Use **Settings → Bible Library → Import Bible**, or open a `.bible` file with ViewTheWord. Choose translations in each passage tab, including while viewing search results. The last translation selection is remembered for the first tab next time; existing tabs keep their own choices. Imported translations immediately appear in every picker. Re-importing a filename offers replacement; the existing copy survives a failed validation. Remove moves an imported translation to Trash. Included translations cannot be replaced.
 
 The app validates and indexes a private copy of each import. Translation numbering can differ: missing verses fall back to another available row for navigation, while unavailable live references stop projection. See [the file format and converter guide](docs/bible-format.md) for producing `.bible` files.
 

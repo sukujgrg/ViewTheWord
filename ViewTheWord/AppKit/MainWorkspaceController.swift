@@ -5,6 +5,7 @@ import Combine
 /// Live output belongs to the shared LiveProjectionController.
 @MainActor
 final class MainWorkspaceController: NSViewController {
+    let tabID = UUID()
     let navigation: VerseTargetModel
     let liveProjection: LiveProjectionController
     var projector: ProjectorViewModel { liveProjection.projector }
@@ -15,6 +16,7 @@ final class MainWorkspaceController: NSViewController {
     let library: BibleLibrary
     let defaults: UserDefaults
     let updates: AppUpdateController?
+    private(set) var translations: PassageTranslations
 
     let testamentControl = NSSegmentedControl(labels: BibleTestament.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
     lazy var books = NativeSidebarController(label: "Bible books", header: testamentControl)
@@ -64,23 +66,53 @@ final class MainWorkspaceController: NSViewController {
     init(navigation: VerseTargetModel? = nil, projector: ProjectorViewModel? = nil,
          history: HistoryStore? = nil, bookmarks: BookmarkStore? = nil,
          library: BibleLibrary? = nil, defaults: UserDefaults = .standard,
-         sourceResolver: ((Bool) -> BibleSources)? = nil, liveProjection: LiveProjectionController? = nil,
+         translations: PassageTranslations? = nil, liveProjection: LiveProjectionController? = nil,
          updates: AppUpdateController? = nil) {
         self.navigation = navigation ?? VerseTargetModel()
-        let liveProjection = liveProjection ?? LiveProjectionController(projector: projector, library: library, defaults: defaults, sourceResolver: sourceResolver)
+        let liveProjection = liveProjection ?? LiveProjectionController(projector: projector, library: library, defaults: defaults)
         self.liveProjection = liveProjection
         self.history = history ?? .shared
         self.bookmarks = bookmarks ?? .shared
         self.library = liveProjection.library
         self.defaults = liveProjection.defaults
+        self.translations = liveProjection.library.resolve(translations ?? liveProjection.library.defaultTranslations(liveProjection.defaults))
         self.updates = updates
         super.init(nibName: nil, bundle: nil)
+        liveProjection.updateSources(sources, from: tabID)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit { renderTask?.cancel() }
 
-    var primaryOnly: Bool { defaults.bool(forKey: AppDefaultsKey.showOnlyPrimary) }
-    var sources: BibleSources { liveProjection.sources }
+    var primaryOnly: Bool { translations.primaryOnly }
+    var sources: BibleSources { library.sources(for: translations) }
+
+    func setTranslations(_ selection: PassageTranslations) {
+        guard !shuttingDown else { return }
+        let resolved = library.resolve(selection)
+        guard translations != resolved else { return }
+        let priorSources = sources
+        translations = resolved
+        // Remember explicit choices for the next first passage. Open tabs keep
+        // their own values and never read these preferences during rendering.
+        defaults.set(resolved.primary.absoluteString, forKey: AppDefaultsKey.primaryBibleName)
+        defaults.set(resolved.secondary.absoluteString, forKey: AppDefaultsKey.secondaryBibleName)
+        defaults.set(resolved.primaryOnly, forKey: AppDefaultsKey.showOnlyPrimary)
+        if sources != priorSources {
+            liveProjection.updateSources(sources, from: tabID)
+            if isViewLoaded {
+                previousSources = sources
+                refreshSources()
+            }
+        }
+        scheduleRender()
+    }
+
+    func setSecondaryTranslation(_ url: URL?) {
+        var selection = translations
+        if let url { selection.secondary = url }
+        selection.primaryOnly = url == nil
+        setTranslations(selection)
+    }
     var rowFontSize: CGFloat {
         let value = defaults.double(forKey: AppDefaultsKey.verseRowFontSize)
         return value > 0 ? value : 17
@@ -131,7 +163,8 @@ final class MainWorkspaceController: NSViewController {
         }
         verses.onToggle = { [weak self] reference in
             guard let self else { return }
-            if self.windowOpened && self.projector.projectionOwner?.reference == reference { self.closeProjector() }
+            if self.windowOpened && self.projector.projectionOwner?.reference == reference &&
+                self.liveProjection.source?.sources == self.sources { self.closeProjector() }
             else { self.activateVerse(reference) }
         }
         verses.onChapterStep = { [weak self] offset in
@@ -181,9 +214,11 @@ final class MainWorkspaceController: NSViewController {
     func render() {
         guard isViewLoaded, !shuttingDown else { return }
         liveProjection.refreshPreferences()
+        translations = library.resolve(translations)
         let sources = sources
         if let previousSources, previousSources != sources {
             self.previousSources = sources
+            liveProjection.updateSources(sources, from: tabID)
             refreshSources()
         }
         let bookNames = browsedTestament.bookNames
@@ -231,10 +266,7 @@ final class MainWorkspaceController: NSViewController {
             loadMoreButton.isHidden = true
             emptyLabel.stringValue = navigation.isLoading ? "Loading chapter…" : "Choose a book and chapter, or enter a reference in Search."
         }
-        let title = navigation.searchPage != nil ? "Search" : navigation.refreshReference?.verseQuery.bookAndChapter ?? browsedBook ?? "New Passage"
-        view.window?.title = title
-        view.window?.tab.title = title
-        view.window?.tab.toolTip = navigation.searchPage.map { "Search: " + $0.request.text } ?? title
+        renderTabHeading(sources)
         emptyLabel.isHidden = !verses.rows.isEmpty
         renderStatus()
         renderUpdateToolbar()
@@ -295,7 +327,7 @@ final class MainWorkspaceController: NSViewController {
         let interactionRevision = search.interactionRevision
         let responder = view.window?.firstResponder
         let wasEditingSearch = search.isSendingSubmission || (responder != nil && responder === search.field.currentEditor())
-        let intent = project ? liveProjection.beginIntent(using: navigation) : nil
+        let intent = project ? liveProjection.beginIntent(from: tabID, sources: sources, using: navigation) : nil
         navigation.navigate(to: reference, sources: sources, project: project) { [weak self] outcome in
             guard let self else { return }
             guard case .success(let result) = outcome else {
@@ -361,12 +393,12 @@ final class MainWorkspaceController: NSViewController {
 
     func activateVerse(_ reference: VerseReference) {
         if navigation.searchPage != nil {
-            liveProjection.requestProjection(owner: .searchResult(reference), using: navigation)
+            liveProjection.requestProjection(owner: .searchResult(reference), from: tabID, sources: sources, using: navigation)
         } else {
             guard let projection = navigation.prepareRowProjection(reference, sources: sources) else { return }
             revealBook(reference.book)
             draft = reference.verseQuery.title
-            liveProjection.publishRow(projection)
+            liveProjection.publishRow(projection, from: tabID)
         }
     }
 
@@ -419,7 +451,9 @@ final class MainWorkspaceController: NSViewController {
     }
     override func cancelOperation(_ sender: Any?) { closeProjector() }
     func shutdown() {
+        guard !shuttingDown else { return }
         shuttingDown = true
+        liveProjection.detachTab(tabID)
         navigation.cancelAll()
         preview.performClose(nil)
         renderTask?.cancel()

@@ -20,10 +20,6 @@ extension MainWorkspaceController {
                 }
             }
         }
-        viewMenu.command("Primary translation only", checked: primaryOnly) { [weak self] in
-            guard let self else { return }
-            self.setPreference(!self.primaryOnly, key: AppDefaultsKey.showOnlyPrimary)
-        }
         viewMenu.command("Dark appearance", checked: defaults.bool(forKey: AppDefaultsKey.preferDarkMode)) { [weak self] in
             guard let self else { return }
             self.setPreference(!self.defaults.bool(forKey: AppDefaultsKey.preferDarkMode), key: AppDefaultsKey.preferDarkMode)

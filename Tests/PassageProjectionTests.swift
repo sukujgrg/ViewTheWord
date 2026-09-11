@@ -8,9 +8,11 @@ private actor PassageBible: BibleReading {
     private var chapters: [VerseReference: CheckedContinuation<[AVerse], Error>] = [:]
     private var lookups: [VerseReference: CheckedContinuation<[AVerse], Error>] = [:]
     func chapter(_ reference: VerseReference) async throws -> [AVerse] {
-        try await withCheckedThrowingContinuation { chapters[reference] = $0 }
+        try Task.checkCancellation()
+        return try await withCheckedThrowingContinuation { chapters[reference] = $0 }
     }
     func verses(_ references: [VerseReference]) async throws -> [AVerse] {
+        try Task.checkCancellation()
         guard let reference = references.first else { return [] }
         return try await withCheckedThrowingContinuation { lookups[reference] = $0 }
     }
@@ -35,6 +37,9 @@ final class PassageProjectionTests: XCTestCase {
 
     @MainActor private final class Fixture {
         let reader = PassageBible()
+        let alternateReader = PassageBible()
+        let primary: URL
+        let alternate: URL
         let live: LiveProjectionController
         let first: MainWorkspaceController
         let second: MainWorkspaceController
@@ -44,16 +49,26 @@ final class PassageProjectionTests: XCTestCase {
         init() throws {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let defaults = UserDefaults(suiteName: defaultsName)!
-            let source = directory.appendingPathComponent("ENG_TEST.bible")
-            let reader = reader
-            live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [source]), defaults: defaults, sourceResolver: {
-                BibleSources(primary: source, secondary: nil, revision: $0 ? 2 : 1)
-            }, refreshReader: VerseTargetModel(readerFactory: { _ in reader }))
+            primary = directory.appendingPathComponent("ENG_NIV.bible")
+            alternate = directory.appendingPathComponent("ENG_NLT.bible")
+            defaults.set(primary.absoluteString, forKey: AppDefaultsKey.primaryBibleName)
+            defaults.set(alternate.absoluteString, forKey: AppDefaultsKey.secondaryBibleName)
+            defaults.set(true, forKey: AppDefaultsKey.showOnlyPrimary)
+            let factory: @Sendable (URL) -> any BibleReading = { [reader, alternateReader, primary] in
+                $0 == primary ? reader : alternateReader
+            }
+            live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [primary, alternate]), defaults: defaults,
+                                            refreshReader: VerseTargetModel(readerFactory: factory))
             let history = HistoryStore(fileURL: directory.appendingPathComponent("history.json"))
             let bookmarks = BookmarkStore(fileURL: directory.appendingPathComponent("bookmarks.json"))
-            first = MainWorkspaceController(navigation: VerseTargetModel(readerFactory: { _ in reader }), history: history, bookmarks: bookmarks, liveProjection: live)
-            second = MainWorkspaceController(navigation: VerseTargetModel(readerFactory: { _ in reader }), history: history, bookmarks: bookmarks, liveProjection: live)
+            first = MainWorkspaceController(navigation: VerseTargetModel(readerFactory: factory), history: history, bookmarks: bookmarks, liveProjection: live)
+            second = MainWorkspaceController(navigation: VerseTargetModel(readerFactory: factory), history: history, bookmarks: bookmarks, liveProjection: live)
             live.projectorWindowFactory = { [weak self] _ in self?.opens += 1; return nil }
+        }
+        func useAlternate(in workspace: MainWorkspaceController) {
+            var selection = workspace.translations
+            selection.primary = alternate
+            workspace.setTranslations(selection)
         }
         func cleanUp() {
             first.shutdown(); second.shutdown(); live.shutdown()
@@ -69,9 +84,11 @@ final class PassageProjectionTests: XCTestCase {
         XCTFail("Asynchronous operation did not complete", file: file, line: line)
         throw NSError(domain: "PassageProjectionTests", code: 1)
     }
-    private func finish(_ fixture: Fixture, reference: VerseReference, lookup: Bool = false, text: String = "Test verse", available: Bool = true) async throws {
-        try await eventually { await fixture.reader.waiting(reference, lookup: lookup) }
-        await fixture.reader.finish(reference, lookup: lookup, text: text, available: available)
+    private func finish(_ fixture: Fixture, reference: VerseReference, lookup: Bool = false, alternate: Bool = false,
+                        text: String = "Test verse", available: Bool = true) async throws {
+        let reader = alternate ? fixture.alternateReader : fixture.reader
+        try await eventually { await reader.waiting(reference, lookup: lookup) }
+        await reader.finish(reference, lookup: lookup, text: text, available: available)
     }
 
     func testOneOwnedWindowSurvivesWorkspaceClosureAndReopensAfterStop() async throws {
@@ -101,7 +118,7 @@ final class PassageProjectionTests: XCTestCase {
         try await eventually { !f.live.windowOpened }
         XCTAssertNil(f.live.ownedProjectorWindow)
         let row = try XCTUnwrap(f.first.navigation.prepareRowProjection(john, sources: f.first.sources))
-        f.live.publishRow(row)
+        f.live.publishRow(row, from: f.first.tabID)
         let replacement = try XCTUnwrap(f.live.ownedProjectorWindow)
         XCTAssertFalse(replacement === original)
         XCTAssertEqual(windows.count, 2)
@@ -139,7 +156,7 @@ final class PassageProjectionTests: XCTestCase {
         XCTAssertEqual(f.first.navigation.navigation.reference, john)
         XCTAssertNil(f.live.projector.projectionOwner)
         XCTAssertEqual(f.opens, 0)
-        f.live.requestProjection(owner: .searchResult(romans), using: f.first.navigation)
+        f.live.requestProjection(owner: .searchResult(romans), from: f.first.tabID, sources: f.first.sources, using: f.first.navigation)
         try await eventually { await f.reader.waiting(self.romans, lookup: true) }
         f.second.closeProjector()
         await f.reader.finish(romans, lookup: true)
@@ -153,7 +170,7 @@ final class PassageProjectionTests: XCTestCase {
         let f = try Fixture(); defer { f.cleanUp() }
         f.first.navigate(to: john, project: true)
         try await eventually { await f.reader.waiting(self.john, lookup: false) }
-        f.live.requestProjection(owner: .searchResult(romans), using: f.second.navigation)
+        f.live.requestProjection(owner: .searchResult(romans), from: f.second.tabID, sources: f.second.sources, using: f.second.navigation)
         f.first.navigation.cancelLoading(clearSearch: true)
         await f.reader.finish(john)
         XCTAssertTrue(f.live.isProjecting)
@@ -174,34 +191,239 @@ final class PassageProjectionTests: XCTestCase {
         XCTAssertEqual(f.opens, 0)
     }
 
-    func testSharedTranslationRefreshSurvivesBrowsingAndOriginatingTabClosure() async throws {
+    func testSourceTabTranslationRefreshSurvivesBrowsingAndOriginatingTabClosure() async throws {
         let f = try Fixture(); defer { f.cleanUp() }
         f.first.navigate(to: john, project: true)
         try await finish(f, reference: john)
         try await eventually { f.live.windowOpened }
         f.second.toggleBlank(nil)
-        f.live.defaults.set(true, forKey: AppDefaultsKey.showOnlyPrimary)
-        f.live.refreshPreferences()
+        f.useAlternate(in: f.first)
         f.first.shutdown()
         f.second.navigate(to: romans, focusVerses: false)
         try await finish(f, reference: romans)
-        try await finish(f, reference: john, lookup: true, text: "Refreshed translation")
+        try await finish(f, reference: john, lookup: true, alternate: true, text: "Refreshed translation")
         try await eventually { f.live.projector.projectorViewData.primaryText == "Refreshed translation" }
         XCTAssertTrue(f.live.projector.isBlanked)
         XCTAssertEqual(f.live.projector.projectionOwner?.reference, john)
         XCTAssertEqual(f.second.navigation.navigation.reference, romans)
         XCTAssertEqual(f.opens, 1)
+        XCTAssertNil(f.live.source?.tabID)
+        XCTAssertEqual(f.live.source?.sources.primary, f.alternate)
     }
 
-    func testUnavailableSharedRefreshStopsOutput() async throws {
+    func testOtherTabsRememberedTranslationsLeaveLiveAndPendingOutputUntouched() async throws {
         let f = try Fixture(); defer { f.cleanUp() }
         f.first.navigate(to: john, project: true)
         try await finish(f, reference: john)
         try await eventually { f.live.windowOpened }
-        f.first.shutdown()
-        f.live.defaults.set(true, forKey: AppDefaultsKey.showOnlyPrimary)
+        let source = f.live.source
+        let revision = f.live.projector.revision
+        f.useAlternate(in: f.second)
+        f.second.setSecondaryTranslation(f.primary)
+        f.first.render(); f.second.render(); f.live.refreshPreferences()
+        XCTAssertEqual(f.live.source, source)
+        XCTAssertEqual(f.live.projector.revision, revision)
+        XCTAssertEqual(f.first.sources.primary, f.primary)
+        XCTAssertNil(f.first.sources.secondary)
+        XCTAssertEqual(f.second.sources.primary, f.alternate)
+        let next = MainWorkspaceController(history: f.first.history, bookmarks: f.first.bookmarks, liveProjection: f.live)
+        XCTAssertEqual(next.translations, f.second.translations)
+        next.shutdown()
+
+        f.first.navigate(to: romans, project: true)
+        try await eventually { await f.reader.waiting(self.romans, lookup: false) }
+        f.second.setSecondaryTranslation(nil)
+        try await finish(f, reference: romans)
+        try await eventually { f.live.projector.projectionOwner?.reference == self.romans }
+        XCTAssertEqual(f.live.source?.tabID, f.first.tabID)
+        XCTAssertEqual(f.live.source?.sources, f.first.sources)
+    }
+
+    func testSourceRefreshKeepsLiveReferenceAndBlankingAfterBrowsingElsewhere() async throws {
+        let f = try Fixture(); defer { f.cleanUp() }
+        f.first.navigate(to: john, project: true)
+        try await finish(f, reference: john)
+        try await eventually { f.live.windowOpened }
+        f.first.navigate(to: romans)
+        try await finish(f, reference: romans)
+        try await eventually { !f.first.navigation.isLoading }
+        let draft = f.first.draft
+        f.second.toggleBlank(nil)
+        f.useAlternate(in: f.first)
+        try await finish(f, reference: romans, alternate: true)
+        try await eventually { !f.first.navigation.isLoading }
+        f.first.browse("Genesis")
+        try await finish(f, reference: john, lookup: true, alternate: true, text: "NLT live verse")
+        try await eventually { f.live.projector.projectorViewData.primaryText == "NLT live verse" }
+        XCTAssertEqual(f.live.projector.projectionOwner?.reference, john)
+        XCTAssertEqual(f.live.source?.tabID, f.first.tabID)
+        XCTAssertEqual(f.live.source?.sources, f.first.sources)
+        XCTAssertTrue(f.live.projector.isBlanked)
+        XCTAssertEqual(f.first.browsedBook, "Genesis")
+        XCTAssertEqual(f.first.draft, draft)
+        XCTAssertEqual(f.second.sources.primary, f.primary)
+    }
+
+    func testSecondaryNoneIsLocalAndRefreshesSourceOutput() async throws {
+        let f = try Fixture(); defer { f.cleanUp() }
+        f.first.navigate(to: john, project: true)
+        try await finish(f, reference: john)
+        try await eventually { f.live.windowOpened }
+        let revision = f.live.projector.revision
+        var selection = f.first.translations
+        selection.secondary = f.primary
+        f.first.setTranslations(selection)
+        XCTAssertFalse(f.first.navigation.isLoading, "Changing an unused secondary choice must not restart the passage")
+        XCTAssertEqual(f.live.projector.revision, revision)
+        selection.secondary = f.alternate
+        f.first.setTranslations(selection)
+        f.first.setSecondaryTranslation(f.alternate)
+        try await finish(f, reference: john)
+        try await finish(f, reference: john, alternate: true)
+        try await finish(f, reference: john, lookup: true, text: "Primary live verse")
+        try await finish(f, reference: john, lookup: true, alternate: true, text: "Secondary live verse")
+        try await eventually { f.live.projector.projectorViewData.secondaryText == "Secondary live verse" }
+        XCTAssertEqual(f.live.source?.sources.secondary, f.alternate)
+        XCTAssertTrue(f.second.primaryOnly)
+        f.first.setSecondaryTranslation(nil)
+        try await finish(f, reference: john)
+        try await finish(f, reference: john, lookup: true)
+        try await eventually { f.live.projector.projectorViewData.secondaryText == nil }
+        XCTAssertEqual(f.first.translations.secondary, f.alternate)
+        XCTAssertNil(f.live.source?.sources.secondary)
+    }
+
+    func testNewSessionRestoresLastTranslationSelectionIncludingNone() throws {
+        let f = try Fixture(); defer { f.cleanUp() }
+        let original = f.first.translations
+        f.useAlternate(in: f.second)
+        for secondary in [Optional(f.primary), nil] {
+            f.second.setSecondaryTranslation(secondary)
+            let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [f.primary, f.alternate]),
+                                                defaults: try XCTUnwrap(UserDefaults(suiteName: f.defaultsName)))
+            let reopened = MainWorkspaceController(history: f.first.history, bookmarks: f.first.bookmarks, liveProjection: live)
+            XCTAssertEqual(reopened.translations, f.second.translations)
+            XCTAssertEqual(reopened.sources.secondary, secondary)
+            XCTAssertEqual(f.first.translations, original, "Remembering another tab's choices cannot change an existing tab")
+            reopened.shutdown()
+            live.shutdown()
+        }
+    }
+
+    func testSourceTranslationChangeWaitsForAnotherTabsExplicitProjection() async throws {
+        let f = try Fixture(); defer { f.cleanUp() }
+        f.first.navigate(to: john, project: true)
+        try await finish(f, reference: john)
+        try await eventually { f.live.windowOpened }
+        f.second.navigate(to: romans, project: true)
+        try await eventually { await f.reader.waiting(self.romans, lookup: false) }
+        f.useAlternate(in: f.first)
+        try await finish(f, reference: john, alternate: true)
+        XCTAssertEqual(f.live.source?.tabID, f.first.tabID, "A pending request has not taken ownership yet")
+        XCTAssertTrue(f.live.isProjecting)
+        try await finish(f, reference: romans, text: "New tab wins")
+        try await eventually { f.live.source?.tabID == f.second.tabID }
         f.live.refreshPreferences()
-        try await finish(f, reference: john, lookup: true, available: false)
+        XCTAssertEqual(f.live.projector.projectorViewData.primaryText, "New tab wins")
+        XCTAssertEqual(f.live.source?.sources.primary, f.primary)
+        let staleRefresh = await f.alternateReader.waiting(john, lookup: true)
+        XCTAssertFalse(staleRefresh)
+    }
+
+    func testDeferredSourceRefreshResumesWhenAnotherTabsSubmissionFailsOrIsCanceled() async throws {
+        for cancel in [false, true] {
+            let f = try Fixture(); defer { f.cleanUp() }
+            f.first.navigate(to: john, project: true)
+            try await finish(f, reference: john)
+            try await eventually { f.live.windowOpened }
+            f.second.navigate(to: romans, project: true)
+            try await eventually { await f.reader.waiting(self.romans, lookup: false) }
+            f.useAlternate(in: f.first)
+            try await finish(f, reference: john, alternate: true)
+            if cancel { f.second.browse("Genesis") }
+            try await finish(f, reference: romans, available: false)
+            try await finish(f, reference: john, lookup: true, alternate: true, text: "Deferred NLT refresh")
+            try await eventually { f.live.projector.projectorViewData.primaryText == "Deferred NLT refresh" }
+            XCTAssertEqual(f.live.source?.tabID, f.first.tabID)
+            XCTAssertEqual(f.live.projector.projectionOwner?.reference, john)
+            XCTAssertFalse(f.live.isProjecting)
+        }
+    }
+
+    func testNewProjectionSupersedesSourceRefreshEvenWhenOldLookupCompletesLate() async throws {
+        let f = try Fixture(); defer { f.cleanUp() }
+        f.first.navigate(to: john, project: true)
+        try await finish(f, reference: john)
+        try await eventually { f.live.windowOpened }
+        f.useAlternate(in: f.first)
+        try await finish(f, reference: john, alternate: true)
+        try await eventually { await f.alternateReader.waiting(self.john, lookup: true) }
+        f.second.navigate(to: romans, project: true)
+        try await finish(f, reference: romans, text: "New source tab")
+        try await eventually { f.live.source?.tabID == f.second.tabID }
+        await f.alternateReader.finish(john, lookup: true, text: "Stale refresh")
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(f.live.projector.projectorViewData.primaryText, "New source tab")
+        XCTAssertEqual(f.live.source?.tabID, f.second.tabID)
+    }
+
+    func testDeferredTranslationRefreshPreservesFailedSearchProjectionError() async throws {
+        let f = try Fixture(); defer { f.cleanUp() }
+        f.first.navigate(to: john, project: true)
+        try await finish(f, reference: john)
+        try await eventually { f.live.windowOpened }
+        f.live.requestProjection(owner: .searchResult(romans), from: f.second.tabID, sources: f.second.sources, using: f.second.navigation)
+        try await eventually { await f.reader.waiting(self.romans, lookup: true) }
+        f.useAlternate(in: f.first)
+        try await finish(f, reference: john, alternate: true)
+        try await finish(f, reference: romans, lookup: true, available: false)
+        try await eventually { f.live.message != nil }
+        let message = f.live.message
+        try await finish(f, reference: john, lookup: true, alternate: true, text: "Refreshed live verse")
+        try await eventually { f.live.projector.projectorViewData.primaryText == "Refreshed live verse" }
+        XCTAssertEqual(f.live.source?.tabID, f.first.tabID)
+        XCTAssertEqual(f.live.message, message, "Automatic refresh must preserve the failed explicit request's explanation")
+    }
+
+    func testChangingOwnTranslationsCancelsPendingSubmissionAndRejectsOldText() async throws {
+        let f = try Fixture(); defer { f.cleanUp() }
+        f.first.navigate(to: john, project: true)
+        try await eventually { await f.reader.waiting(self.john, lookup: false) }
+        f.useAlternate(in: f.first)
+        try await finish(f, reference: john, alternate: true)
+        await f.reader.finish(john, text: "Old translation")
+        try await eventually { !f.first.navigation.isLoading }
+        XCTAssertEqual(f.first.navigation.navigation.chapter?.sources, f.first.sources)
+        XCTAssertNil(f.live.projector.projectionOwner)
+        XCTAssertNil(f.live.source)
+        XCTAssertEqual(f.opens, 0)
+    }
+
+    func testClosingSourceTabFreezesItsOutputAcrossOtherTranslationChanges() async throws {
+        let f = try Fixture(); defer { f.cleanUp() }
+        f.first.navigate(to: john, project: true)
+        try await finish(f, reference: john)
+        try await eventually { f.live.windowOpened }
+        let revision = f.live.projector.revision
+        f.first.shutdown()
+        f.useAlternate(in: f.second)
+        f.live.defaults.set(f.alternate.absoluteString, forKey: AppDefaultsKey.primaryBibleName)
+        f.live.refreshPreferences()
+        XCTAssertTrue(f.live.windowOpened)
+        XCTAssertNil(f.live.source?.tabID)
+        XCTAssertEqual(f.live.source?.sources.primary, f.primary)
+        XCTAssertEqual(f.live.projector.revision, revision)
+        XCTAssertFalse(f.live.isProjecting)
+    }
+
+    func testUnavailableSourceTabRefreshStopsOutput() async throws {
+        let f = try Fixture(); defer { f.cleanUp() }
+        f.first.navigate(to: john, project: true)
+        try await finish(f, reference: john)
+        try await eventually { f.live.windowOpened }
+        f.useAlternate(in: f.first)
+        f.first.shutdown()
+        try await finish(f, reference: john, lookup: true, alternate: true, available: false)
         try await eventually { !f.live.windowOpened }
         XCTAssertNil(f.live.projector.projectionOwner)
         XCTAssertNotNil(f.live.message, "An automatic stop must explain the unavailable translation")
@@ -230,7 +452,7 @@ final class PassageProjectionTests: XCTestCase {
         _ = f.first.view
         _ = f.second.view
         for dismiss in [true, false] {
-            f.live.requestProjection(owner: .searchResult(romans), using: f.first.navigation)
+            f.live.requestProjection(owner: .searchResult(romans), from: f.first.tabID, sources: f.first.sources, using: f.first.navigation)
             try await finish(f, reference: romans, lookup: true, available: false)
             try await eventually { f.live.message != nil }
             XCTAssertNil(f.first.navigation.message, "The source tab must not retain another copy of the shared error")
@@ -252,7 +474,7 @@ final class PassageProjectionTests: XCTestCase {
         try await finish(f, reference: john)
         try await eventually { f.live.windowOpened }
         f.first.closeProjector()
-        f.live.requestProjection(owner: .searchResult(psalm), using: f.second.navigation)
+        f.live.requestProjection(owner: .searchResult(psalm), from: f.second.tabID, sources: f.second.sources, using: f.second.navigation)
         try await eventually { await f.reader.waiting(self.psalm, lookup: true) }
         XCTAssertTrue(f.live.isProjecting)
         XCTAssertNil(f.live.projector.projectionOwner)
@@ -263,7 +485,7 @@ final class PassageProjectionTests: XCTestCase {
         // Synchronous row publication also survives an earlier close callback.
         let row = f.first.navigation.prepareRowProjection(john, sources: f.first.sources)!
         f.live.closeProjector()
-        f.live.publishRow(row)
+        f.live.publishRow(row, from: f.first.tabID)
         try await Task.sleep(nanoseconds: 30_000_000)
         XCTAssertEqual(f.live.projector.projectionOwner?.reference, john)
         XCTAssertTrue(f.live.windowOpened)

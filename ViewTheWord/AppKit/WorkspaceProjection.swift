@@ -9,35 +9,34 @@ final class LiveProjectionController: ObservableObject {
     let projector: ProjectorViewModel
     let library: BibleLibrary
     let defaults: UserDefaults
-    private let sourceResolver: ((Bool) -> BibleSources)?
     private let refreshReader: VerseTargetModel
     var projectorWindowFactory: ((ProjectorViewModel) -> NSWindow?)?
     private(set) var ownedProjectorWindow: NSWindow?
     @Published private(set) var windowOpened = false
     @Published private(set) var isProjecting = false
     @Published private(set) var message: String?
+    @Published private(set) var source: ProjectionSource?
     private var intent = UUID()
+    private var pendingSource: ProjectionSource?
+    private var tabSources: [UUID: BibleSources] = [:]
+    private var isClosing = false
     private weak var preparingModel: VerseTargetModel?
     private var preparationStatus: AnyCancellable?
     private var subscriptions = Set<AnyCancellable>()
     private var preferenceTask: Task<Void, Never>?
     private var repositionTask: Task<Void, Never>?
-    private var previousSources: BibleSources?
     private var previousDisplayID: Int
     private var previousTransparency: Bool
 
     init(projector: ProjectorViewModel? = nil, library: BibleLibrary? = nil,
-         defaults: UserDefaults = .standard, sourceResolver: ((Bool) -> BibleSources)? = nil,
+         defaults: UserDefaults = .standard,
          refreshReader: VerseTargetModel? = nil) {
         self.projector = projector ?? ProjectorViewModel()
         self.library = library ?? .shared
         self.defaults = defaults
-        self.sourceResolver = sourceResolver
         self.refreshReader = refreshReader ?? VerseTargetModel()
         previousDisplayID = defaults.integer(forKey: AppDefaultsKey.projectorScreenDisplayID)
         previousTransparency = defaults.bool(forKey: AppDefaultsKey.transparentBackground)
-        previousSources = sources
-        self.library.objectWillChange.sink { [weak self] _ in self?.schedulePreferences() }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification, object: defaults)
             .sink { [weak self] _ in self?.schedulePreferences() }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
@@ -56,26 +55,56 @@ final class LiveProjectionController: ObservableObject {
     deinit { preferenceTask?.cancel(); repositionTask?.cancel() }
 
     var preferredDisplayID: Int { defaults.integer(forKey: AppDefaultsKey.projectorScreenDisplayID) }
-    var sources: BibleSources {
-        let primaryOnly = defaults.bool(forKey: AppDefaultsKey.showOnlyPrimary)
-        return sourceResolver?(primaryOnly) ?? library.sources(
-            primary: defaults.string(forKey: AppDefaultsKey.primaryBibleName) ?? bundledPrimaryBibleUrl?.absoluteString ?? "",
-            secondary: defaults.string(forKey: AppDefaultsKey.secondaryBibleName) ?? bundledSecondaryBibleUrl?.absoluteString ?? "",
-            primaryOnly: primaryOnly)
+
+    /// Only the tab supplying live output can refresh its translations. Keep the
+    /// latest choices while another tab prepares output; that explicit intent wins.
+    func updateSources(_ sources: BibleSources, from tabID: UUID) {
+        guard tabSources[tabID] != sources else { return }
+        tabSources[tabID] = sources
+        if pendingSource?.tabID == tabID, pendingSource?.sources != sources { cancelPreparation() }
+        refreshSourceIfNeeded()
+    }
+
+    func detachTab(_ tabID: UUID) {
+        tabSources.removeValue(forKey: tabID)
+        if let source, source.tabID == tabID {
+            self.source = ProjectionSource(tabID: nil, sources: source.sources)
+        }
+        if let pendingSource, pendingSource.tabID == tabID {
+            if preparingModel === refreshReader {
+                // An already-requested live refresh has its own reader and can
+                // finish after its tab closes. Subsequent output stays frozen.
+                self.pendingSource = ProjectionSource(tabID: nil, sources: pendingSource.sources)
+            } else { cancelPreparation() }
+        }
+        refreshSourceIfNeeded()
+    }
+
+    private func refreshSourceIfNeeded() {
+        guard !isClosing, pendingSource == nil, windowOpened, let source, let tabID = source.tabID,
+              let sources = tabSources[tabID], sources != source.sources,
+              let owner = projector.projectionOwner else { return }
+        requestProjection(owner: owner, from: tabID, sources: sources, using: refreshReader,
+                          refreshingLiveOutput: true)
     }
 
     /// Reserve output before asynchronous navigation begins. New intents in ANY
     /// tab supersede older work; local navigation cancellation still cancels its
     /// own pending verse submission through VerseTargetModel's generation guard.
-    func beginIntent(using model: VerseTargetModel) -> UUID {
+    func beginIntent(from tabID: UUID, sources: BibleSources, using model: VerseTargetModel, clearMessage: Bool = true) -> UUID {
         cancelPreparation()
+        tabSources[tabID] = sources
+        pendingSource = ProjectionSource(tabID: tabID, sources: sources)
         preparingModel = model
         let token = intent
         isProjecting = true
-        message = nil
+        if clearMessage { message = nil }
         preparationStatus = model.$isProjecting.dropFirst().sink { [weak self] projecting in
             guard let self, self.intent == token else { return }
             self.isProjecting = projecting
+            // Navigation cancellation has no completion callback. Reconcile it
+            // after the model commits, allowing a deferred live refresh to resume.
+            self.schedulePreferences()
         }
         return token
     }
@@ -85,42 +114,51 @@ final class LiveProjectionController: ObservableObject {
         preparationStatus = nil
         preparingModel?.cancelProjection()
         preparingModel = nil
+        pendingSource = nil
         intent = UUID()
         isProjecting = false
         return intent
     }
 
     func finishIntent(_ token: UUID) {
-        guard token == intent else { return }
+        guard token == intent, pendingSource != nil else { return }
         preparationStatus = nil
         preparingModel = nil
+        pendingSource = nil
         isProjecting = false
+        schedulePreferences()
     }
 
     func publish(_ projection: PreparedProjection, intent token: UUID, preserveBlanking: Bool = false) {
-        guard token == intent else { return }
+        guard token == intent, let pendingSource, pendingSource.sources == projection.sources else { return }
         finishIntent(token)
+        source = pendingSource
+        isClosing = false
         projector.project(projection.data, owner: projection.owner, preserveBlanking: preserveBlanking)
         openProjector()
     }
-    func publishRow(_ projection: PreparedProjection) {
+    func publishRow(_ projection: PreparedProjection, from tabID: UUID) {
         let token = cancelPreparation()
+        tabSources[tabID] = projection.sources
+        pendingSource = ProjectionSource(tabID: tabID, sources: projection.sources)
         message = nil
         publish(projection, intent: token)
     }
-    func requestProjection(owner: ProjectionOwner, using model: VerseTargetModel,
-                           preserveBlanking: Bool = false, stopIfUnavailable: Bool = false) {
-        let token = beginIntent(using: model)
+    func requestProjection(owner: ProjectionOwner, from tabID: UUID, sources: BibleSources, using model: VerseTargetModel,
+                           refreshingLiveOutput: Bool = false) {
+        // A deferred translation refresh must not erase the explanation for a
+        // newer explicit projection that failed before this refresh could run.
+        let token = beginIntent(from: tabID, sources: sources, using: model, clearMessage: !refreshingLiveOutput)
         model.requestProjection(owner: owner, sources: sources) { [weak self, weak model] projection in
             guard let self, self.intent == token else { return }
-            if let projection { self.publish(projection, intent: token, preserveBlanking: preserveBlanking) }
+            if let projection { self.publish(projection, intent: token, preserveBlanking: refreshingLiveOutput) }
             else {
                 self.finishIntent(token)
                 self.message = model?.message
                 // The shared controller owns this error in every passage tab.
                 // Avoid retaining a second, undismissable copy in the source tab.
                 model?.message = nil
-                if stopIfUnavailable { self.closeProjector(preservingMessage: true) }
+                if refreshingLiveOutput { self.closeProjector(preservingMessage: true) }
             }
         }
     }
@@ -135,14 +173,8 @@ final class LiveProjectionController: ObservableObject {
         }
     }
     func refreshPreferences() {
-        let currentSources = sources
-        if previousSources != currentSources {
-            previousSources = currentSources
-            cancelPreparation()
-            if windowOpened, let owner = projector.projectionOwner {
-                requestProjection(owner: owner, using: refreshReader, preserveBlanking: true, stopIfUnavailable: true)
-            }
-        }
+        if let preparingModel, !preparingModel.isProjecting { finishIntent(intent) }
+        refreshSourceIfNeeded()
         if previousDisplayID != preferredDisplayID {
             previousDisplayID = preferredDisplayID
             scheduleProjectorReposition()
@@ -203,11 +235,13 @@ final class LiveProjectionController: ObservableObject {
         else { handleProjectorWindowClosed() }
     }
     func handleProjectorWindowClosed() {
+        isClosing = true
         repositionTask?.cancel()
         let canceledModel = preparingModel
         preparationStatus = nil
         let modelCancellation = canceledModel?.cancelProjection(updateStatus: false)
         preparingModel = nil
+        pendingSource = nil
         intent = UUID()
         let cancellationIntent = intent
         let revision = projector.revision
@@ -221,6 +255,7 @@ final class LiveProjectionController: ObservableObject {
             self.repositionTask = nil
             if self.intent == cancellationIntent { self.isProjecting = false }
             self.projector.clearProjection()
+            self.source = nil
             self.ownedProjectorWindow = nil
             self.windowOpened = false
         }
