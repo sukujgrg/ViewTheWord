@@ -6,6 +6,18 @@ import SwiftUI
 /// Owns the NSWindow directly; it deliberately has no NSWindowController.
 @MainActor
 final class LiveProjectionController: ObservableObject {
+    private enum Notice {
+        case emptyCatalog
+        case projectionFailure(String)
+
+        var message: String {
+            switch self {
+            case .emptyCatalog: return BibleLibraryError.empty.localizedDescription
+            case .projectionFailure(let message): return message
+            }
+        }
+    }
+
     let projector: ProjectorViewModel
     let library: BibleLibrary
     let defaults: UserDefaults
@@ -14,7 +26,7 @@ final class LiveProjectionController: ObservableObject {
     private(set) var ownedProjectorWindow: NSWindow?
     @Published private(set) var windowOpened = false
     @Published private(set) var isProjecting = false
-    @Published private(set) var message: String?
+    @Published private var notice: Notice?
     @Published private(set) var source: ProjectionSource?
     private var intent = UUID()
     private var pendingSource: ProjectionSource?
@@ -36,6 +48,13 @@ final class LiveProjectionController: ObservableObject {
         self.refreshReader = refreshReader ?? VerseTargetModel()
         previousDisplayID = defaults.integer(forKey: AppDefaultsKey.projectorScreenDisplayID)
         previousTransparency = defaults.bool(forKey: AppDefaultsKey.transparentBackground)
+        // Catalog recovery retracts only its own notice, even after output has
+        // stopped or every passage tab has closed. It never resumes projection.
+        self.library.$urls.map(\.isEmpty).removeDuplicates()
+            .sink { [weak self] isEmpty in
+                guard !isEmpty, let self, case .emptyCatalog = self.notice else { return }
+                self.dismissMessage()
+            }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification, object: defaults)
             .sink { [weak self] _ in self?.schedulePreferences() }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
@@ -53,6 +72,7 @@ final class LiveProjectionController: ObservableObject {
     }
     deinit { preferenceTask?.cancel(); repositionTask?.cancel() }
 
+    var message: String? { notice?.message }
     var preferredDisplayID: Int { defaults.integer(forKey: AppDefaultsKey.projectorScreenDisplayID) }
 
     /// Only the tab supplying live output can refresh its translations. Keep the
@@ -83,7 +103,7 @@ final class LiveProjectionController: ObservableObject {
         guard !isClosing, pendingSource == nil, windowOpened, let source, let tabID = source.tabID,
               let owner = projector.projectionOwner else { return }
         guard let sources = tabSources[tabID] else {
-            message = BibleLibraryError.empty.localizedDescription
+            notice = .emptyCatalog
             closeProjector(preservingMessage: true)
             return
         }
@@ -101,7 +121,7 @@ final class LiveProjectionController: ObservableObject {
         pendingSource = ProjectionSource(tabID: tabID, sources: sources)
         preparingModel = model
         isProjecting = true
-        if clearMessage { message = nil }
+        if clearMessage { dismissMessage() }
         return intent
     }
 
@@ -138,7 +158,7 @@ final class LiveProjectionController: ObservableObject {
         let token = cancelPreparation()
         tabSources[tabID] = projection.sources
         pendingSource = ProjectionSource(tabID: tabID, sources: projection.sources)
-        message = nil
+        dismissMessage()
         publish(projection, intent: token)
     }
     func requestProjection(owner: ProjectionOwner, from tabID: UUID, sources: BibleSources, using model: VerseTargetModel,
@@ -153,7 +173,7 @@ final class LiveProjectionController: ObservableObject {
             if let projection { self.publish(projection, intent: token, preserveBlanking: refreshingLiveOutput) }
             else {
                 self.finishIntent(token)
-                self.message = model?.message
+                self.notice = (model?.message).map { .projectionFailure($0) }
                 // The shared controller owns this error in every passage tab.
                 // Avoid retaining a second, undismissable copy in the source tab.
                 model?.message = nil
@@ -222,7 +242,7 @@ final class LiveProjectionController: ObservableObject {
         }
         if let window = ownedProjectorWindow { applyProjectorAppearance(window) }
     }
-    func dismissMessage() { message = nil }
+    func dismissMessage() { notice = nil }
 
     func closeProjector(preservingMessage: Bool = false) {
         if !preservingMessage { dismissMessage() }

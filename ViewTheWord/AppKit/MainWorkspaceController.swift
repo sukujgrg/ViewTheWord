@@ -160,7 +160,7 @@ final class MainWorkspaceController: NSViewController {
         chapters.onCancel = { [weak self] in self?.closeProjector() }
         verses.onActivate = { [weak self] reference in self?.activateVerse(reference) }
         verses.onSelection = { [weak self] reference in
-            guard let self, self.navigation.searchPage != nil else { return }
+            guard let self, self.visibleSearchPage != nil else { return }
             self.searchSelection = reference
             self.scheduleRender()
         }

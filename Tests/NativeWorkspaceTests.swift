@@ -107,6 +107,31 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(subject.history.entries.isEmpty)
     }
 
+    func testSearchSelectionIgnoresResultsFromAnOutdatedCatalog() async throws {
+        let (controller, directory) = try mounted()
+        defer { controller.close(); try? FileManager.default.removeItem(at: directory) }
+        let subject = controller.workspace
+        subject.changeSearchMode(.wordSearch)
+        subject.search.field.stringValue = "hope"
+        subject.search.field.sendAction(subject.search.field.action, to: subject.search.field.target)
+        try await settle(subject)
+        let selected = try XCTUnwrap(subject.verses.selectedReference)
+
+        // Input can reach the old table before the queued catalog render runs.
+        subject.library.refresh()
+        XCTAssertNotNil(subject.navigation.searchPage)
+        XCTAssertNil(subject.visibleSearchPage)
+        subject.verses.table.moveDown(nil)
+        subject.render()
+        XCTAssertFalse(subject.verses.enabled)
+        try await settle(subject)
+        XCTAssertEqual(subject.verses.selectedReference, selected)
+        XCTAssertNotNil(subject.visibleSearchPage)
+        subject.verses.table.moveDown(nil)
+        XCTAssertNotEqual(subject.verses.selectedReference, selected)
+        XCTAssertNil(subject.projector.projectionOwner)
+    }
+
     func testTranslationRefreshPreservesBookFilterAndBrowsing() async throws {
         let (controller, directory) = try mounted()
         defer { controller.close(); try? FileManager.default.removeItem(at: directory) }
