@@ -2,6 +2,33 @@ import AppKit
 
 private func reviewLog(_ text: String) { FileHandle.standardOutput.write(Data((text + "\n").utf8)) }
 
+private struct ReviewFailure: Error, CustomStringConvertible {
+    let description: String
+}
+
+/// A return to the fixture does not undo an interruption of its focus checks.
+@MainActor private final class ReviewFocusGuard: NSObject {
+    private let window: NSWindow
+    private let notifications: NotificationCenter
+    private var interrupted = false
+
+    init(window: NSWindow, notifications: NotificationCenter = .default) {
+        self.window = window
+        self.notifications = notifications
+        super.init()
+        notifications.addObserver(self, selector: #selector(focusLost(_:)), name: NSApplication.didResignActiveNotification, object: NSApp)
+        notifications.addObserver(self, selector: #selector(focusLost(_:)), name: NSWindow.didResignKeyNotification, object: window)
+    }
+
+    @objc private func focusLost(_ notification: Notification) { interrupted = true }
+    func stop() { notifications.removeObserver(self) }
+    func check() throws {
+        guard !interrupted, NSApp.isActive, window.isKeyWindow else {
+            throw ReviewFailure(description: "Focus review interrupted by an application/window switch. Keep Native Workspace Review in front and avoid mouse or keyboard input until the script finishes, then rerun the check.")
+        }
+    }
+}
+
 @main
 struct NativeWorkspaceReview {
     @MainActor static func main() {
@@ -66,8 +93,9 @@ struct NativeWorkspaceReview {
             }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
-        precondition(NSApp.isRunning && NSApp.isActive && window.isKeyWindow,
-                     "Window-event checks require a running AppKit application: running=\(NSApp.isRunning), active=\(NSApp.isActive), key=\(NSApp.keyWindow?.title ?? "nil"), visible=\(window.isVisible)")
+        guard NSApp.isRunning && NSApp.isActive && window.isKeyWindow else {
+            throw ReviewFailure(description: "Window-event checks require the review app to be active. Keep Native Workspace Review in front while the script runs: running=\(NSApp.isRunning), active=\(NSApp.isActive), key=\(NSApp.keyWindow?.title ?? "nil"), visible=\(window.isVisible)")
+        }
         defer { tabs.shutdown(); for tab in tabs.windows { tab.close() }; defaults.removePersistentDomain(forName: "ViewTheWord.NativeWorkspaceReview") }
         if CommandLine.arguments.contains("--inspect-settings") {
             try await checkNativeSettings(output: output, sources: sources, inspecting: true)
@@ -83,8 +111,16 @@ struct NativeWorkspaceReview {
             try await checkTabTranslations(tabs, original: controller, output: output)
             return
         }
+        if CommandLine.arguments.contains("--search-focus-only") {
+            try checkReviewFocusGuard(window: window)
+            for _ in 0..<(CommandLine.arguments.contains("--stress-search-focus") ? 20 : 1) {
+                try await checkDelayedSearchFocus(output: output)
+            }
+            return
+        }
         try await checkHistoryVerseReveal(workspace, window: window, output: output)
         if CommandLine.arguments.contains("--history-reveal-only") { return }
+        try checkReviewFocusGuard(window: window)
         try await checkDelayedSearchFocus(output: output)
         try await checkQueuedLibraryAlerts(output: output)
         try await checkNativeSettings(output: output, sources: sources)
@@ -455,13 +491,35 @@ struct NativeWorkspaceReview {
                      "Escape stops pending output without canceling another tab's chapter load")
         reviewLog("PASS window-dispatched Escape: cross-tab pending search/verse cancellation, shared loading/Stop controls, late database completion cannot reopen output")
     }
-    @MainActor static func waitUntil(_ predicate: () async -> Bool,
+    @MainActor static func checkReviewFocusGuard(window: NSWindow) throws {
+        for (name, object) in [(NSApplication.didResignActiveNotification, NSApplication.shared as AnyObject),
+                               (NSWindow.didResignKeyNotification, window as AnyObject)] {
+            // An isolated center simulates switching away and back without
+            // changing the real application's activation or key window.
+            let notifications = NotificationCenter()
+            let focusGuard = ReviewFocusGuard(window: window, notifications: notifications)
+            defer { focusGuard.stop() }
+            notifications.post(name: name, object: NSObject())
+            try focusGuard.check()
+            notifications.post(name: name, object: object)
+            notifications.post(name: NSApplication.didBecomeActiveNotification, object: NSApp)
+            notifications.post(name: NSWindow.didBecomeKeyNotification, object: window)
+            let detected: Bool
+            do { try focusGuard.check(); detected = false }
+            catch { detected = true }
+            precondition(detected && NSApp.isActive && window.isKeyWindow,
+                         "Focus review must remember interruptions even after returning to the fixture")
+        }
+        reviewLog("PASS focus review guard: app/window interruptions stay recorded after returning to the fixture")
+    }
+    @MainActor static func waitUntil(_ predicate: () async throws -> Bool,
+                                     diagnostic: () -> String = { "Native asynchronous event did not complete" },
                                      file: StaticString = #file, line: UInt = #line) async throws {
         for _ in 0..<200 {
-            if await predicate() { return }
+            if try await predicate() { return }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
-        preconditionFailure("Native asynchronous event did not complete", file: file, line: line)
+        throw ReviewFailure(description: "\(file):\(line): \(diagnostic())")
     }
     @MainActor static func checkDelayedSearchFocus(output: URL) async throws {
         let reader = ReviewBibleGate()
@@ -480,26 +538,64 @@ struct NativeWorkspaceReview {
         let window = controller.window!
         positionFixtureWindow(window)
         try await waitUntil { NSApp.isActive && window.isKeyWindow }
+        let focusGuard = ReviewFocusGuard(window: window)
+        var focusScenario = "initial"
+        func searchEditor() async throws -> NSTextView {
+            try await waitUntil({
+                try focusGuard.check()
+                guard let editor = subject.search.field.currentEditor() as? NSTextView else { return false }
+                return window.isKeyWindow && window.firstResponder === editor
+            }, diagnostic: { "Search editor unavailable during \(focusScenario): key=\(window.isKeyWindow), active=\(NSApp.isActive), responder=\(String(describing: window.firstResponder)), editor=\(String(describing: subject.search.field.currentEditor()))" })
+            return subject.search.field.currentEditor() as! NSTextView
+        }
+        func focusSearch(_ action: () -> Void) async throws -> NSTextView {
+            // A field editor can exist before the toolbar finishes entering
+            // search. Let its focus/expansion animation finish before typing
+            // or releasing the suspended search completion.
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                NSAnimationContext.runAnimationGroup { _ in
+                    action()
+                    window.contentView?.superview?.layoutSubtreeIfNeeded()
+                } completionHandler: {
+                    continuation.resume()
+                }
+            }
+            return try await searchEditor()
+        }
+        func submitWithReturn() {
+            // Dispatch through NSApplication's event loop. Direct window calls
+            // from this async task bypass the application's native event handling.
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!
+            NSApp.postEvent(event, atStart: false)
+        }
         defer {
+            focusGuard.stop()
             for tab in tabs.windows { tab.close() }
             tabs.shutdown()
             defaults.removePersistentDomain(forName: defaultsName)
         }
         for mode in [SearchMode.wordSearch, .phraseSearch] {
-            for action in ["unchanged", "edit", "edit back", "move focus", "leave and return"] {
-                subject.changeSearchMode(mode)
-                subject.focusSearch(nil)
-                var editor = subject.search.field.currentEditor() as! NSTextView
+            for action in ["unchanged", "refocus", "edit", "edit back", "move focus", "leave and return"] {
+                focusScenario = "\(mode) \(action)"
+                var editor = try await focusSearch {
+                    if subject.searchMode != mode { subject.changeSearchMode(mode) }
+                    else { subject.focusSearch(nil) }
+                }
                 editor.selectAll(nil)
                 editor.insertText("hope", replacementRange: editor.selectedRange())
-                sendKey("\r", code: 36, window: window)
-                try await waitUntil { await reader.hasSearch }
+                submitWithReturn()
+                try await waitUntil { try focusGuard.check(); return await reader.hasSearch }
+                let submittedRevision = subject.search.interactionRevision
                 switch action {
-                case "edit", "edit back":
+                case "refocus", "edit", "edit back":
                     // Return can end field editing. Command-L starts the user's
                     // next draft through the real toolbar responder command.
-                    command("l", modifiers: .command, code: 37, window: window)
-                    editor = subject.search.field.currentEditor() as! NSTextView
+                    editor = try await focusSearch {
+                        command("l", modifiers: .command, code: 37, window: window)
+                    }
+                    if action == "refocus" { break }
                     editor.selectAll(nil)
                     editor.insertText("faith", replacementRange: editor.selectedRange())
                     if action == "edit back" {
@@ -509,17 +605,19 @@ struct NativeWorkspaceReview {
                 case "move focus", "leave and return":
                     subject.focus(.books)
                     if action == "leave and return" {
-                        subject.focusSearch(nil)
-                        editor = subject.search.field.currentEditor() as! NSTextView
+                        editor = try await focusSearch { subject.focusSearch(nil) }
                     }
                 default: break
                 }
                 await reader.release()
                 try await settle(subject)
+                try focusGuard.check()
                 precondition(subject.verses.rows.count == 3)
                 switch action {
                 case "unchanged":
-                    precondition(window.firstResponder === subject.verses.table, "An unchanged \(mode) submission focuses results")
+                    guard window.firstResponder === subject.verses.table else {
+                        throw ReviewFailure(description: "An unchanged \(mode) submission did not focus results: revision=\(subject.search.interactionRevision)/\(submittedRevision), responder=\(String(describing: window.firstResponder))")
+                    }
                 case "move focus":
                     precondition(window.firstResponder === subject.books.outline, "A pending search must respect newer focus")
                 default:
@@ -530,26 +628,30 @@ struct NativeWorkspaceReview {
         }
         await reader.setReadFailure(true)
         for mode in SearchMode.allCases {
-            subject.changeSearchMode(mode)
-            subject.focusSearch(nil)
-            let editor = subject.search.field.currentEditor() as! NSTextView
+            focusScenario = "\(mode) failure"
+            let editor = try await focusSearch {
+                if subject.searchMode != mode { subject.changeSearchMode(mode) }
+                else { subject.focusSearch(nil) }
+            }
             editor.selectAll(nil)
             let draft = mode == .verseReference ? "John 3:16" : "hope"
             editor.insertText(draft, replacementRange: editor.selectedRange())
             await reader.suspend(chapters: true, lookups: false, searches: true)
-            sendKey("\r", code: 36, window: window)
+            submitWithReturn()
             try await waitUntil {
+                try focusGuard.check()
                 if mode == .verseReference { return await reader.hasChapter }
                 return await reader.hasSearch
             }
             await reader.release()
             try await settle(subject)
+            try focusGuard.check()
             precondition(subject.navigation.message != nil && subject.draft == draft)
             precondition(window.firstResponder !== subject.verses.table, "Failed submissions must not focus stale rows")
             precondition(subject.history.entries.isEmpty && live.projector.projectionOwner == nil,
                          "Failed submissions must not record history or publish")
         }
-        reviewLog("PASS delayed Words/Phrase search: Return focuses results only without newer edits or focus changes")
+        reviewLog("PASS delayed Words/Phrase search: Return focuses results only without newer edits, Command-L, or focus changes")
         reviewLog("PASS failed Ref/Words/Phrase submissions: visible errors, preserved draft/focus, no history or publication")
     }
 
