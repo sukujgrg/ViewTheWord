@@ -46,6 +46,60 @@ final class BibleLibraryTests: XCTestCase {
         XCTFail("Import did not finish")
     }
 
+    func testEmptyCatalogHasNoSourcesAndImportRestoresSavedPreferences() async throws {
+        let defaultsName = "BibleLibraryTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: defaultsName)!
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let subject = BibleLibrary(preloadedURLs: [], importer: { url, _, _ in url })
+        for legacyPlaceholder in ["", "/dev/null", "file:///dev/null"] {
+            defaults.set(legacyPlaceholder, forKey: AppDefaultsKey.primaryBibleName)
+            let choices = subject.defaultTranslations(defaults)
+            XCTAssertNotEqual(choices.primary?.path, "/dev/null")
+            XCTAssertNil(subject.sources(for: choices))
+        }
+        let primary = url("NIV"), secondary = url("NLT")
+        defaults.set(primary.absoluteString, forKey: AppDefaultsKey.primaryBibleName)
+        defaults.set(secondary.absoluteString, forKey: AppDefaultsKey.secondaryBibleName)
+        let preferred = subject.defaultTranslations(defaults)
+        XCTAssertEqual(preferred.primary, primary)
+        XCTAssertEqual(preferred.secondary, secondary)
+        XCTAssertNil(subject.sources(for: preferred))
+        for imported in [primary, secondary] {
+            subject.importFile(imported, presenter: .main)
+            try await settle(subject)
+        }
+        let restored = try XCTUnwrap(subject.sources(for: preferred))
+        XCTAssertEqual(restored.primary, primary)
+        XCTAssertEqual(restored.secondary, secondary)
+        XCTAssertEqual(subject.defaultTranslations(defaults), preferred)
+    }
+
+    func testCatalogRefreshPreservesPreferredIdentitiesThroughFallbackAndRelocation() throws {
+        let defaultsName = "BibleLibraryTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: defaultsName)!
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let primary = url("NIV"), secondary = url("NLT")
+        defaults.set(primary.absoluteString, forKey: AppDefaultsKey.primaryBibleName)
+        defaults.set(secondary.absoluteString, forKey: AppDefaultsKey.secondaryBibleName)
+        var catalog = [primary, secondary]
+        let subject = BibleLibrary(catalogProvider: { catalog })
+        let preferred = subject.defaultTranslations(defaults)
+        for remaining in [[primary], [secondary], []] {
+            catalog = remaining
+            subject.refresh()
+            XCTAssertEqual(subject.defaultTranslations(defaults), preferred)
+            XCTAssertEqual(subject.sources(for: preferred)?.primary, remaining.first)
+        }
+        let relocatedPrimary = URL(fileURLWithPath: "/new-location/ENG_NIV.bible")
+        let relocatedSecondary = URL(fileURLWithPath: "/new-location/ENG_NLT.bible")
+        catalog = [relocatedPrimary, relocatedSecondary]
+        subject.refresh()
+        let restored = try XCTUnwrap(subject.sources(for: preferred))
+        XCTAssertEqual(restored.primary, relocatedPrimary)
+        XCTAssertEqual(restored.secondary, relocatedSecondary)
+        XCTAssertEqual(subject.defaultTranslations(defaults), preferred)
+    }
+
     func testEveryIncomingFileIsImportedAndEveryResultKeepsItsPresenter() async throws {
         let importer = SuspendedImporter()
         let subject = library(importer)

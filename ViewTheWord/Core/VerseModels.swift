@@ -60,6 +60,19 @@ struct BibleSources: Equatable, Sendable {
     let revision: Int
 }
 
+/// A value copied when opening a passage, then edited independently in that tab.
+/// Keep the last secondary URL when None is selected, including in saved preferences.
+struct PassageTranslations: Equatable, Sendable {
+    var primary: URL?
+    var secondary: URL?
+    var primaryOnly: Bool
+}
+
+struct ProjectionSource: Equatable, Sendable {
+    let tabID: UUID?
+    let sources: BibleSources
+}
+
 struct VerseRowData: Identifiable, Sendable {
     let id = UUID()
     let primaryChapter: [AVerse]
@@ -134,6 +147,7 @@ struct ProjectorViewData: Equatable, Sendable {
 struct PreparedProjection: Sendable {
     let data: ProjectorViewData
     let owner: ProjectionOwner
+    let sources: BibleSources
     init?(pair: TranslationPair, sources: BibleSources, owner: ProjectionOwner) {
         guard pair.reference == owner.reference else { return nil }
         let secondary = sources.secondary == nil ? nil : pair.secondary
@@ -145,6 +159,7 @@ struct PreparedProjection: Sendable {
             secondaryTranslationName: pair.primary != nil && secondary != nil ? sources.secondary.map(BibleTranslation.name) : nil
         )
         self.owner = owner
+        self.sources = sources
     }
 }
 

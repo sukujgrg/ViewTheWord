@@ -47,8 +47,7 @@ final class AppUpdateTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let defaults = UserDefaults(suiteName: "AppUpdateTests.\(UUID())")!
         let sources = BibleSources(primary: directory.appendingPathComponent("ENG_TST.bible"), secondary: nil, revision: 1)
-        let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [sources.primary]), defaults: defaults,
-                                            sourceResolver: { _ in sources })
+        let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [sources.primary]), defaults: defaults)
         let reference = VerseReference(book: "John", chapter: 3, verse: 16)!
         live.projector.project(.empty, owner: .textInputTarget(reference))
         let windows = (0..<2).map { _ in

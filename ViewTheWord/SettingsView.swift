@@ -17,7 +17,7 @@ struct SettingsView: View {
                 .tag(Tabs.font)
             BibleImportView(library: library)
                 .tabItem {
-                    Label("Bible", systemImage: "book")
+                    Label("Bible Library", systemImage: "book")
                 }
                 .tag(Tabs.bible)
         }
@@ -115,8 +115,6 @@ struct DisplaySettingsView: View {
 
 struct BibleImportView: View {
     @ObservedObject var library: BibleLibrary
-    @AppStorage(AppDefaultsKey.primaryBibleName) private var primaryBibleName = bundledPrimaryBibleUrl?.absoluteString ?? ""
-    @AppStorage(AppDefaultsKey.secondaryBibleName) private var secondaryBibleName = bundledSecondaryBibleUrl?.absoluteString ?? ""
     @State private var showImporter = false
     @State private var removing: URL?
     private let bibleType = UTType(exportedAs: "com.viewtheword.sqlite3.database", conformingTo: .database)
@@ -124,16 +122,12 @@ struct BibleImportView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                translationPicker("Primary", selection: $primaryBibleName)
-                translationPicker("Secondary", selection: $secondaryBibleName)
-            }
-            HStack {
                 Button("Import Bible…", systemImage: "book.circle") { showImporter = true }
                     .disabled(library.isImporting)
                 if library.isImporting { ProgressView().controlSize(.small) }
                 Spacer()
             }
-            Text("Choose a .bible translation to add it to both translation pickers. Import the same file name again to replace an imported translation.")
+            Text("Import a .bible file to make it available in every passage tab. Import the same file name again to replace an imported translation.")
                 .font(.callout).foregroundStyle(.secondary)
             List(library.urls, id: \.absoluteString) { url in
                 HStack {
@@ -164,13 +158,4 @@ struct BibleImportView: View {
         }
     }
 
-    private func translationPicker(_ title: String, selection: Binding<String>) -> some View {
-        Picker(title, selection: selection) {
-            ForEach(library.urls, id: \.absoluteString) { url in
-                Text(BibleTranslation.name(for: url)).tag(url.absoluteString)
-            }
-        }
-        .pickerStyle(.menu)
-        .accessibilityLabel("\(title) translation")
-    }
 }

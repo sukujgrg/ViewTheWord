@@ -1,65 +1,20 @@
 import Foundation
 import Combine
 
+enum BibleLibraryError: LocalizedError {
+    case empty
+
+    var errorDescription: String? {
+        "No translations available. Import a Bible in Settings → Bible Library."
+    }
+}
+
 @MainActor
 final class BibleUrl {
     private static var cachedAvailableBibleUrls: [URL]?
 
-    var primaryBibleUrl: URL
-    var secondaryBibleUrl: URL
-
     static func invalidateAvailableBibleUrlCache() {
         cachedAvailableBibleUrls = nil
-    }
-
-    init() {
-        primaryBibleUrl = bundledPrimaryBibleUrl ?? URL(fileURLWithPath: "/dev/null")
-        secondaryBibleUrl = bundledSecondaryBibleUrl ?? primaryBibleUrl
-
-        let availableBibleUrls = getAvailableBibleUrls()
-
-        let fallbackURL = availableBibleUrls.first ?? URL(fileURLWithPath: "/dev/null")
-        if fallbackURL.path == "/dev/null" {
-            logger.fault("No Bible files are available; using /dev/null as a non-crashing placeholder.")
-        }
-
-        if let primary = getBibleUrl(defaultsKey: AppDefaultsKey.primaryBibleName) {
-            primaryBibleUrl = primary
-        } else if let bundledPrimary = bundledPrimaryBibleUrl {
-            primaryBibleUrl = bundledPrimary
-        } else if let firstAvailable = availableBibleUrls.first {
-            logger.warning("Bundled primary Bible missing; falling back to \(firstAvailable.lastPathComponent).")
-            primaryBibleUrl = firstAvailable
-        } else {
-            primaryBibleUrl = fallbackURL
-        }
-
-        if let secondary = getBibleUrl(defaultsKey: AppDefaultsKey.secondaryBibleName) {
-            secondaryBibleUrl = secondary
-        } else if let bundledSecondary = bundledSecondaryBibleUrl {
-            secondaryBibleUrl = bundledSecondary
-        } else if let secondaryFallback = availableBibleUrls.first(where: { $0 != primaryBibleUrl }) {
-            logger.warning("Bundled secondary Bible missing; falling back to \(secondaryFallback.lastPathComponent).")
-            secondaryBibleUrl = secondaryFallback
-        } else {
-            secondaryBibleUrl = primaryBibleUrl
-        }
-    }
-
-    func getBibleUrl(defaultsKey: String) -> URL? {
-        let availableBibleUrls = getAvailableBibleUrls()
-
-        let defaults = UserDefaults.standard
-
-        if let bibleName = defaults.string(forKey: defaultsKey), !bibleName.isEmpty {
-            let storedLastPath = URL(string: bibleName)?.lastPathComponent
-                ?? URL(fileURLWithPath: bibleName).lastPathComponent
-
-            for url in availableBibleUrls where url.lastPathComponent == storedLastPath {
-                return url
-            }
-        }
-        return nil
     }
 
     func getAvailableBibleUrls(forceRefresh: Bool = false) -> [URL] {
@@ -112,6 +67,12 @@ final class BibleUrl {
 
 
 enum BibleTranslation {
+    static func shortName(for url: URL) -> String {
+        let name = url.deletingPathExtension().lastPathComponent
+        let parts = name.split(separator: "_")
+        return parts.count == 2 ? String(parts[1]) : name
+    }
+
     static func name(for url: URL) -> String {
         let parts = url.deletingPathExtension().lastPathComponent.split(separator: "_").map(String.init)
         guard parts.count == 2 else { return url.deletingPathExtension().lastPathComponent }
@@ -132,43 +93,58 @@ final class BibleLibrary: ObservableObject {
     private var activeImport: ImportRequest?
     private var settingsPresented = false
     private let usesSuppliedCatalog: Bool
+    private let catalogProvider: (() -> [URL])?
     private let importer: Importer
 
     /// A supplied catalog lets native fixtures use repository data without
     /// discovering translations in the operator's Documents directory.
-    init(preloadedURLs: [URL]? = nil, importer: Importer? = nil) {
+    init(preloadedURLs: [URL]? = nil, catalogProvider: (() -> [URL])? = nil, importer: Importer? = nil) {
         let service = BibleImportService()
         self.importer = importer ?? { url, bundledNames, replaceExisting in
             try await service.importBible(selectedFile: url, bundledBibleNames: bundledNames, replaceExisting: replaceExisting)
         }
         usesSuppliedCatalog = preloadedURLs != nil
+        self.catalogProvider = catalogProvider
         if let preloadedURLs {
             urls = preloadedURLs.sorted { $0.lastPathComponent < $1.lastPathComponent }
             revision = 1
         } else { refresh() }
     }
     func refresh() {
-        guard !usesSuppliedCatalog else { revision += 1; return }
-        BibleUrl.invalidateAvailableBibleUrlCache()
-        urls = BibleUrl().getAvailableBibleUrls().sorted { $0.lastPathComponent < $1.lastPathComponent }
-        for key in [AppDefaultsKey.primaryBibleName, AppDefaultsKey.secondaryBibleName] {
-            if let stored = UserDefaults.standard.string(forKey: key), !stored.isEmpty {
-                let defaults = BibleUrl()
-                let fallback = key == AppDefaultsKey.primaryBibleName ? defaults.primaryBibleUrl : defaults.secondaryBibleUrl
-                let resolved = urls.first { $0.lastPathComponent == URL(string: stored)?.lastPathComponent } ?? fallback
-                if resolved.absoluteString != stored { UserDefaults.standard.set(resolved.absoluteString, forKey: key) }
-            }
+        if let catalogProvider {
+            urls = catalogProvider().sorted { $0.lastPathComponent < $1.lastPathComponent }
+        } else if !usesSuppliedCatalog {
+            BibleUrl.invalidateAvailableBibleUrlCache()
+            urls = BibleUrl().getAvailableBibleUrls().sorted { $0.lastPathComponent < $1.lastPathComponent }
         }
         revision += 1
     }
-    func sources(primary: String, secondary: String, primaryOnly: Bool) -> BibleSources {
-        let defaults = BibleUrl()
-        func resolve(_ value: String, fallback: URL) -> URL {
-            let filename = URL(string: value)?.lastPathComponent ?? ""
-            return urls.first { $0.lastPathComponent == filename } ?? fallback
+
+    func sources(for translations: PassageTranslations) -> BibleSources? {
+        func resolve(_ preference: URL?) -> URL? {
+            guard let preference else { return nil }
+            return urls.first { $0.lastPathComponent == preference.lastPathComponent }
         }
-        return BibleSources(primary: resolve(primary, fallback: defaults.primaryBibleUrl),
-                            secondary: primaryOnly ? nil : resolve(secondary, fallback: defaults.secondaryBibleUrl), revision: revision)
+        // Fallbacks depend on the catalog, never another tab's saved preferences.
+        // No available primary means there is no database to read.
+        guard let first = resolve(translations.primary) ?? resolve(bundledPrimaryBibleUrl) ?? urls.first else { return nil }
+        let second = resolve(translations.secondary) ?? resolve(bundledSecondaryBibleUrl)
+            ?? urls.first(where: { $0 != first }) ?? first
+        return BibleSources(primary: first, secondary: translations.primaryOnly ? nil : second, revision: revision)
+    }
+
+    func defaultTranslations(_ defaults: UserDefaults) -> PassageTranslations {
+        func savedURL(_ key: String) -> URL? {
+            guard let value = defaults.string(forKey: key), !value.isEmpty else { return nil }
+            let url = value.hasPrefix("/") ? URL(fileURLWithPath: value) : URL(string: value)
+            guard let url, url.isFileURL, BibleFileRule.isValidFileName(url.lastPathComponent) else { return nil }
+            return url
+        }
+        let primary = savedURL(AppDefaultsKey.primaryBibleName) ?? bundledPrimaryBibleUrl ?? urls.first
+        let secondary = savedURL(AppDefaultsKey.secondaryBibleName) ?? bundledSecondaryBibleUrl
+            ?? urls.first(where: { $0 != primary }) ?? primary
+        return PassageTranslations(primary: primary, secondary: secondary,
+                                   primaryOnly: defaults.bool(forKey: AppDefaultsKey.showOnlyPrimary))
     }
 }
 

@@ -134,6 +134,33 @@ final class NavigationTests: XCTestCase {
         await fulfillment(of: [discarded], timeout: 0.05)
     }
 
+    func testProjectionCancellationCallbackRunsOnceAndNeverAfterSuccess() async {
+        let reader = SuspendedBible()
+        let model = VerseTargetModel(readerFactory: { _ in reader })
+        let old = verse(3, 16), new = verse(3, 17)
+        var canceled: [VerseReference] = []
+        let discarded = expectation(description: "Canceled work remains silent"); discarded.isInverted = true
+        model.requestProjection(owner: .searchResult(old.reference), sources: sources, onCancelled: {
+            canceled.append(old.reference)
+        }) { _ in discarded.fulfill() }
+        await reader.waitForLookup(old.reference)
+        model.cancelProjection()
+        model.cancelProjection()
+        XCTAssertEqual(canceled, [old.reference])
+
+        let completed = expectation(description: "New projection succeeds")
+        model.requestProjection(owner: .searchResult(new.reference), sources: sources, onCancelled: {
+            canceled.append(new.reference)
+        }) { _ in completed.fulfill() }
+        await reader.waitForLookup(new.reference)
+        await reader.finishLookup(new.reference, rows: [new])
+        await fulfillment(of: [completed], timeout: 1)
+        model.cancelProjection()
+        XCTAssertEqual(canceled, [old.reference])
+        await reader.finishLookup(old.reference, rows: [old])
+        await fulfillment(of: [discarded], timeout: 0.05)
+    }
+
     func testPrimaryOnlyRefreshDropsMissingSecondaryVerseAndUsesValidFallback() async {
         let primary = MemoryBible(rows: [verse(1, 14, book: "3 John")])
         let secondary = MemoryBible(rows: [verse(1, 14, book: "3 John"), verse(1, 15, book: "3 John")])
