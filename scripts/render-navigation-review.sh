@@ -5,7 +5,7 @@ mkdir -p build/review/navigation build/NavigationModuleCache
 xcrun swiftc -parse-as-library -D VTW_REVIEW -strict-concurrency=complete -module-cache-path build/NavigationModuleCache \
   ViewTheWord/AppConstants.swift ViewTheWord/RxVerse.swift ViewTheWord/Db.swift ViewTheWord/Core/*.swift \
   ViewTheWord/NativeReferenceTable.swift ViewTheWord/NativeSearchField.swift ViewTheWord/AppKit/*.swift \
-  ViewTheWord/HelpView.swift ViewTheWord/Extensions.swift ViewTheWord/ProjectorView.swift ViewTheWord/SettingsView.swift \
+  ViewTheWord/HelpView.swift ViewTheWord/Extensions.swift ViewTheWord/ProjectorView.swift \
   scripts/render-navigation-review.swift -o build/review/navigation/check-navigation
 # LaunchServices activation is reliable for an application bundle; a raw command-
 # line executable can be refused activation by macOS, leaving no real key window.
