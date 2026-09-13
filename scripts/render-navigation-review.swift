@@ -410,8 +410,11 @@ struct NativeWorkspaceReview {
         precondition(!b.secondaryPicker.isHidden && b.secondaryPicker.selectedItem?.title == "None")
         precondition(a.library.defaultTranslations(a.defaults) == b.translations)
         precondition(second.window!.tab.title == "● Blanked · Psalm 23:1 · BSI")
-        for (name, dark) in [("native-translation-tabs-live", false), ("native-translation-tabs-blanked-dark", true)] {
-            a.toggleBlank(nil)
+        for (name, dark, blanked) in [("native-translation-tabs-live", false, false),
+                                       ("native-translation-tabs-live-dark", true, false),
+                                       ("native-translation-tabs-blanked", false, true),
+                                       ("native-translation-tabs-blanked-dark", true, true)] {
+            if live.projector.isBlanked != blanked { a.toggleBlank(nil) }
             original.window!.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             second.window!.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             // Capture the owning tab while a different tab has native selection.
