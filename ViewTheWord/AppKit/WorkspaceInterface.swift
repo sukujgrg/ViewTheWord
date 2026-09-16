@@ -291,8 +291,23 @@ extension MainWorkspaceController: NSToolbarDelegate {
         window.tab.title = title
         if let status {
             let attributed = NSMutableAttributedString(string: title)
-            attributed.addAttribute(.foregroundColor, value: projector.isBlanked ? NSColor.secondaryLabelColor : NSColor.systemGreen,
-                                    range: NSRange(location: 0, length: (status as NSString).length))
+            if projector.isBlanked {
+                attributed.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor,
+                                        range: NSRange(location: 0, length: (status as NSString).length))
+            } else {
+                // AppKit dims title colors in unselected tabs, but preserves
+                // full-color image attachments. Draw at the requested scale;
+                // the system color resolves in the current drawing appearance.
+                let image = NSImage(size: NSSize(width: 8, height: 8), flipped: false) { bounds in
+                    NSColor.systemGreen.setFill()
+                    NSBezierPath(ovalIn: bounds).fill()
+                    return true
+                }
+                image.isTemplate = false
+                let attachment = NSTextAttachment()
+                attachment.image = image
+                attributed.replaceCharacters(in: NSRange(location: 0, length: 1), with: NSAttributedString(attachment: attachment))
+            }
             window.tab.attributedTitle = attributed
         } else { window.tab.attributedTitle = nil }
         let detail = searchPage.map { "Search: " + $0.request.text } ?? passage
