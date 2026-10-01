@@ -1,5 +1,17 @@
 # Manual validation before a live presentation
 
+## Snapshot feedback — 2 October 2026
+
+Protocol v2 requires both apps to be updated. Feedback reports receiver snapshot acceptance and software output readiness; it does not certify rendered frames or physical HDMI delivery.
+
+Validation completed:
+- AltView: all 102 tests passed in the AltView checkout’s `build/OutputFeedbackV2Tests.xcresult`.
+- ViewTheWord: all 121 Swift tests and 8 review regression checks passed; the native Debug Xcode build succeeded.
+- A separate-process loopback TLS check compiled the actual AltView receiver and actual ViewTheWord sender sources, and passed acceptance, output readiness changes, blanking and release.
+- Regression coverage includes bounded feedback bursts, stale/future/previous-lease acknowledgements, continued sending while acknowledgements are suppressed, timeout recovery, takeover/disconnect resets, local submission identity, and native preview/open/close plus simulated screen-sleep/wake and missing-display states.
+
+Still manual: two-Mac network behavior, real HDMI attach/detach, real display sleep/wake and minimization, and downstream switcher/projector output. A closed or unavailable output can still accept a snapshot; verify that both facts appear in the sending app's status details.
+
 Automated coverage lives in `Tests` and `scripts/test-review-regressions.py`. These checks exercise real macOS interactions and hardware that the unit suite cannot replace.
 
 - Switch Old Testament / New Testament with the pinned sidebar control, then scroll the books. Both full titles must fit at the narrowest sidebar width, and the switch must stay visible. Switching testaments must preserve the prepared passage and live output. Open references and saved entries from the opposite testament and confirm their books become visible and selected. Check that each passage tab retains its own filter and that Tab/Shift-Tab and VoiceOver can reach the switch and book list.
@@ -60,3 +72,13 @@ live projection without opening a dialog. Check offline/error and up-to-date
 responses. With a disposable signed/notarized installation, verify installing a
 newer release, rejecting a corrupted archive, relaunching, and retaining Bible
 imports, bookmarks, history, and settings. See [self-updates](self-updates.md).
+
+
+## AltView on a second Mac
+
+- Start AltView receiving on a trusted local network. In ViewTheWord Settings → AltView, find the receiver through Bonjour; also try its host/IP and port 49721. Verify Local Network permission handling on both Macs and wrong-code recovery. Connect Only must leave any existing receiver output unchanged.
+- Project bilingual verses, then change primary translation on the live source tab. Verify only primary text, reference, and the correct translation label arrive. With NIV primary and NLT secondary, project 3 John 1:15 and verify the NLT fallback and label. Browsing and inactive-tab translation changes must not alter remote output.
+- Rapidly advance verses, Blank/Unblank, then Stop/Escape. Verify the latest text wins, blank retains text, and Stop clears/relinquishes output. Stop during pairing or pending ownership must never publish later. Closing Settings or passage tabs must preserve established sending; application shutdown clears the sender's output.
+- Drop the network while sending (including while blanked), continue using ViewTheWord, then reconnect. Latest text should resume only if the receiver is unowned. Have another sender take output; automatic refresh/blank/reconnect/Stop from ViewTheWord must not disturb it. An explicit new projection can take it back.
+- On a signed app, restart ViewTheWord and reconnect with an empty code to confirm saved Keychain pairing. Reset the receiver code/identity and verify that entering its new code explicitly pairs again. Keychain unavailability must produce a visible temporary-pairing notice, never a plaintext secret file.
+- Confirm receiver display selection, missing-display behavior, lower-third animation, and perceived latency on actual output hardware. ViewTheWord cannot confirm physical rendering through protocol v1; the footer reports sending/ownership only.

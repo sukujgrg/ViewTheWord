@@ -18,6 +18,7 @@ final class LiveProjectionController: ObservableObject {
         }
     }
 
+    let altView: AltViewProjectionService
     let projector: ProjectorViewModel
     let library: BibleLibrary
     let defaults: UserDefaults
@@ -41,7 +42,8 @@ final class LiveProjectionController: ObservableObject {
 
     init(projector: ProjectorViewModel? = nil, library: BibleLibrary? = nil,
          defaults: UserDefaults = .standard,
-         refreshReader: VerseTargetModel? = nil) {
+         refreshReader: VerseTargetModel? = nil, altView: AltViewProjectionService? = nil) {
+        self.altView = altView ?? AltViewProjectionService(defaults: defaults)
         self.projector = projector ?? ProjectorViewModel()
         self.library = library ?? .shared
         self.defaults = defaults
@@ -153,6 +155,7 @@ final class LiveProjectionController: ObservableObject {
         isClosing = false
         projector.project(projection.data, owner: projection.owner, preserveBlanking: preserveBlanking)
         openProjector()
+        altView.publish(projection, blanked: projector.isBlanked, explicit: !preserveBlanking)
     }
     func publishRow(_ projection: PreparedProjection, from tabID: UUID) {
         let token = cancelPreparation()
@@ -253,6 +256,7 @@ final class LiveProjectionController: ObservableObject {
         else { handleProjectorWindowClosed() }
     }
     func handleProjectorWindowClosed() {
+        altView.stop()
         isClosing = true
         repositionTask?.cancel()
         let canceledModel = preparingModel
@@ -280,10 +284,12 @@ final class LiveProjectionController: ObservableObject {
     func toggleBlank() {
         guard windowOpened else { return }
         projector.toggleBlank()
+        altView.setBlanked(projector.isBlanked)
     }
     func shutdown() {
         preferenceTask?.cancel()
         closeProjector()
+        altView.disconnect()
         subscriptions.removeAll()
     }
 }

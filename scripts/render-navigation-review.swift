@@ -712,6 +712,7 @@ struct NativeWorkspaceReview {
         var catalog = [sources.primary, sources.secondary!, imported]
         let library = BibleLibrary(preloadedURLs: catalog, catalogProvider: { catalog })
         let settings = SettingsWindowController(library: library, defaults: defaults)
+        settings.settings.altView.discoveryEnabled = false // Appearance fixtures never browse the live network.
         let window = settings.window!
         positionFixtureWindow(window)
         settings.showWindow(nil)
@@ -721,7 +722,7 @@ struct NativeWorkspaceReview {
         precondition(!descendants(settings.settings).contains { String(describing: type(of: $0)).contains("NSHostingController") })
         for (name, dark) in [("light", false), ("dark", true)] {
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-            for (index, pane) in [(0, "display"), (1, "library")] {
+            for (index, pane) in [(0, "display"), (1, "library"), (2, "altview")] {
                 settings.settings.selectedTabViewItemIndex = index
                 try await Task.sleep(nanoseconds: 100_000_000)
                 window.contentView?.layoutSubtreeIfNeeded()

@@ -26,6 +26,16 @@ In the chapter grid, arrow keys follow the current arrangement and keep focus th
 
 Bookmarks are available from verse actions and appear with history beneath the chapter list. Only direct reference submissions are added to history. Adding, removing, and clearing bookmarks support Undo/Redo. If a stored history/bookmark file is unreadable, the app preserves a recovery copy and shows a message.
 
+## AltView output
+
+Open **Settings → AltView**, select a discovered receiver (or enter its host and port), and enter the eight-character code shown on the receiving Mac. Allow Local Network access when macOS asks. **Connect Only** pairs without changing output; then project a verse in ViewTheWord to send it. Connect again each app session; leave the code empty to reuse a saved pairing.
+
+AltView receives the reference, primary verse text, and translation name. If the primary verse is absent, it receives the available secondary text and its translation name. Verse changes, source-tab translation changes, Blank/Unblank, and Stop/Escape follow local projection. Browsing, switching tabs, and closing a passage tab leave output alone. Appearance and the receiving display remain controlled in AltView.
+
+The connection runs independently of browsing and local projection. Rapid changes send the newest snapshot without accumulating a backlog. After a drop, a former owner resumes only if no other sender controls AltView; an explicit new projection can take output. Disconnect disables remote sending without stopping local projection. Pairing secrets and receiver identity are saved together in Keychain, with an in-session fallback and visible notice if saving fails.
+
+Update both apps together: this integration requires AltView protocol v2, with no v1 fallback. The workspace footer and Settings report snapshot acceptance and output readiness separately. A closed output window, preview-only window, missing display, minimized window, sleeping display, or unavailable artwork is reported even while text is accepted. If acknowledgements are delayed, sending and local projection continue. Acceptance confirms receiver state, not rendered pixels or downstream HDMI output. Text over its protocol limits stops only ViewTheWord’s remote output and shows a notice; local projection continues.
+
 ## Searching
 
 In **Ref** mode, short book prefixes work: `p 1 1` opens Psalm 1:1, and `1p1 1` opens 1 Peter 1:1. When several book names match, the first book in Bible order is used. The chapter must exist in that book, so `1p140` is rejected.

@@ -147,9 +147,12 @@ extension MainWorkspaceController: NSToolbarDelegate {
         footer.spacing = 8
         footer.edgeInsets = NSEdgeInsets(top: 8, left: 16, bottom: 8, right: 16)
         messageLabel.textColor = .secondaryLabelColor
-        let screenRow = horizontalStack([screenLabel, NSView()])
+        let screenRow = horizontalStack([screenLabel, NSView(), altViewStatusLabel])
         screenRow.edgeInsets = NSEdgeInsets(top: 5, left: 16, bottom: 5, right: 16)
         screenLabel.textColor = .secondaryLabelColor
+        altViewStatusLabel.textColor = .secondaryLabelColor
+        altViewStatusLabel.lineBreakMode = .byTruncatingTail
+        altViewStatusLabel.setAccessibilityLabel("AltView connection")
         let stack = WorkspaceColumnStack(content: [status, heading, separator(), resultsHeader, tableContainer,
                                        loadMoreButton, footer, separator(), screenRow])
         for row in [heading, status, resultsHeader, footer, screenRow] {
@@ -256,6 +259,8 @@ extension MainWorkspaceController: NSToolbarDelegate {
         }
     }
     func renderStatus() {
+        altViewStatusLabel.stringValue = liveProjection.altView.summary
+        altViewStatusLabel.toolTip = liveProjection.altView.detail
         let live = windowOpened && projector.projectionOwner != nil
         if !live { preview.performClose(nil) }
         statusLabel.stringValue = live ? "\(projector.isBlanked ? "Blanked" : "Live") · \(projector.projectorViewData.title)" : "Projection stopped"
