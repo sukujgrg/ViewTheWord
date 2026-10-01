@@ -32,7 +32,7 @@ final class MainWorkspaceController: NSViewController {
     let secondaryPicker = NSPopUpButton()
     let chapterTitle = nativeLabel("Choose a book", size: 12, weight: .semibold)
     let referenceTitle = nativeLabel("View The Word", size: 14, weight: .semibold)
-    let altViewStatusLabel = nativeLabel("AltView off", size: 11)
+    let altViewStatusBadge = AltViewStatusBadge()
     let statusLabel = nativeLabel("Projection stopped", size: 12, weight: .medium)
     let screenLabel = nativeLabel("", size: 11)
     let loadingLabel = nativeLabel("", size: 11)

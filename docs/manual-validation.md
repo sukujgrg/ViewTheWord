@@ -76,6 +76,7 @@ imports, bookmarks, history, and settings. See [self-updates](self-updates.md).
 
 ## AltView on a second Mac
 
+- Check the connection badges in the workspace footer and Settings in light and dark appearance: green when connected, amber while connecting/unavailable, gray after Disconnect. Close Settings, then drop and restore the connection while browsing; the footer must update without moving the workspace columns, taking keyboard focus, or presenting a sheet. A connected receiver with a closed output window must still report that output condition.
 - Start AltView receiving on a trusted local network. In ViewTheWord Settings → AltView, find the receiver through Bonjour; also try its host/IP and port 49721. Verify Local Network permission handling on both Macs and wrong-code recovery. Connect Only must leave any existing receiver output unchanged.
 - Project bilingual verses, then change primary translation on the live source tab. Verify only primary text, reference, and the correct translation label arrive. With NIV primary and NLT secondary, project 3 John 1:15 and verify the NLT fallback and label. Browsing and inactive-tab translation changes must not alter remote output.
 - Rapidly advance verses, Blank/Unblank, then Stop/Escape. Verify the latest text wins, blank retains text, and Stop clears/relinquishes output. Stop during pairing or pending ownership must never publish later. Closing Settings or passage tabs must preserve established sending; application shutdown clears the sender's output.

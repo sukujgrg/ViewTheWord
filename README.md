@@ -30,6 +30,8 @@ Bookmarks are available from verse actions and appear with history beneath the c
 
 Open **Settings → AltView**, select a discovered receiver (or enter its host and port), and enter the eight-character code shown on the receiving Mac. Allow Local Network access when macOS asks. **Connect Only** pairs without changing output; then project a verse in ViewTheWord to send it. Connect again each app session; leave the code empty to reuse a saved pairing.
 
+A compact status badge in the workspace footer and Settings turns green while the paired receiver is connected, amber while connecting or unavailable, and gray when off. The footer continues updating with Settings closed and leaves keyboard focus unchanged. Green confirms the connection; output readiness and snapshot acknowledgements are reported separately.
+
 AltView receives the reference, primary verse text, and translation name. If the primary verse is absent, it receives the available secondary text and its translation name. Verse changes, source-tab translation changes, Blank/Unblank, and Stop/Escape follow local projection. Browsing, switching tabs, and closing a passage tab leave output alone. Appearance and the receiving display remain controlled in AltView.
 
 The connection runs independently of browsing and local projection. Rapid changes send the newest snapshot without accumulating a backlog. After a drop, a former owner resumes only if no other sender controls AltView; an explicit new projection can take output. Disconnect disables remote sending without stopping local projection. Pairing secrets and receiver identity are saved together in Keychain, with an in-session fallback and visible notice if saving fails.

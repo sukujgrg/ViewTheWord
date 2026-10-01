@@ -9,6 +9,7 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
     let codeField = NSSecureTextField()
     let connectButton = NSButton(title: "Connect Only", target: nil, action: nil)
     let disconnectButton = NSButton(title: "Disconnect", target: nil, action: nil)
+    let statusBadge = AltViewStatusBadge()
     let statusLabel = NSTextField(wrappingLabelWithString: "Not connected")
     private let service: AltViewProjectionService
     private var receivers: [AltViewDestination] = []
@@ -50,7 +51,7 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
         statusLabel.maximumNumberOfLines = 3
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.setAccessibilityLabel("AltView status")
-        let actions = horizontalStack([connectButton, disconnectButton, NSView()])
+        let actions = horizontalStack([connectButton, disconnectButton, NSView(), statusBadge])
         let stack = NSStackView(views: [explanation, row("Receiver", receiverPicker),
                                       row("Address", horizontalStack([hostField, portField])),
                                       row("Pairing code", codeField), actions, statusLabel, hint])
@@ -99,6 +100,7 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
         disconnectButton.isEnabled = service.isEnabled
         disconnectButton.title = service.isEnabled && !service.status.connected && service.status.failureReason == nil ? "Cancel" : "Disconnect"
         connectButton.isEnabled = !service.isEnabled || service.status.failureReason != nil
+        statusBadge.render(service)
         statusLabel.stringValue = service.detail + (discoveryNote.map { "\n\($0)" } ?? "")
         statusLabel.toolTip = statusLabel.stringValue
         if service.status.connected { codeField.stringValue = "" }

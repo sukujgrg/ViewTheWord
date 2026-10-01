@@ -147,12 +147,21 @@ extension MainWorkspaceController: NSToolbarDelegate {
         footer.spacing = 8
         footer.edgeInsets = NSEdgeInsets(top: 8, left: 16, bottom: 8, right: 16)
         messageLabel.textColor = .secondaryLabelColor
-        let screenRow = horizontalStack([screenLabel, NSView(), altViewStatusLabel])
+        // Reserve the status width so connection/feedback changes cannot resize
+        // the split-view columns while the operator is browsing.
+        let altViewStatusSlot = NSView()
+        altViewStatusBadge.translatesAutoresizingMaskIntoConstraints = false
+        altViewStatusSlot.addSubview(altViewStatusBadge)
+        NSLayoutConstraint.activate([
+            altViewStatusSlot.widthAnchor.constraint(equalToConstant: 280),
+            altViewStatusBadge.leadingAnchor.constraint(greaterThanOrEqualTo: altViewStatusSlot.leadingAnchor),
+            altViewStatusBadge.trailingAnchor.constraint(equalTo: altViewStatusSlot.trailingAnchor),
+            altViewStatusBadge.topAnchor.constraint(equalTo: altViewStatusSlot.topAnchor),
+            altViewStatusBadge.bottomAnchor.constraint(equalTo: altViewStatusSlot.bottomAnchor)
+        ])
+        let screenRow = horizontalStack([screenLabel, NSView(), altViewStatusSlot])
         screenRow.edgeInsets = NSEdgeInsets(top: 5, left: 16, bottom: 5, right: 16)
         screenLabel.textColor = .secondaryLabelColor
-        altViewStatusLabel.textColor = .secondaryLabelColor
-        altViewStatusLabel.lineBreakMode = .byTruncatingTail
-        altViewStatusLabel.setAccessibilityLabel("AltView connection")
         let stack = WorkspaceColumnStack(content: [status, heading, separator(), resultsHeader, tableContainer,
                                        loadMoreButton, footer, separator(), screenRow])
         for row in [heading, status, resultsHeader, footer, screenRow] {
@@ -259,8 +268,7 @@ extension MainWorkspaceController: NSToolbarDelegate {
         }
     }
     func renderStatus() {
-        altViewStatusLabel.stringValue = liveProjection.altView.summary
-        altViewStatusLabel.toolTip = liveProjection.altView.detail
+        altViewStatusBadge.render(liveProjection.altView, showOutputStatus: true)
         let live = windowOpened && projector.projectionOwner != nil
         if !live { preview.performClose(nil) }
         statusLabel.stringValue = live ? "\(projector.isBlanked ? "Blanked" : "Live") · \(projector.projectorViewData.title)" : "Projection stopped"

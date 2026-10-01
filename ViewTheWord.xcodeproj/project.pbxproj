@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A17A20260000000000000901 /* AltViewStatusBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000902 /* AltViewStatusBadge.swift */; };
 		A17A20260000000000000801 /* AltViewSettingsController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000802 /* AltViewSettingsController.swift */; };
 		A17A20260000000000000701 /* SnapshotMailbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000702 /* SnapshotMailbox.swift */; };
 		A17A20260000000000000601 /* SenderClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000602 /* SenderClient.swift */; };
@@ -52,6 +53,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		A17A20260000000000000902 /* AltViewStatusBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppKit/AltViewStatusBadge.swift; sourceTree = "<group>"; };
 		A17A20260000000000000802 /* AltViewSettingsController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppKit/AltViewSettingsController.swift; sourceTree = "<group>"; };
 		A17A20260000000000000702 /* SnapshotMailbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AltView/SnapshotMailbox.swift; sourceTree = "<group>"; };
 		A17A20260000000000000602 /* SenderClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AltView/SenderClient.swift; sourceTree = "<group>"; };
@@ -176,6 +178,7 @@
 				A17A20260000000000000602 /* SenderClient.swift */,
 				A17A20260000000000000702 /* SnapshotMailbox.swift */,
 				A17A20260000000000000802 /* AltViewSettingsController.swift */,
+				A17A20260000000000000902 /* AltViewStatusBadge.swift */,
 				039A40962872325E00A672BD /* SettingsWindowController.swift */,
 					03EEAE4E28793D69008EC35C /* AppConstants.swift */,
 					B26FEF4F287B94F000DAD012 /* Extensions.swift */,
@@ -324,6 +327,7 @@
 				A17A20260000000000000601 /* SenderClient.swift in Sources */,
 				A17A20260000000000000701 /* SnapshotMailbox.swift in Sources */,
 				A17A20260000000000000801 /* AltViewSettingsController.swift in Sources */,
+				A17A20260000000000000901 /* AltViewStatusBadge.swift in Sources */,
 				039A40972872325E00A672BD /* SettingsWindowController.swift in Sources */,
 				B26FEF50287B94F000DAD012 /* Extensions.swift in Sources */,
 				03EFCF7928703DC500A69AD2 /* ProjectorView.swift in Sources */,
