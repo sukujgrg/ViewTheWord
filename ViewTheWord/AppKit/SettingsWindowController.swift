@@ -11,10 +11,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var presentationTask: Task<Void, Never>?
     private var presentingSheet = false
 
-    init(library: BibleLibrary? = nil, defaults: UserDefaults = .standard) {
+    init(library: BibleLibrary? = nil, defaults: UserDefaults = .standard, altView: AltViewProjectionService? = nil) {
         let library = library ?? .shared
         self.library = library
-        settings = NativeSettingsController(library: library, defaults: defaults)
+        settings = NativeSettingsController(library: library, defaults: defaults, altView: altView ?? AltViewProjectionService(defaults: defaults))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 340),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Settings"
@@ -38,10 +38,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         settings.display.reload()
         super.showWindow(sender)
         window?.makeKeyAndOrderFront(sender)
+        if settings.selectedTabViewItemIndex == 2 { settings.altView.startDiscovery() }
         scheduleAlertPresentation()
     }
     func windowDidBecomeKey(_ notification: Notification) { scheduleAlertPresentation() }
     func windowWillClose(_ notification: Notification) {
+        settings.altView.stopDiscovery()
         library.setSettingsPresented(false)
         if let sheet = window?.attachedSheet { window?.endSheet(sheet, returnCode: .cancel) }
     }
@@ -118,9 +120,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 @MainActor
 final class NativeSettingsController: NSTabViewController {
     let display: DisplaySettingsController
+    let altView: AltViewSettingsController
     let bibleLibrary: BibleLibrarySettingsController
 
-    init(library: BibleLibrary, defaults: UserDefaults) {
+    init(library: BibleLibrary, defaults: UserDefaults, altView: AltViewProjectionService? = nil) {
+        self.altView = AltViewSettingsController(service: altView ?? AltViewProjectionService(defaults: defaults))
         display = DisplaySettingsController(defaults: defaults)
         bibleLibrary = BibleLibrarySettingsController(library: library)
         super.init(nibName: nil, bundle: nil)
@@ -128,7 +132,8 @@ final class NativeSettingsController: NSTabViewController {
         tabStyle = .toolbar
         transitionOptions = []
         for (controller, label, symbol) in [(display as NSViewController, "Display", "display"),
-                                           (bibleLibrary, "Bible Library", "books.vertical")] {
+                                           (bibleLibrary, "Bible Library", "books.vertical"),
+                                           (self.altView, "AltView", "network")] {
             let item = NSTabViewItem(viewController: controller)
             item.label = label
             item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)

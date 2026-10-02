@@ -1,0 +1,247 @@
+import Foundation
+import Network
+import XCTest
+@testable import ViewTheWordCore
+
+@MainActor
+private final class AltViewNetworkObservation {
+    var receiver = FixtureReceiverStatus()
+    var a = AltViewSenderStatus()
+    var b = AltViewSenderStatus()
+}
+
+@MainActor
+final class AltViewNetworkTests: XCTestCase {
+    private let key = Data("ABCD2345".utf8)
+    private func eventually(_ predicate: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        for _ in 0..<600 {
+            if predicate() { return }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTFail("Network condition did not complete", file: file, line: line)
+        throw NSError(domain: "AltViewTests", code: 1)
+    }
+    func testMissingAcknowledgementsDoNotBlockPublicationAndCanRecover() async throws {
+        let state = AltViewNetworkObservation()
+        let receiver = FixtureReceiverServer(receiverID: UUID()) { value in MainActor.assumeIsolated { state.receiver = value } }
+        receiver.setAcknowledgementsEnabled(false)
+        receiver.updateOutputReadiness(.ready)
+        receiver.start(name: "Feedback", key: key, advertise: false)
+        let client = AltViewSenderClient(name: "A") { value in MainActor.assumeIsolated { state.a = value } }
+        defer { client.disconnect(); receiver.stop() }
+        try await eventually { state.receiver.port != nil }
+        let id = UUID(), intent = UUID()
+        client.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!), key: key, expectedReceiverID: nil, connectionID: id)
+        try await eventually { state.a.connected && state.a.feedback.output == .ready }
+        client.submit(.init(connectionID: id, content: .init(body: "First"), intent: intent))
+        try await eventually { state.receiver.content.body == "First" && state.a.ownsOutput }
+        try await eventually { state.a.feedback.overdue }
+        XCTAssertTrue(state.a.connected)
+        XCTAssertFalse(state.a.feedback.accepted)
+        for index in 0..<2_000 { client.submit(.init(connectionID: id, content: .init(body: "Verse \(index)"), intent: intent)) }
+        client.submit(.init(connectionID: id, content: .init(body: "Latest", visible: false), intent: intent))
+        try await eventually { state.receiver.content.body == "Latest" }
+        XCTAssertFalse(state.receiver.content.visible)
+        XCTAssertTrue(state.a.connected, "Missing feedback never disconnects a healthy sender")
+        receiver.setAcknowledgementsEnabled(true)
+        try await eventually { state.a.feedback.accepted }
+        XCTAssertFalse(state.a.feedback.overdue)
+        receiver.updateOutputReadiness(.displayMissing)
+        try await eventually { state.a.feedback.output == .displayMissing }
+        XCTAssertTrue(state.a.feedback.accepted, "Acceptance does not imply a display is available")
+        client.submit(.init(connectionID: id, content: nil, intent: nil))
+        try await eventually { !state.a.ownsOutput && state.receiver.ownerName == nil }
+        XCTAssertFalse(state.a.feedback.accepted)
+    }
+    func testEncryptedOwnershipBurstBlankReleaseAndReconnect() async throws {
+        let state = AltViewNetworkObservation()
+        let receiver = FixtureReceiverServer(receiverID: UUID()) { value in MainActor.assumeIsolated { state.receiver = value } }
+        receiver.start(name: "Test", key: key, advertise: false)
+        let a = AltViewSenderClient(name: "A") { value in MainActor.assumeIsolated { state.a = value } }
+        let b = AltViewSenderClient(name: "B") { value in MainActor.assumeIsolated { state.b = value } }
+        defer { a.disconnect(); b.disconnect(); receiver.stop() }
+        try await eventually { state.receiver.port != nil }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!)
+        let aID = UUID(), bID = UUID(), firstIntent = UUID()
+        a.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: aID)
+        b.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: bID)
+        try await eventually { state.a.connected && state.b.connected }
+        XCTAssertNil(state.receiver.ownerName, "Pairing alone cannot take output")
+        a.submit(.init(connectionID: aID, content: .init(body: "First"), intent: firstIntent))
+        try await eventually { state.receiver.content.body == "First" && state.a.ownsOutput }
+        for index in 0..<2_000 {
+            a.submit(.init(connectionID: aID, content: .init(body: "Verse \(index)"), intent: UUID()))
+        }
+        let currentIntent = UUID()
+        a.submit(.init(connectionID: aID, content: .init(body: "Latest · മലയാളം", visible: false), intent: currentIntent))
+        try await eventually { state.receiver.content.body == "Latest · മലയാളം" && !state.receiver.content.visible }
+        receiver.dropConnections(named: "A")
+        try await eventually { !state.a.connected }
+        XCTAssertFalse(state.a.feedback.accepted)
+        XCTAssertNil(state.a.feedback.output)
+        a.submit(.init(connectionID: aID, content: .init(body: "Newest while offline", visible: false), intent: currentIntent))
+        try await eventually { state.a.ownsOutput && state.receiver.content.body == "Newest while offline" }
+        XCTAssertFalse(state.receiver.content.visible, "Reconnect preserves blanking")
+        let bIntent = UUID()
+        b.submit(.init(connectionID: bID, content: .init(body: "B owns output"), intent: bIntent))
+        try await eventually { state.b.ownsOutput && !state.a.ownsOutput }
+        XCTAssertFalse(state.a.feedback.accepted)
+        XCTAssertEqual(state.a.feedback.sentRevision, 0)
+        a.submit(.init(connectionID: aID, content: .init(body: "Automatic refresh"), intent: currentIntent))
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(state.receiver.content.body, "B owns output", "Refresh cannot steal ownership")
+        a.submit(.init(connectionID: aID, content: nil, intent: nil))
+        b.submit(.init(connectionID: bID, content: .init(body: "B still owns output", visible: false), intent: bIntent))
+        try await eventually { state.receiver.content.body == "B still owns output" }
+        XCTAssertEqual(state.receiver.ownerName, "B", "Stopping A cannot clear B")
+        b.submit(.init(connectionID: bID, content: nil, intent: nil))
+        try await eventually { state.receiver.ownerName == nil && !state.receiver.content.visible }
+    }
+    func testReconnectCannotTakeFromAnotherSenderAndStopCancelsRestoration() async throws {
+        let state = AltViewNetworkObservation()
+        let receiver = FixtureReceiverServer(receiverID: UUID()) { value in MainActor.assumeIsolated { state.receiver = value } }
+        receiver.start(name: "Test", key: key, advertise: false)
+        let a = AltViewSenderClient(name: "A") { value in MainActor.assumeIsolated { state.a = value } }
+        let b = AltViewSenderClient(name: "B") { value in MainActor.assumeIsolated { state.b = value } }
+        defer { a.disconnect(); b.disconnect(); receiver.stop() }
+        try await eventually { state.receiver.port != nil }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!)
+        let aID = UUID(), bID = UUID()
+        a.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: aID)
+        b.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: bID)
+        try await eventually { state.a.connected && state.b.connected }
+        a.submit(.init(connectionID: aID, content: .init(body: "A"), intent: UUID()))
+        try await eventually { state.a.ownsOutput }
+        receiver.dropConnections(named: "A")
+        try await eventually { !state.a.connected }
+        XCTAssertFalse(state.a.feedback.accepted)
+        XCTAssertNil(state.a.feedback.output)
+        b.submit(.init(connectionID: bID, content: .init(body: "B"), intent: UUID()))
+        try await eventually { state.b.ownsOutput }
+        a.submit(.init(connectionID: aID, content: .init(body: "A offline change"), intent: UUID()))
+        try await eventually { state.a.connected }
+        XCTAssertFalse(state.a.ownsOutput)
+        XCTAssertEqual(state.receiver.content.body, "B")
+        a.submit(.init(connectionID: aID, content: .init(body: "Explicit new projection"), intent: UUID()))
+        try await eventually { state.a.ownsOutput }
+        receiver.dropConnections(named: "A")
+        try await eventually { !state.a.connected }
+        XCTAssertFalse(state.a.feedback.accepted)
+        XCTAssertNil(state.a.feedback.output)
+        a.submit(.init(connectionID: aID, content: nil, intent: nil))
+        try await eventually { state.a.connected }
+        XCTAssertFalse(state.a.ownsOutput)
+        XCTAssertNil(state.receiver.ownerName)
+        XCTAssertEqual(state.receiver.content, .empty)
+    }
+    func testIdleDisconnectBeforeResumeGrantStillRestoresLatestSnapshot() async throws {
+        let state = AltViewNetworkObservation()
+        let receiver = FixtureReceiverServer(receiverID: UUID()) { value in MainActor.assumeIsolated { state.receiver = value } }
+        receiver.start(name: "Test", key: key, advertise: false)
+        let a = AltViewSenderClient(name: "A") { value in MainActor.assumeIsolated { state.a = value } }
+        let b = AltViewSenderClient(name: "B") { value in MainActor.assumeIsolated { state.b = value } }
+        defer { a.disconnect(); b.disconnect(); receiver.stop() }
+        try await eventually { state.receiver.port != nil }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!)
+        let id = UUID(), intent = UUID()
+        a.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: id)
+        b.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: UUID())
+        try await eventually { state.a.connected && state.b.connected }
+        a.submit(.init(connectionID: id, content: .init(body: "First"), intent: intent))
+        try await eventually { state.a.feedback.accepted }
+
+        receiver.setResumesSuspended(true)
+        receiver.dropConnections(named: "A")
+        try await eventually { state.receiver.pendingResumes == 1 }
+        a.submit(.init(connectionID: id, content: .init(body: "Latest", visible: false), intent: intent))
+        b.disconnect()
+        try await eventually { state.receiver.connections == 1 }
+        receiver.setResumesSuspended(false)
+        try await eventually { state.a.failureReason != nil || (state.a.feedback.accepted && state.receiver.content.body == "Latest") }
+        XCTAssertNil(state.a.failureReason)
+        XCTAssertTrue(state.a.connected)
+        XCTAssertTrue(state.a.ownsOutput)
+        XCTAssertEqual(state.receiver.content.body, "Latest")
+        XCTAssertFalse(state.receiver.content.visible, "Restoration preserves the latest blanking state")
+    }
+    func testRefusedResumeStillAllowsExplicitTake() async throws {
+        let state = AltViewNetworkObservation()
+        let receiver = FixtureReceiverServer(receiverID: UUID()) { value in MainActor.assumeIsolated { state.receiver = value } }
+        receiver.start(name: "Test", key: key, advertise: false)
+        let a = AltViewSenderClient(name: "A") { value in MainActor.assumeIsolated { state.a = value } }
+        let b = AltViewSenderClient(name: "B") { value in MainActor.assumeIsolated { state.b = value } }
+        defer { a.disconnect(); b.disconnect(); receiver.stop() }
+        try await eventually { state.receiver.port != nil }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!)
+        let aID = UUID(), bID = UUID(), intent = UUID()
+        a.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: aID)
+        b.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: bID)
+        try await eventually { state.a.connected && state.b.connected }
+        a.submit(.init(connectionID: aID, content: .init(body: "A"), intent: intent))
+        try await eventually { state.a.feedback.accepted }
+
+        receiver.setResumesSuspended(true)
+        receiver.dropConnections(named: "A")
+        try await eventually { state.receiver.pendingResumes == 1 }
+        b.submit(.init(connectionID: bID, content: .init(body: "B"), intent: UUID()))
+        try await eventually { state.b.feedback.accepted && state.a.ownerName == "B" }
+        receiver.setResumesSuspended(false)
+        try await eventually { state.receiver.pendingResumes == 0 }
+        a.submit(.init(connectionID: aID, content: .init(body: "Automatic refresh", visible: false), intent: intent))
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(state.receiver.content.body, "B", "A refused resume must not become an automatic takeover")
+        XCTAssertTrue(state.b.ownsOutput)
+        a.submit(.init(connectionID: aID, content: .init(body: "Explicit projection"), intent: UUID()))
+        try await eventually { state.a.feedback.accepted && state.receiver.content.body == "Explicit projection" }
+        XCTAssertNil(state.a.failureReason)
+        XCTAssertTrue(state.a.ownsOutput)
+    }
+    func testStopWhileTakeIsInFlightNeverPublishesLateGrant() async throws {
+        let state = AltViewNetworkObservation()
+        let receiver = FixtureReceiverServer(receiverID: UUID()) { value in MainActor.assumeIsolated { state.receiver = value } }
+        receiver.grantDelay = 0.4
+        receiver.start(name: "Test", key: key, advertise: false)
+        let client = AltViewSenderClient(name: "A") { value in MainActor.assumeIsolated { state.a = value } }
+        defer { client.disconnect(); receiver.stop() }
+        try await eventually { state.receiver.port != nil }
+        let id = UUID()
+        client.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!), key: key, expectedReceiverID: nil, connectionID: id)
+        try await eventually { state.a.connected }
+        client.submit(.init(connectionID: id, content: .init(body: "Must never appear"), intent: UUID()))
+        try await eventually { state.receiver.ownerName == "A" }
+        client.submit(.init(connectionID: id, content: nil, intent: nil))
+        try await eventually { state.receiver.ownerName == nil && state.a.connected }
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertEqual(state.receiver.content, .empty)
+        XCTAssertFalse(state.a.ownsOutput)
+    }
+    func testWrongCodeIdentityPinAndEscapedFrameLimit() async throws {
+        let state = AltViewNetworkObservation()
+        let receiverID = UUID()
+        let receiver = FixtureReceiverServer(receiverID: receiverID) { value in MainActor.assumeIsolated { state.receiver = value } }
+        receiver.start(name: "Test", key: key, advertise: false)
+        let client = AltViewSenderClient(name: "A") { value in MainActor.assumeIsolated { state.a = value } }
+        defer { client.disconnect(); receiver.stop() }
+        try await eventually { state.receiver.port != nil }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!)
+        client.connect(to: endpoint, key: Data("ABCD2346".utf8), expectedReceiverID: nil, connectionID: UUID())
+        try await eventually { state.a.failureReason != nil }
+        XCTAssertFalse(state.a.connected)
+        client.connect(to: endpoint, key: key, expectedReceiverID: UUID(), connectionID: UUID())
+        try await eventually { state.a.failureReason?.contains("identity changed") == true }
+        XCTAssertFalse(state.a.connected)
+        let id = UUID()
+        client.connect(to: endpoint, key: key, expectedReceiverID: receiverID, connectionID: id)
+        try await eventually { state.a.connected }
+        client.submit(.init(connectionID: id, content: .init(body: "Good"), intent: UUID()))
+        try await eventually { state.a.ownsOutput }
+        let rejectedIntent = UUID()
+        client.submit(.init(connectionID: id, content: .init(body: String(repeating: "\u{01}", count: 24_000)), intent: rejectedIntent))
+        try await eventually { state.a.outputIssue?.contains("text limit") == true && state.receiver.ownerName == nil }
+        XCTAssertTrue(state.a.connected, "Oversized text does not break the connection or local projection")
+        client.submit(.init(connectionID: id, content: .init(body: "Automatic refresh after rejection"), intent: rejectedIntent))
+        try await eventually { state.a.outputIssue == nil }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertNil(state.receiver.ownerName, "Recovering valid text is still an automatic refresh, not a takeover")
+    }
+}

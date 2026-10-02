@@ -7,6 +7,16 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A17A20260000000000000901 /* AltViewStatusBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000902 /* AltViewStatusBadge.swift */; };
+		A17A20260000000000000801 /* AltViewSettingsController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000802 /* AltViewSettingsController.swift */; };
+		A17A20260000000000000701 /* SnapshotMailbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000702 /* SnapshotMailbox.swift */; };
+		A17A20260000000000000601 /* SenderClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000602 /* SenderClient.swift */; };
+		A17A20260000000000000501 /* SecureConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000502 /* SecureConnection.swift */; };
+		A17A20260000000000000401 /* ReceiverDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000402 /* ReceiverDiscovery.swift */; };
+		A17A20260000000000000301 /* Protocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000302 /* Protocol.swift */; };
+		A17A20260000000000000201 /* ProjectionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000202 /* ProjectionService.swift */; };
+		A17A20260000000000000101 /* PeerChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000102 /* PeerChannel.swift */; };
+		A17A20260000000000000001 /* PairingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000002 /* PairingStore.swift */; };
         C0DE09130000000000000001 /* AppUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE09130000000000000002 /* AppUpdateController.swift */; };
         C0DE09130000000000000003 /* SparkleUpdateDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE09130000000000000004 /* SparkleUpdateDriver.swift */; };
         C0DE09130000000000000005 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = C0DE09130000000000000006 /* Sparkle */; };
@@ -43,6 +53,16 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		A17A20260000000000000902 /* AltViewStatusBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppKit/AltViewStatusBadge.swift; sourceTree = "<group>"; };
+		A17A20260000000000000802 /* AltViewSettingsController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppKit/AltViewSettingsController.swift; sourceTree = "<group>"; };
+		A17A20260000000000000702 /* SnapshotMailbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AltView/SnapshotMailbox.swift; sourceTree = "<group>"; };
+		A17A20260000000000000602 /* SenderClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AltView/SenderClient.swift; sourceTree = "<group>"; };
+		A17A20260000000000000502 /* SecureConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AltView/SecureConnection.swift; sourceTree = "<group>"; };
+		A17A20260000000000000402 /* ReceiverDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AltView/ReceiverDiscovery.swift; sourceTree = "<group>"; };
+		A17A20260000000000000302 /* Protocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AltView/Protocol.swift; sourceTree = "<group>"; };
+		A17A20260000000000000202 /* ProjectionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AltView/ProjectionService.swift; sourceTree = "<group>"; };
+		A17A20260000000000000102 /* PeerChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AltView/PeerChannel.swift; sourceTree = "<group>"; };
+		A17A20260000000000000002 /* PairingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AltView/PairingStore.swift; sourceTree = "<group>"; };
         C0DE09130000000000000002 /* AppUpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppKit/AppUpdateController.swift; sourceTree = "<group>"; };
         C0DE09130000000000000004 /* SparkleUpdateDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SparkleUpdateDriver.swift; sourceTree = "<group>"; };
 		C0DE09120000000000000002 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
@@ -149,6 +169,16 @@
 				03A1D27E28685D5400511E73 /* RxVerse.swift */,
 				C0DE09090000000000000002 /* NativeReferenceTable.swift */,
 				C0DE09090000000000000004 /* NativeSearchField.swift */,
+				A17A20260000000000000002 /* PairingStore.swift */,
+				A17A20260000000000000102 /* PeerChannel.swift */,
+				A17A20260000000000000202 /* ProjectionService.swift */,
+				A17A20260000000000000302 /* Protocol.swift */,
+				A17A20260000000000000402 /* ReceiverDiscovery.swift */,
+				A17A20260000000000000502 /* SecureConnection.swift */,
+				A17A20260000000000000602 /* SenderClient.swift */,
+				A17A20260000000000000702 /* SnapshotMailbox.swift */,
+				A17A20260000000000000802 /* AltViewSettingsController.swift */,
+				A17A20260000000000000902 /* AltViewStatusBadge.swift */,
 				039A40962872325E00A672BD /* SettingsWindowController.swift */,
 					03EEAE4E28793D69008EC35C /* AppConstants.swift */,
 					B26FEF4F287B94F000DAD012 /* Extensions.swift */,
@@ -288,6 +318,16 @@
 				59EF02F09C319845B8440037 /* VerseModels.swift in Sources */,
 				8BD95551E16310567CD441E6 /* VerseTargetModel.swift in Sources */,
 
+				A17A20260000000000000001 /* PairingStore.swift in Sources */,
+				A17A20260000000000000101 /* PeerChannel.swift in Sources */,
+				A17A20260000000000000201 /* ProjectionService.swift in Sources */,
+				A17A20260000000000000301 /* Protocol.swift in Sources */,
+				A17A20260000000000000401 /* ReceiverDiscovery.swift in Sources */,
+				A17A20260000000000000501 /* SecureConnection.swift in Sources */,
+				A17A20260000000000000601 /* SenderClient.swift in Sources */,
+				A17A20260000000000000701 /* SnapshotMailbox.swift in Sources */,
+				A17A20260000000000000801 /* AltViewSettingsController.swift in Sources */,
+				A17A20260000000000000901 /* AltViewStatusBadge.swift in Sources */,
 				039A40972872325E00A672BD /* SettingsWindowController.swift in Sources */,
 				B26FEF50287B94F000DAD012 /* Extensions.swift in Sources */,
 				03EFCF7928703DC500A69AD2 /* ProjectorView.swift in Sources */,
@@ -452,7 +492,7 @@
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readonly;
 				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_OUTGOING_NETWORK_CONNECTIONS = NO;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
 				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
@@ -502,7 +542,7 @@
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readonly;
 				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_OUTGOING_NETWORK_CONNECTIONS = NO;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
 				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
