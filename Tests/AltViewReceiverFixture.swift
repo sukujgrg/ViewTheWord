@@ -62,6 +62,7 @@ struct FixtureReceiverStatus: Equatable, Sendable {
     var listening = false
     var port: UInt16?
     var connections = 0
+    var pendingResumes = 0
     var connectedSenders: [FixtureSenderIdentity] = []
     var ownerID: UUID?
     var ownerName: String?
@@ -140,6 +141,22 @@ final class FixtureReceiverServer: @unchecked Sendable {
     }
     func stop() { queue.async { [weak self] in self?.stopOnQueue(); self?.publish() } }
     var grantDelay: TimeInterval = 0
+    private var resumesSuspended = false
+    private var suspendedResumes = Set<UUID>()
+    func setResumesSuspended(_ suspended: Bool) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.resumesSuspended = suspended
+            if !suspended {
+                let pending = self.suspendedResumes
+                self.suspendedResumes.removeAll()
+                for id in pending {
+                    if let peer = self.peers[id] { self.handle(AltViewWireMessage(kind: .resume), from: peer) }
+                }
+            }
+            self.publish()
+        }
+    }
     private var acknowledgementsEnabled = true
     func setAcknowledgementsEnabled(_ enabled: Bool) {
         queue.async { [weak self] in
@@ -169,6 +186,7 @@ final class FixtureReceiverServer: @unchecked Sendable {
         listener?.cancel(); listener = nil
         let closing = Array(peers.values)
         peers.removeAll()
+        suspendedResumes.removeAll()
         for peer in closing { peer.onClose = nil; peer.close(nil) }
         state = FixtureReceiverState()
         status = FixtureReceiverStatus()
@@ -184,6 +202,7 @@ final class FixtureReceiverServer: @unchecked Sendable {
         peer.onClose = { [weak self, weak peer] reason in
             guard let self, let peer, self.peers.removeValue(forKey: peer.id) != nil else { return }
             let wasOwner = self.state.ownerConnection == peer.id
+            self.suspendedResumes.remove(peer.id)
             self.state.disconnect(peer.id)
             if wasOwner { self.status.message = "Sender disconnected — output cleared" }
             self.broadcastOwnership()
@@ -208,6 +227,13 @@ final class FixtureReceiverServer: @unchecked Sendable {
             return
         }
         guard state.senders[peer.id] != nil else { peer.close("Identify sender first."); return }
+        // Deterministically place another connection's ownership broadcast
+        // before the response to a reconnecting sender's resume request.
+        if message.kind == .resume, resumesSuspended {
+            suspendedResumes.insert(peer.id)
+            publish()
+            return
+        }
         switch message.kind {
         case .take, .resume:
             guard let lease = state.take(connection: peer.id, onlyIfUnowned: message.kind == .resume) else {
@@ -259,6 +285,7 @@ final class FixtureReceiverServer: @unchecked Sendable {
     }
     private func publish() {
         status.connections = state.senders.count
+        status.pendingResumes = suspendedResumes.count
         status.connectedSenders = state.senders.values.sorted {
             $0.name == $1.name ? $0.id.uuidString < $1.id.uuidString : $0.name < $1.name
         }

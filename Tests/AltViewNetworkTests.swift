@@ -134,6 +134,68 @@ final class AltViewNetworkTests: XCTestCase {
         XCTAssertNil(state.receiver.ownerName)
         XCTAssertEqual(state.receiver.content, .empty)
     }
+    func testIdleDisconnectBeforeResumeGrantStillRestoresLatestSnapshot() async throws {
+        let state = AltViewNetworkObservation()
+        let receiver = FixtureReceiverServer(receiverID: UUID()) { value in MainActor.assumeIsolated { state.receiver = value } }
+        receiver.start(name: "Test", key: key, advertise: false)
+        let a = AltViewSenderClient(name: "A") { value in MainActor.assumeIsolated { state.a = value } }
+        let b = AltViewSenderClient(name: "B") { value in MainActor.assumeIsolated { state.b = value } }
+        defer { a.disconnect(); b.disconnect(); receiver.stop() }
+        try await eventually { state.receiver.port != nil }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!)
+        let id = UUID(), intent = UUID()
+        a.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: id)
+        b.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: UUID())
+        try await eventually { state.a.connected && state.b.connected }
+        a.submit(.init(connectionID: id, content: .init(body: "First"), intent: intent))
+        try await eventually { state.a.feedback.accepted }
+
+        receiver.setResumesSuspended(true)
+        receiver.dropConnections(named: "A")
+        try await eventually { state.receiver.pendingResumes == 1 }
+        a.submit(.init(connectionID: id, content: .init(body: "Latest", visible: false), intent: intent))
+        b.disconnect()
+        try await eventually { state.receiver.connections == 1 }
+        receiver.setResumesSuspended(false)
+        try await eventually { state.a.failureReason != nil || (state.a.feedback.accepted && state.receiver.content.body == "Latest") }
+        XCTAssertNil(state.a.failureReason)
+        XCTAssertTrue(state.a.connected)
+        XCTAssertTrue(state.a.ownsOutput)
+        XCTAssertEqual(state.receiver.content.body, "Latest")
+        XCTAssertFalse(state.receiver.content.visible, "Restoration preserves the latest blanking state")
+    }
+    func testRefusedResumeStillAllowsExplicitTake() async throws {
+        let state = AltViewNetworkObservation()
+        let receiver = FixtureReceiverServer(receiverID: UUID()) { value in MainActor.assumeIsolated { state.receiver = value } }
+        receiver.start(name: "Test", key: key, advertise: false)
+        let a = AltViewSenderClient(name: "A") { value in MainActor.assumeIsolated { state.a = value } }
+        let b = AltViewSenderClient(name: "B") { value in MainActor.assumeIsolated { state.b = value } }
+        defer { a.disconnect(); b.disconnect(); receiver.stop() }
+        try await eventually { state.receiver.port != nil }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!)
+        let aID = UUID(), bID = UUID(), intent = UUID()
+        a.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: aID)
+        b.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: bID)
+        try await eventually { state.a.connected && state.b.connected }
+        a.submit(.init(connectionID: aID, content: .init(body: "A"), intent: intent))
+        try await eventually { state.a.feedback.accepted }
+
+        receiver.setResumesSuspended(true)
+        receiver.dropConnections(named: "A")
+        try await eventually { state.receiver.pendingResumes == 1 }
+        b.submit(.init(connectionID: bID, content: .init(body: "B"), intent: UUID()))
+        try await eventually { state.b.feedback.accepted && state.a.ownerName == "B" }
+        receiver.setResumesSuspended(false)
+        try await eventually { state.receiver.pendingResumes == 0 }
+        a.submit(.init(connectionID: aID, content: .init(body: "Automatic refresh", visible: false), intent: intent))
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(state.receiver.content.body, "B", "A refused resume must not become an automatic takeover")
+        XCTAssertTrue(state.b.ownsOutput)
+        a.submit(.init(connectionID: aID, content: .init(body: "Explicit projection"), intent: UUID()))
+        try await eventually { state.a.feedback.accepted && state.receiver.content.body == "Explicit projection" }
+        XCTAssertNil(state.a.failureReason)
+        XCTAssertTrue(state.a.ownsOutput)
+    }
     func testStopWhileTakeIsInFlightNeverPublishesLateGrant() async throws {
         let state = AltViewNetworkObservation()
         let receiver = FixtureReceiverServer(receiverID: UUID()) { value in MainActor.assumeIsolated { state.receiver = value } }

@@ -123,10 +123,19 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
         status.submissionID = submission.id
         let explicit = submission.intent != nil && submission.intent != lastIntent
         lastIntent = submission.intent
-        if explicit, status.connected, lease == nil, awaitingGrant == nil {
-            awaitingGrant = .take
-            peer?.discardPendingState()
-            peer?.send(AltViewWireMessage(kind: .take))
+        if explicit, status.connected, lease == nil {
+            if awaitingGrant == .resume {
+                // v2 cannot distinguish a refused resume from an unrelated
+                // ownership broadcast. Retire that uncertain request before
+                // taking explicitly, so its late grant cannot race the new take.
+                stopTransport()
+                restoreOwnership = false; pendingTake = true
+                openConnection()
+            } else if awaitingGrant == nil {
+                awaitingGrant = .take
+                peer?.discardPendingState()
+                peer?.send(AltViewWireMessage(kind: .take))
+            }
         } else if explicit, !status.connected, initialDeadline != nil {
             pendingTake = true
         }
@@ -231,11 +240,12 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
             guard status.connected else { fail("Ownership before welcome."); return }
             status.ownerName = message.ownerName
             if message.ownerID != senderID || message.lease != lease {
-                lease = nil; status.ownsOutput = false; restoreOwnership = false
+                lease = nil; status.ownsOutput = false
+                if awaitingGrant != .resume || message.ownerID != nil { restoreOwnership = false }
                 status.feedback.resetSnapshot()
-                // An ownership broadcast can precede the response to our take.
-                // A refused resume also ends the pending grant.
-                if awaitingGrant == .resume { awaitingGrant = nil }
+                // Broadcasts are unsolicited, including when an idle sender
+                // disconnects. They cannot settle a pending take or resume;
+                // a valid grant may still follow on this connection.
                 peer?.discardPendingState()
                 status.message = message.ownerName.map { "Output controlled by \($0)" } ?? "Connected · waiting for projection"
             }
