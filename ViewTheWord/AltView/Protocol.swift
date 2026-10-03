@@ -1,4 +1,4 @@
-// Adapted from AltView’s protocol v2 implementation (2026-10-02).
+// Adapted from AltView’s protocol v2 implementation (template discovery: 2026-10-03).
 import Foundation
 
 enum AltViewProtocol {
@@ -7,13 +7,93 @@ enum AltViewProtocol {
     static let maximumFrameSize = 65_536
     static let maximumClients = 8
     static let heartbeatInterval: TimeInterval = 1
-    // Initial setup may need Bonjour resolution and macOS Local Network consent.
-    static let connectionTimeout: TimeInterval = 30
+    // Each attempt is bounded; unavailable receivers retry with capped backoff.
     static let connectionAttemptTimeout: TimeInterval = 10
     static let timeout: TimeInterval = 5
 }
 
 enum AltViewEmptyRegionBehavior: String, Codable, Sendable { case collapse, reserve }
+
+/// Stable, opaque IDs let senders select future receiver templates without an app update.
+struct AltViewContentTemplate: RawRepresentable, Codable, Hashable, Sendable {
+    let rawValue: String
+    init(rawValue: String) { self.rawValue = rawValue }
+    static let scripture = Self(rawValue: "scripture")
+    static let lyrics = Self(rawValue: "lyrics")
+    var isValid: Bool {
+        (1...64).contains(rawValue.utf8.count) && rawValue.utf8.allSatisfy {
+            (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || [45, 46, 95].contains($0)
+        }
+    }
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        self.init(rawValue: try value.decode(String.self))
+        guard isValid else { throw DecodingError.dataCorruptedError(in: value, debugDescription: "Invalid template ID") }
+    }
+    func encode(to encoder: Encoder) throws {
+        var value = encoder.singleValueContainer()
+        try value.encode(rawValue)
+    }
+}
+
+struct AltViewTemplateDescriptor: Codable, Equatable, Sendable {
+    let id: AltViewContentTemplate
+    let name: String
+    var isValid: Bool { id.isValid && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.utf8.count <= 128 }
+}
+
+/// Receiver policy is independent of sender ownership and snapshot acceptance.
+struct AltViewTemplatePolicy: Codable, Equatable, Sendable {
+    enum Mode: String, Codable, Sendable { case sender, custom, fixed }
+    var mode: Mode
+    var template: AltViewContentTemplate?
+    static let sender = Self(mode: .sender)
+    static let custom = Self(mode: .custom)
+    static func fixed(_ template: AltViewContentTemplate) -> Self { Self(mode: .fixed, template: template) }
+}
+
+struct AltViewTemplateCapabilities: Equatable, Sendable {
+    // nil means discovery is unavailable (older receiver); [] means no templates.
+    var templates: [AltViewTemplateDescriptor]?
+    var policy: AltViewTemplatePolicy?
+    var isValid: Bool {
+        if let templates {
+            guard templates.count <= 64, templates.allSatisfy(\.isValid),
+                  Set(templates.map(\.id)).count == templates.count else { return false }
+        }
+        guard let policy else { return true }
+        guard templates != nil else { return false }
+        return policy.mode == .fixed ? policy.template.map(supports) == true : policy.template == nil
+    }
+    func supports(_ id: AltViewContentTemplate) -> Bool { templates?.contains { $0.id == id } == true }
+    func contentForSending(_ content: AltViewDisplayContent) -> AltViewDisplayContent {
+        var result = content
+        if let id = content.template, !supports(id) { result.template = nil }
+        return result
+    }
+    func requestDetail(_ requested: AltViewContentTemplate?) -> String {
+        guard let requested else { return "Use the receiver’s layout without requesting a template." }
+        if let descriptor = templates?.first(where: { $0.id == requested }) {
+            return "Requested template: \(descriptor.name)."
+        }
+        return templates == nil
+            ? "This receiver does not advertise templates; using its saved layout."
+            : "The requested template is unavailable; using the receiver’s layout."
+    }
+    var policyDetail: String {
+        switch policy?.mode {
+        case .custom: return "AltView overrides requests with its custom layout."
+        case .fixed:
+            let name = templates?.first { $0.id == policy?.template }?.name ?? "a fixed template"
+            return "AltView overrides requests with \(name)."
+        case .sender: return "AltView follows supported requests; otherwise it uses its custom layout."
+        case nil: return "Receiver override status is unknown."
+        }
+    }
+    func detail(requested: AltViewContentTemplate?) -> String {
+        "\(requestDetail(requested)) \(policyDetail)"
+    }
+}
 
 struct AltViewDisplayContent: Codable, Equatable, Sendable {
     var title = ""
@@ -21,6 +101,7 @@ struct AltViewDisplayContent: Codable, Equatable, Sendable {
     var footer = ""
     var visible = true
     var emptyRegions = AltViewEmptyRegionBehavior.collapse
+    var template: AltViewContentTemplate?
 
     var hasTitle: Bool { !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var hasFooter: Bool { !footer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -28,12 +109,12 @@ struct AltViewDisplayContent: Codable, Equatable, Sendable {
     static let empty = AltViewDisplayContent(visible: false)
 
     var isValid: Bool {
-        title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024
+        title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 && (template?.isValid ?? true)
     }
 }
 
 extension AltViewDisplayContent {
-    private enum CodingKeys: String, CodingKey { case title, body, footer, visible, emptyRegions }
+    private enum CodingKeys: String, CodingKey { case title, body, footer, visible, emptyRegions, template }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -43,6 +124,7 @@ extension AltViewDisplayContent {
         footer = try values.decodeIfPresent(String.self, forKey: .footer) ?? ""
         visible = try values.decode(Bool.self, forKey: .visible)
         emptyRegions = try values.decodeIfPresent(AltViewEmptyRegionBehavior.self, forKey: .emptyRegions) ?? .collapse
+        template = try values.decodeIfPresent(AltViewContentTemplate.self, forKey: .template)
     }
 }
 
@@ -64,6 +146,8 @@ struct AltViewWireMessage: Codable, Equatable, Sendable {
     var ownerName: String?
     var detail: String?
     var outputReadiness: AltViewOutputReadiness?
+    var templates: [AltViewTemplateDescriptor]?
+    var templatePolicy: AltViewTemplatePolicy?
 }
 
 enum AltViewProtocolFailure: Error, LocalizedError {
@@ -135,6 +219,9 @@ struct AltViewMessageOutbox {
 extension AltViewWireMessage {
     var isValidReceiverMessage: Bool {
         guard version == AltViewProtocol.version else { return false }
+        if kind == .welcome || kind == .feedback {
+            guard AltViewTemplateCapabilities(templates: templates, policy: templatePolicy).isValid else { return false }
+        }
         let validOwner = (ownerID == nil && ownerName == nil)
             || (ownerID != nil && ownerName.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.utf8.count <= 128 } == true)
         switch kind {

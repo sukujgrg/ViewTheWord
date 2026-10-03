@@ -37,7 +37,8 @@ final class AltViewStatusBadge: NSView {
             connection = "AltView · Connected"
             indicatorColor = .systemGreen
         } else if service.isEnabled {
-            connection = service.status.failureReason == nil ? "AltView · Connecting" : "AltView · Unavailable"
+            connection = service.status.waitingToRetry ? "AltView · Waiting to reconnect"
+                : (service.status.failureReason == nil ? "AltView · Connecting" : "AltView · Unavailable")
             indicatorColor = .systemOrange
         } else {
             connection = "AltView off"

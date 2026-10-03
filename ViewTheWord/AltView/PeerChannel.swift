@@ -1,6 +1,7 @@
 // Adapted from AltView’s protocol v1 implementation (2026-10-02).
 import Foundation
 import Network
+import Security
 
 /// All methods and callbacks are confined to the supplied queue.
 final class AltViewPeerChannel: @unchecked Sendable {
@@ -10,7 +11,7 @@ final class AltViewPeerChannel: @unchecked Sendable {
     var onReady: (() -> Void)?
     var onMessage: ((AltViewWireMessage) -> Void)?
     var onClose: ((String?) -> Void)?
-    private(set) var retryableSetupFailure = false
+    private(set) var retryableFailure = false
     private var decoder = AltViewFrameDecoder()
     private var outbox = AltViewMessageOutbox()
     private var sending = false
@@ -57,20 +58,26 @@ final class AltViewPeerChannel: @unchecked Sendable {
         guard !closed else { return }
         let timedOut = ready ? now - lastReceived > timeout : now - started > connectionTimeout
         if timedOut || sendStarted.map({ now - $0 > timeout }) == true {
-            close("Connection timed out.", retryable: !ready)
+            close("Connection timed out.", retryable: true)
         }
     }
     private func fail(_ error: NWError) {
-        if case .tls = error {
+        if !Self.isRetryableNetworkError(error) {
             close("The secure connection was rejected. Check the pairing code on the receiving Mac.")
         } else {
-            close(error.localizedDescription, retryable: !ready)
+            close(error.localizedDescription, retryable: true)
         }
+    }
+    static func isRetryableNetworkError(_ error: NWError) -> Bool {
+        guard case .tls(let status) = error else { return true }
+        // A receiver quitting or losing its network can surface as a TLS close,
+        // not only a POSIX error. These do not mean the pairing was rejected.
+        return [errSSLClosedGraceful, errSSLClosedAbort, errSSLClosedNoNotify, errSSLNetworkTimeout].contains(status)
     }
     func close(_ reason: String?, retryable: Bool = false) {
         guard !closed else { return }
         closed = true
-        retryableSetupFailure = retryable
+        retryableFailure = retryable
         connection.stateUpdateHandler = nil
         connection.cancel()
         let callback = onClose
@@ -86,7 +93,7 @@ final class AltViewPeerChannel: @unchecked Sendable {
             connection.send(content: frame, completion: .contentProcessed { [weak self] error in
                 guard let self, !self.closed else { return }
                 self.sending = false; self.sendStarted = nil
-                if let error { self.close(error.localizedDescription) } else { self.pump() }
+                if let error { self.fail(error) } else { self.pump() }
             })
         } catch { close(error.localizedDescription) }
     }
@@ -102,8 +109,8 @@ final class AltViewPeerChannel: @unchecked Sendable {
                         if self.closed { return }
                     }
                 }
-                if let error { self.close(error.localizedDescription) }
-                else if complete { self.close("Peer disconnected.") }
+                if let error { self.fail(error) }
+                else if complete { self.close("Peer disconnected.", retryable: true) }
                 else { self.receive() }
             } catch { self.close(error.localizedDescription) }
         }

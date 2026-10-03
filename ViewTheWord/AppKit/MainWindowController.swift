@@ -183,6 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showMainWindow()
         NSApplication.shared.activate(ignoringOtherApps: true)
         updates?.start()
+        passages.liveProjection.altView.restoreConnection()
     }
     private func applyAppearance() {
         let name: NSAppearance.Name = UserDefaults.standard.bool(forKey: AppDefaultsKey.preferDarkMode) ? .darkAqua : .aqua

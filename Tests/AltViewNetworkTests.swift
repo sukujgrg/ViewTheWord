@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import Security
 import XCTest
 @testable import ViewTheWordCore
 
@@ -20,6 +21,152 @@ final class AltViewNetworkTests: XCTestCase {
         }
         XCTFail("Network condition did not complete", file: file, line: line)
         throw NSError(domain: "AltViewTests", code: 1)
+    }
+    func testTemplateDiscoveryUpdatesObserversAndResolvesEverySnapshotAndReconnect() async throws {
+        let state = AltViewNetworkObservation()
+        let receiver = FixtureReceiverServer(receiverID: UUID()) { value in MainActor.assumeIsolated { state.receiver = value } }
+        let future = AltViewContentTemplate(rawValue: "future.layout")
+        let entries = [AltViewTemplateDescriptor(id: .scripture, name: "Scripture"), .init(id: future, name: "Future")]
+        receiver.updateTemplateCapabilities(.init(templates: entries, policy: .sender))
+        receiver.start(name: "Templates", key: key, advertise: false)
+        let a = AltViewSenderClient(name: "A") { value in MainActor.assumeIsolated { state.a = value } }
+        let b = AltViewSenderClient(name: "B") { value in MainActor.assumeIsolated { state.b = value } }
+        defer { a.disconnect(); b.disconnect(); receiver.stop() }
+        try await eventually { state.receiver.port != nil }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!)
+        let id = UUID(), intent = UUID()
+        a.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: id)
+        // A publication queued before welcome must resolve against its discovery.
+        a.submit(.init(connectionID: id, content: .init(body: "First", template: .scripture), intent: intent))
+        b.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: UUID())
+        try await eventually { state.a.feedback.accepted && state.b.connected }
+        XCTAssertEqual(state.receiver.content.template, .scripture)
+        XCTAssertEqual(state.a.templateCapabilities.templates, entries)
+        XCTAssertFalse(state.b.ownsOutput)
+        let initialRevision = state.receiver.revision
+        receiver.updateTemplateCapabilities(.init(templates: entries, policy: .fixed(future)))
+        try await eventually { state.a.templateCapabilities.policy == .fixed(future) && state.b.templateCapabilities.policy == .fixed(future) }
+        XCTAssertEqual(state.receiver.revision, initialRevision, "Policy broadcasts do not publish")
+        a.submit(.init(connectionID: id, content: .init(body: "Hidden", visible: false, template: .scripture), intent: intent))
+        try await eventually { state.receiver.content.body == "Hidden" && state.a.feedback.accepted }
+        XCTAssertEqual(state.receiver.content.template, .scripture, "An override must not strip a supported request")
+        let hiddenRevision = state.receiver.revision
+        receiver.updateTemplateCapabilities(.init(templates: [.init(id: future, name: "Future")], policy: .sender))
+        try await eventually { state.a.templateCapabilities.templates?.count == 1 && state.b.templateCapabilities.templates?.count == 1 }
+        XCTAssertEqual(state.receiver.revision, hiddenRevision, "Catalogue updates do not publish")
+        a.submit(.init(connectionID: id, content: .init(body: "Fallback", visible: false, template: .scripture), intent: intent))
+        try await eventually { state.receiver.content.body == "Fallback" && state.a.feedback.accepted }
+        XCTAssertNil(state.receiver.content.template)
+        XCTAssertEqual(state.a.requestedTemplate, .scripture)
+        receiver.updateTemplateCapabilities(.init(templates: entries, policy: .custom))
+        try await eventually { state.a.templateCapabilities.policy == .custom }
+        a.submit(.init(connectionID: id, content: .init(body: "Future ID", visible: false, template: future), intent: intent))
+        try await eventually { state.receiver.content.body == "Future ID" && state.a.feedback.accepted }
+        XCTAssertEqual(state.receiver.content.template, future)
+
+        receiver.dropConnections(named: "A")
+        try await eventually { state.a.waitingToRetry }
+        XCTAssertNil(state.a.templateCapabilities.templates, "Disconnect clears discovery")
+        receiver.updateTemplateCapabilities(.init()) // Older receiver after reconnect.
+        try await eventually { state.a.connected && state.a.feedback.accepted && state.receiver.content.body == "Future ID" }
+        XCTAssertNil(state.receiver.content.template, "Restore uses new welcome, not cached capabilities")
+        XCTAssertFalse(state.receiver.content.visible)
+        XCTAssertEqual(state.a.requestedTemplate, future, "Fallback retains the desired snapshot")
+        XCTAssertNil(state.a.templateCapabilities.templates)
+        receiver.dropConnections(named: "A")
+        try await eventually { state.a.waitingToRetry }
+        receiver.updateTemplateCapabilities(.init(templates: entries, policy: .sender))
+        try await eventually { state.a.connected && state.a.feedback.accepted && state.receiver.content.template == future }
+        XCTAssertFalse(state.receiver.content.visible)
+        XCTAssertEqual(state.receiver.revision, 1, "Restoration starts a new revision sequence")
+        XCTAssertFalse(state.b.ownsOutput)
+        a.disconnect()
+        try await eventually { state.a.connectionID == nil }
+        XCTAssertNil(state.a.templateCapabilities.templates)
+    }
+
+    func testInvalidDiscoveryClosesWelcomeAndFeedbackWithoutRetrying() async throws {
+        let state = AltViewNetworkObservation()
+        let receiver = FixtureReceiverServer(receiverID: UUID()) { value in MainActor.assumeIsolated { state.receiver = value } }
+        receiver.updateTemplateCapabilities(.init(templates: [], policy: .fixed(.scripture)))
+        receiver.start(name: "Invalid templates", key: key, advertise: false)
+        let client = AltViewSenderClient(name: "A") { value in MainActor.assumeIsolated { state.a = value } }
+        defer { client.disconnect(); receiver.stop() }
+        try await eventually { state.receiver.port != nil }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!)
+        client.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: UUID())
+        try await eventually { state.a.failureReason != nil }
+        XCTAssertFalse(state.a.connected)
+        XCTAssertFalse(state.a.waitingToRetry)
+        XCTAssertNil(state.a.templateCapabilities.templates)
+        receiver.updateTemplateCapabilities(.init(templates: [], policy: .sender))
+        let id = UUID()
+        client.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: id)
+        try await eventually { state.a.connected }
+        client.submit(.init(connectionID: id, content: .init(body: "Plain text", template: .scripture), intent: UUID()))
+        try await eventually { state.a.feedback.accepted }
+        XCTAssertNil(state.receiver.content.template, "An empty catalogue offers no templates")
+        receiver.updateTemplateCapabilities(.init(templates: [
+            .init(id: .scripture, name: "First"), .init(id: .scripture, name: "Duplicate")], policy: .sender))
+        try await eventually { state.a.failureReason != nil && state.receiver.ownerName == nil }
+        XCTAssertFalse(state.a.connected)
+        XCTAssertFalse(state.a.waitingToRetry)
+        XCTAssertNil(state.a.templateCapabilities.templates)
+    }
+
+    func testRetryBackoffIsBounded() {
+        XCTAssertEqual((0...7).map { AltViewSenderClient.reconnectDelay(attempt: $0) }, [1, 2, 4, 8, 16, 30, 30, 30])
+        XCTAssertEqual(AltViewSenderClient.reconnectDelay(attempt: Int.max), 30)
+    }
+
+    func testTLSClosureCanRetryButAuthenticationFailuresCannot() {
+        for status in [errSSLClosedGraceful, errSSLClosedAbort, errSSLClosedNoNotify, errSSLNetworkTimeout] {
+            XCTAssertTrue(AltViewPeerChannel.isRetryableNetworkError(.tls(status)))
+        }
+        for status in [errSSLPeerBadRecordMac, errSSLBadRecordMac, errSSLPeerHandshakeFail, errSSLPeerAccessDenied] {
+            XCTAssertFalse(AltViewPeerChannel.isRetryableNetworkError(.tls(status)))
+        }
+        XCTAssertTrue(AltViewPeerChannel.isRetryableNetworkError(.posix(.ECONNRESET)))
+    }
+
+    func testReceiverUnavailableAtStartupThenRestartsAndCancelStopsRetries() async throws {
+        let state = AltViewNetworkObservation()
+        let receiverID = UUID()
+        let receiver = FixtureReceiverServer(receiverID: receiverID) { value in MainActor.assumeIsolated { state.receiver = value } }
+        receiver.start(name: "Restart", key: key, advertise: false)
+        let client = AltViewSenderClient(name: "A") { value in MainActor.assumeIsolated { state.a = value } }
+        defer { client.disconnect(); receiver.stop() }
+        try await eventually { state.receiver.port != nil }
+        let port = state.receiver.port!
+        receiver.stop()
+        try await eventually { !state.receiver.listening }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: port)!)
+        let id = UUID()
+        client.connect(to: endpoint, key: key, expectedReceiverID: receiverID, connectionID: id)
+        try await eventually { state.a.waitingToRetry }
+        XCTAssertNil(state.a.failureReason)
+        receiver.start(name: "Restart", key: key, port: port, advertise: false)
+        try await eventually { state.a.connected }
+        XCTAssertNil(state.receiver.ownerName, "Startup reconnection alone cannot claim output")
+        client.submit(.init(connectionID: id, content: .init(body: "Before restart", visible: false), intent: UUID()))
+        try await eventually { state.a.ownsOutput }
+        receiver.stop()
+        try await eventually { state.a.waitingToRetry }
+        // A new server object models an app restart, retaining only its saved identity and code.
+        let restarted = FixtureReceiverServer(receiverID: receiverID) { value in MainActor.assumeIsolated { state.receiver = value } }
+        defer { restarted.stop() }
+        restarted.start(name: "Restart", key: key, port: port, advertise: false)
+        try await eventually { state.a.connected && state.receiver.content.body == "Before restart" }
+        XCTAssertFalse(state.receiver.content.visible)
+        restarted.stop()
+        try await eventually { state.a.waitingToRetry }
+        client.disconnect()
+        try await eventually { state.a.connectionID == nil }
+        restarted.start(name: "Restart", key: key, port: port, advertise: false)
+        try await eventually { state.receiver.listening }
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+        XCTAssertFalse(state.a.connected)
+        XCTAssertEqual(state.receiver.connections, 0, "Cancel invalidates the scheduled retry")
     }
     func testMissingAcknowledgementsDoNotBlockPublicationAndCanRecover() async throws {
         let state = AltViewNetworkObservation()

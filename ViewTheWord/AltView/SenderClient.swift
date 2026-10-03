@@ -4,6 +4,7 @@ import Network
 struct AltViewSenderStatus: Equatable, Sendable {
     var connectionID: UUID?
     var connected = false
+    var waitingToRetry = false
     var ownsOutput = false
     var receiverID: UUID?
     var ownerName: String?
@@ -12,6 +13,9 @@ struct AltViewSenderStatus: Equatable, Sendable {
     var feedback = AltViewDeliveryFeedback()
     var outputIssue: String?
     var submissionID: UUID?
+    var templateCapabilities = AltViewTemplateCapabilities()
+    var requestedTemplate: AltViewContentTemplate?
+    var templateDetail: String { templateCapabilities.detail(requested: requestedTemplate) }
 }
 
 /// The intent is retained across blank/translation updates, and changes only for
@@ -41,7 +45,7 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
     private var expectedReceiverID: UUID?
     private var reconnectWork: DispatchWorkItem?
     private var attempts = 0
-    private var initialDeadline: TimeInterval?
+    private var hasConnected = false
     private var timer: DispatchSourceTimer?
     private var lease: UUID?
     private var revision: UInt64 = 0
@@ -77,7 +81,6 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
             self.status.connectionID = connectionID
             self.endpoint = endpoint; self.key = key; self.expectedReceiverID = expectedReceiverID
             self.wantsConnection = true
-            self.initialDeadline = ProcessInfo.processInfo.systemUptime + AltViewProtocol.connectionTimeout
             self.openConnection()
         }
     }
@@ -97,11 +100,13 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
         peer?.onClose = nil; peer?.close(nil); peer = nil
         lease = nil; awaitingGrant = nil
         status.connected = false; status.ownsOutput = false
+        status.waitingToRetry = false
         status.feedback = AltViewDeliveryFeedback()
+        status.templateCapabilities = AltViewTemplateCapabilities()
     }
     private func disconnectOnQueue() {
         wantsConnection = false; restoreOwnership = false; pendingTake = false
-        initialDeadline = nil; latest = nil; lastIntent = nil; attempts = 0
+        hasConnected = false; latest = nil; lastIntent = nil; attempts = 0
         stopTransport()
         endpoint = nil; key = nil; expectedReceiverID = nil
         status = AltViewSenderStatus()
@@ -120,6 +125,7 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
         }
         if status.outputIssue != nil { status.outputIssue = nil; publish() }
         latest = content
+        status.requestedTemplate = content.template
         status.submissionID = submission.id
         let explicit = submission.intent != nil && submission.intent != lastIntent
         lastIntent = submission.intent
@@ -136,7 +142,7 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
                 peer?.discardPendingState()
                 peer?.send(AltViewWireMessage(kind: .take))
             }
-        } else if explicit, !status.connected, initialDeadline != nil {
+        } else if explicit, !status.connected, !hasConnected {
             pendingTake = true
         }
         // During established reconnects only a former owner can resume, and only
@@ -145,6 +151,7 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
     }
     private func stopOutput() {
         latest = nil; lastIntent = nil; pendingTake = false; restoreOwnership = false
+        status.requestedTemplate = nil
         peer?.discardPendingState()
         if awaitingGrant != nil {
             // A take cannot be cancelled on the wire. Closing the socket invalidates a late grant.
@@ -160,24 +167,19 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
     }
     private func openConnection() {
         guard wantsConnection, let endpoint, let key else { return }
-        let setupTimeout: TimeInterval
-        if let deadline = initialDeadline {
-            let remaining = deadline - ProcessInfo.processInfo.systemUptime
-            guard remaining > 0 else { fail("Connection timed out. Check AltView and Local Network access on both Macs."); return }
-            setupTimeout = min(AltViewProtocol.connectionAttemptTimeout, remaining)
-            status.message = "Connecting…"
-        } else { setupTimeout = AltViewProtocol.connectionTimeout; status.message = "Reconnecting…" }
+        status.message = hasConnected ? "Reconnecting…" : "Connecting…"
+        status.waitingToRetry = false
         status.failureReason = nil
         publish()
         let peer = AltViewPeerChannel(connection: NWConnection(to: endpoint, using: AltViewSecureConnection.parameters(key: key)),
-                                      queue: queue, connectionTimeout: setupTimeout)
+                                      queue: queue, connectionTimeout: AltViewProtocol.connectionAttemptTimeout)
         self.peer = peer
         peer.onReady = { [weak self, weak peer] in
             guard let self, let peer, self.peer === peer else { return }
             peer.send(AltViewWireMessage(kind: .hello, senderID: self.senderID, name: self.name))
             self.queue.asyncAfter(deadline: .now() + AltViewProtocol.timeout) { [weak self, weak peer] in
                 guard let self, let peer, self.peer === peer, !self.status.connected else { return }
-                peer.close("Receiver did not complete the handshake.")
+                peer.close("Receiver did not complete the handshake.", retryable: true)
             }
         }
         peer.onMessage = { [weak self, weak peer] message in
@@ -190,16 +192,13 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
             self.peer = nil; self.lease = nil; self.awaitingGrant = nil
             self.status.connected = false; self.status.ownsOutput = false
             self.status.feedback = AltViewDeliveryFeedback()
+            self.status.templateCapabilities = AltViewTemplateCapabilities()
             self.timer?.cancel(); self.timer = nil
-            if let deadline = self.initialDeadline {
-                if self.wantsConnection, peer.retryableSetupFailure, ProcessInfo.processInfo.systemUptime < deadline {
-                    self.status.message = "Connecting… Retrying the network connection."
-                    self.publish(); self.scheduleReconnect()
-                } else { self.fail(reason ?? "The receiving Mac closed the connection.") }
+            guard peer.retryableFailure else {
+                self.fail(reason ?? "The receiving Mac rejected the connection.")
                 return
             }
-            self.status.message = "Disconnected. \(reason ?? "") Retrying…"
-            self.publish(); self.scheduleReconnect()
+            self.scheduleReconnect()
         }
         peer.start()
         let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -219,8 +218,9 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
             guard !status.connected, let receiverID = message.receiverID else { fail("Invalid welcome."); return }
             if let expectedReceiverID, expectedReceiverID != receiverID { fail("Receiver identity changed. Enter its code to pair again."); return }
             status.feedback = AltViewDeliveryFeedback()
+            status.templateCapabilities = AltViewTemplateCapabilities(templates: message.templates, policy: message.templatePolicy)
             expectedReceiverID = receiverID
-            initialDeadline = nil; attempts = 0
+            hasConnected = true; attempts = 0
             status.connected = true; status.receiverID = receiverID; status.ownerName = message.ownerName
             status.message = message.ownerName.map { "Connected · output controlled by \($0)" } ?? "Connected · waiting for projection"
             if pendingTake, latest != nil {
@@ -255,6 +255,7 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
                   (message.lease == nil && message.revision == nil) || (message.lease != nil && message.revision.map { $0 > 0 } == true) else {
                 peer?.close("Unexpected output feedback."); return
             }
+            status.templateCapabilities = AltViewTemplateCapabilities(templates: message.templates, policy: message.templatePolicy)
             status.feedback.receive(message, lease: lease, now: ProcessInfo.processInfo.systemUptime)
             publish()
         case .heartbeat: break
@@ -267,14 +268,17 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
         guard revision < UInt64.max else { fail("Session revision exhausted. Connect again."); return }
         revision += 1
         status.feedback.sent(revision, now: ProcessInfo.processInfo.systemUptime)
-        peer?.send(AltViewWireMessage(kind: .state, lease: lease, revision: revision, content: latest))
+        peer?.send(AltViewWireMessage(kind: .state, lease: lease, revision: revision,
+                                      content: status.templateCapabilities.contentForSending(latest)))
         publish()
     }
     private func scheduleReconnect() {
         guard wantsConnection else { return }
-        let delay = initialDeadline.map { min(1, max(0, $0 - ProcessInfo.processInfo.systemUptime)) }
-            ?? min(8, pow(2, Double(min(attempts, 3))))
-        attempts += 1
+        let delay = Self.reconnectDelay(attempt: attempts)
+        attempts = min(attempts + 1, 5)
+        status.waitingToRetry = true
+        status.message = "AltView is unavailable. Retrying in \(Int(delay)) seconds. Check that AltView is receiving and Local Network access is allowed."
+        publish()
         let id = status.connectionID
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.wantsConnection, self.status.connectionID == id, self.peer == nil else { return }
@@ -282,8 +286,11 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
         }
         reconnectWork = work; queue.asyncAfter(deadline: .now() + delay, execute: work)
     }
+    static func reconnectDelay(attempt: Int) -> TimeInterval {
+        min(30, pow(2, Double(min(max(attempt, 0), 5))))
+    }
     private func fail(_ reason: String) {
-        wantsConnection = false; restoreOwnership = false; pendingTake = false; initialDeadline = nil
+        wantsConnection = false; restoreOwnership = false; pendingTake = false
         stopTransport()
         status.failureReason = reason; status.message = reason
         publish()
