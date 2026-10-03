@@ -4,6 +4,10 @@ import Combine
 @MainActor
 final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
     let receiverPicker = NSPopUpButton()
+    let templatePicker = NSPopUpButton()
+    let templateHint = NSTextField(wrappingLabelWithString: "")
+    private var templateMenuEntries: [AltViewTemplateDescriptor]?
+    private var unavailableTemplate: AltViewContentTemplate?
     let hostField = NSTextField()
     let portField = NSTextField(string: "49721")
     let codeField = NSSecureTextField()
@@ -36,6 +40,11 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
         explanation.textColor = .secondaryLabelColor
         receiverPicker.target = self; receiverPicker.action = #selector(destinationChanged(_:))
         receiverPicker.setAccessibilityLabel("AltView receiver")
+        templatePicker.target = self; templatePicker.action = #selector(templateChanged(_:))
+        templatePicker.setAccessibilityLabel("AltView template")
+        templatePicker.menu?.autoenablesItems = false
+        templateHint.font = .systemFont(ofSize: 11); templateHint.textColor = .secondaryLabelColor
+        templateHint.maximumNumberOfLines = 0
         hostField.placeholderString = "Receiving Mac name or IP address"
         hostField.setAccessibilityLabel("AltView host")
         portField.setAccessibilityLabel("AltView port")
@@ -45,16 +54,15 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
         for field in [hostField, portField, codeField] { field.delegate = self }
         for button in [connectButton, disconnectButton] { button.target = self; button.bezelStyle = .rounded }
         connectButton.action = #selector(connect(_:)); disconnectButton.action = #selector(disconnect(_:))
-        let hint = NSTextField(wrappingLabelWithString: "Connecting leaves output unchanged. Project a verse to send it; Blank and Stop follow ViewTheWord. Appearance and display are set in AltView.")
+        let hint = NSTextField(wrappingLabelWithString: "The last receiver connects automatically at startup and reconnects after a network drop. Project a verse to send it; Blank and Stop follow ViewTheWord. Appearance and display are set in AltView.")
         hint.font = .systemFont(ofSize: 11); hint.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 11)
-        statusLabel.maximumNumberOfLines = 3
-        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.maximumNumberOfLines = 0
         statusLabel.setAccessibilityLabel("AltView status")
         let actions = horizontalStack([connectButton, disconnectButton, NSView(), statusBadge])
         let stack = NSStackView(views: [explanation, row("Receiver", receiverPicker),
                                       row("Address", horizontalStack([hostField, portField])),
-                                      row("Pairing code", codeField), actions, statusLabel, hint])
+                                      row("Pairing code", codeField), actions, row("Template", templatePicker), templateHint, statusLabel, hint])
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
@@ -97,13 +105,50 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
     private func render() {
         guard isViewLoaded else { return }
         hostField.isEnabled = selected == nil; portField.isEnabled = selected == nil
-        disconnectButton.isEnabled = service.isEnabled
-        disconnectButton.title = service.isEnabled && !service.status.connected && service.status.failureReason == nil ? "Cancel" : "Disconnect"
+        let connecting = service.isEnabled && !service.status.connected && service.status.failureReason == nil
+        disconnectButton.isEnabled = service.status.connected || connecting
+        disconnectButton.title = connecting ? "Cancel" : "Disconnect"
         connectButton.isEnabled = !service.isEnabled || service.status.failureReason != nil
+        refreshTemplatePicker()
         statusBadge.render(service)
         statusLabel.stringValue = service.detail + (discoveryNote.map { "\n\($0)" } ?? "")
         statusLabel.toolTip = statusLabel.stringValue
         if service.status.connected { codeField.stringValue = "" }
+    }
+    private func refreshTemplatePicker() {
+        let capabilities = service.status.templateCapabilities
+        let entries = capabilities.templates ?? []
+        let unavailable = service.selectedTemplate.flatMap { capabilities.supports($0) ? nil : $0 }
+        // Routine acknowledgement/policy updates must not replace an open menu.
+        if templateMenuEntries != entries || unavailableTemplate != unavailable {
+            templateMenuEntries = entries; unavailableTemplate = unavailable
+            templatePicker.removeAllItems()
+            templatePicker.addItem(withTitle: "Receiver’s layout")
+            for descriptor in entries {
+                let item = NSMenuItem(title: descriptor.name, action: nil, keyEquivalent: "")
+                item.representedObject = descriptor.id.rawValue
+                templatePicker.menu?.addItem(item)
+            }
+            if let unavailable {
+                let item = NSMenuItem(title: "\(unavailable.rawValue) · Unavailable", action: nil, keyEquivalent: "")
+                item.representedObject = unavailable.rawValue
+                item.isEnabled = false
+                templatePicker.menu?.addItem(item)
+            }
+        }
+        if let requested = service.selectedTemplate,
+           let item = templatePicker.itemArray.first(where: { $0.representedObject as? String == requested.rawValue }) {
+            templatePicker.select(item)
+        } else { templatePicker.selectItem(at: 0) }
+        templatePicker.isEnabled = service.status.connected
+        let detail = service.status.connected ? capabilities.requestDetail(service.selectedTemplate)
+            : "Connect to discover the receiver’s templates."
+        templateHint.stringValue = "\(detail) Changes apply when you next project a verse."
+        templateHint.toolTip = templateHint.stringValue
+    }
+    @objc private func templateChanged(_ sender: Any?) {
+        service.selectTemplate((templatePicker.selectedItem?.representedObject as? String).map(AltViewContentTemplate.init(rawValue:)))
+        refreshTemplatePicker()
     }
     @objc private func destinationChanged(_ sender: Any?) {
         let index = receiverPicker.indexOfSelectedItem - 1

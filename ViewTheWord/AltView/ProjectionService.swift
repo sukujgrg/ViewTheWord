@@ -10,6 +10,8 @@ final class AltViewProjectionService: ObservableObject {
     @Published private(set) var status = AltViewSenderStatus()
     @Published private(set) var isEnabled = false
     @Published private(set) var pairingNote: String?
+    // A private choice until the next explicit projection. Empty saved value means receiver layout.
+    @Published private(set) var selectedTemplate: AltViewContentTemplate? = .scripture
     private(set) var destination: AltViewDestination?
     private(set) var currentContent: AltViewDisplayContent?
     private var connectionID: UUID?
@@ -20,6 +22,7 @@ final class AltViewProjectionService: ObservableObject {
     private var pendingKey: Data?
     private var savedConnectionID: UUID?
     private var connectionTask: Task<Void, Never>?
+    private var didRestoreConnection = false
     private let defaults: UserDefaults
     private let store: any AltViewPairingStoring
     private let senderFactory: (@escaping @Sendable (AltViewSenderStatus) -> Void) -> any AltViewSending
@@ -32,6 +35,11 @@ final class AltViewProjectionService: ObservableObject {
              AltViewSenderClient(name: "ViewTheWord · \(Host.current().localizedName ?? "Mac")", onStatus: $0)
          }) {
         self.defaults = defaults; self.store = store; self.senderFactory = senderFactory
+        if let saved = defaults.string(forKey: AppDefaultsKey.altViewTemplate) {
+            let template = AltViewContentTemplate(rawValue: saved)
+            if saved.isEmpty { selectedTemplate = nil }
+            else if template.isValid { selectedTemplate = template }
+        }
         if let data = defaults.data(forKey: AppDefaultsKey.altViewDestination),
            let saved = try? JSONDecoder().decode(AltViewDestination.self, from: data), saved.isValid { destination = saved }
     }
@@ -46,6 +54,7 @@ final class AltViewProjectionService: ObservableObject {
             return "AltView · awaiting acknowledgement"
         }
         if status.connected { return status.ownerName == nil ? "AltView · ready" : "AltView · another sender" }
+        if status.waitingToRetry { return "AltView · waiting to reconnect" }
         return status.failureReason == nil ? "AltView · connecting" : "AltView · unavailable"
     }
     var detail: String {
@@ -53,7 +62,22 @@ final class AltViewProjectionService: ObservableObject {
             ? (status.ownsOutput && status.submissionID != latestSubmissionID
                 ? "Sending latest snapshot. \(status.feedback.output?.summary ?? "Waiting for display status")."
                 : status.feedback.detail) : nil
-        return [status.message, status.outputIssue, feedback, pairingNote].compactMap { $0 }.joined(separator: "\n")
+        return [status.message, status.outputIssue, feedback, status.connected ? status.templateCapabilities.policyDetail : nil, pairingNote].compactMap { $0 }.joined(separator: "\n")
+    }
+
+    func selectTemplate(_ template: AltViewContentTemplate?) {
+        guard template?.isValid ?? true else { return }
+        selectedTemplate = template
+        defaults.set(template?.rawValue ?? "", forKey: AppDefaultsKey.altViewTemplate)
+    }
+
+    /// Called once at application launch, never by Settings or passage creation.
+    /// Keychain loading uses its actor and the sender owns all network work.
+    func restoreConnection() {
+        guard !didRestoreConnection else { return }
+        didRestoreConnection = true
+        guard connectionID == nil, let destination else { return }
+        connect(to: destination, code: "")
     }
 
     func connect(to destination: AltViewDestination, code: String) {
@@ -69,7 +93,17 @@ final class AltViewProjectionService: ObservableObject {
         let remembered = pairings[destination.account]
         connectionTask = Task { [weak self, store] in
             var pairing = remembered
-            if parsed == nil, pairing == nil { pairing = try? await store.read(account: destination.account) }
+            if parsed == nil, pairing == nil {
+                do { pairing = try await store.read(account: destination.account) }
+                catch {
+                    guard let self, !Task.isCancelled, self.connectionID == id else { return }
+                    self.status = AltViewSenderStatus(connectionID: id,
+                        message: "Could not read the saved pairing from Keychain. Unlock Keychain and try Connect Only again, or enter the pairing code. \(error.localizedDescription)",
+                        failureReason: "Saved pairing unavailable")
+                    self.publicationIntent = nil
+                    return
+                }
+            }
             guard let self, !Task.isCancelled, self.connectionID == id else { return }
             guard let key = parsed ?? pairing?.key else {
                 self.status = AltViewSenderStatus(connectionID: id, message: "Enter the pairing code shown in AltView.", failureReason: "Pairing code required")
@@ -83,6 +117,7 @@ final class AltViewProjectionService: ObservableObject {
         }
     }
     func disconnect() {
+        didRestoreConnection = true
         connectionTask?.cancel(); connectionTask = nil
         connectionID = nil; publicationIntent = nil; pendingKey = nil; savedConnectionID = nil
         if startedSender { sender.disconnect() }
@@ -91,8 +126,10 @@ final class AltViewProjectionService: ObservableObject {
     }
     func publish(_ projection: PreparedProjection, blanked: Bool, explicit: Bool) {
         let data = projection.data
+        // Background translation refreshes retain the published choice, like Blank and reconnect.
+        let template = explicit ? selectedTemplate : currentContent?.template
         currentContent = AltViewDisplayContent(title: data.title, body: data.primaryText,
-                                              footer: data.primaryTranslationName, visible: !blanked)
+                                              footer: data.primaryTranslationName, visible: !blanked, template: template)
         guard connectionID != nil else { return }
         if explicit { publicationIntent = UUID() }
         guard publicationIntent != nil else { return }

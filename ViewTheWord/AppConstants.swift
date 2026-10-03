@@ -11,6 +11,7 @@ enum AppWindowTitle {
 }
 
 enum AppDefaultsKey {
+    static let altViewTemplate = "altViewTemplate"
     static let altViewDestination = "altViewDestination"
     static let fontSizeVerse = "fontSizeVerse"
     static let fontSizeVerseRef = "fontSizeVerseRef"

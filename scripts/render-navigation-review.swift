@@ -1,4 +1,14 @@
 import AppKit
+import Network
+
+// Offline Settings fixture: never starts sockets or reads/writes pairing secrets.
+private final class ReviewAltViewSender: AltViewSending, @unchecked Sendable {
+    var connectionID: UUID?
+    var onStatus: (@Sendable (AltViewSenderStatus) -> Void)?
+    func connect(to endpoint: NWEndpoint, key: Data, expectedReceiverID: UUID?, connectionID: UUID) { self.connectionID = connectionID }
+    func disconnect() { connectionID = nil }
+    func submit(_ submission: AltViewSubmission) { preconditionFailure("Settings must not publish") }
+}
 
 private func reviewLog(_ text: String) { FileHandle.standardOutput.write(Data((text + "\n").utf8)) }
 
@@ -711,7 +721,9 @@ struct NativeWorkspaceReview {
             .appendingPathComponent("ENG_REVIEW.bible")
         var catalog = [sources.primary, sources.secondary!, imported]
         let library = BibleLibrary(preloadedURLs: catalog, catalogProvider: { catalog })
-        let settings = SettingsWindowController(library: library, defaults: defaults)
+        let sender = ReviewAltViewSender()
+        let altView = AltViewProjectionService(defaults: defaults) { callback in sender.onStatus = callback; return sender }
+        let settings = SettingsWindowController(library: library, defaults: defaults, altView: altView)
         settings.settings.altView.discoveryEnabled = false // Appearance fixtures never browse the live network.
         let window = settings.window!
         positionFixtureWindow(window)
@@ -733,6 +745,30 @@ struct NativeWorkspaceReview {
                 try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("settings-\(pane)-\(name).png"))
             }
         }
+        altView.connect(to: .init(name: "Fixture", host: "127.0.0.1"), code: "ABCD2345")
+        try await waitUntil { sender.connectionID != nil }
+        let entries = [AltViewTemplateDescriptor(id: .scripture, name: "Scripture"), .init(id: .lyrics, name: "Lyrics")]
+        for (name, capabilities) in [
+            ("templates", AltViewTemplateCapabilities(templates: entries, policy: .sender)),
+            ("override", AltViewTemplateCapabilities(templates: entries, policy: .fixed(.lyrics))),
+            ("legacy", AltViewTemplateCapabilities())
+        ] {
+            sender.onStatus?(AltViewSenderStatus(connectionID: sender.connectionID, connected: true,
+                message: "Connected · waiting for projection", templateCapabilities: capabilities))
+            settings.settings.selectedTabViewItemIndex = 2
+            try await waitUntil { settings.settings.altView.templatePicker.isEnabled }
+            for (appearance, dark) in [("light", false), ("dark", true)] {
+                window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                try await Task.sleep(nanoseconds: 100_000_000)
+                window.contentView?.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                let frame = window.contentView!.superview!
+                let bitmap = frame.bitmapImageRepForCachingDisplay(in: frame.bounds)!
+                frame.cacheDisplay(in: frame.bounds, to: bitmap)
+                try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("settings-altview-\(name)-\(appearance).png"))
+            }
+        }
+        altView.disconnect()
         settings.settings.selectedTabViewItemIndex = 0
         try await waitUntil { settings.settings.display.rows[0].slider.window === window }
         try await Task.sleep(nanoseconds: 100_000_000)

@@ -1,4 +1,4 @@
-// Receiver fixture copied from AltView protocol v2 (2026-10-02), with test-only names.
+// Receiver fixture copied from AltView protocol v2 (2026-10-02), with test-only names; template discovery updated 2026-10-03.
 @testable import ViewTheWordCore
 import Foundation
 
@@ -67,6 +67,7 @@ struct FixtureReceiverStatus: Equatable, Sendable {
     var ownerID: UUID?
     var ownerName: String?
     var content = AltViewDisplayContent.empty
+    var revision: UInt64 = 0
     var message = "Receiving is off"
 }
 
@@ -75,6 +76,7 @@ final class FixtureReceiverServer: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.suku.AltView.receiver", qos: .userInitiated)
     private var listener: NWListener?
     private var peers: [UUID: AltViewPeerChannel] = [:]
+    private var templateCapabilities = AltViewTemplateCapabilities()
     private var outputReadiness = AltViewOutputReadiness.closed
     private var state = FixtureReceiverState()
     private var status = FixtureReceiverStatus()
@@ -130,6 +132,13 @@ final class FixtureReceiverServer: @unchecked Sendable {
                 self.status.message = "Could not start receiver: \(error.localizedDescription)"
                 self.publish()
             }
+        }
+    }
+    // Allows legacy, changing and intentionally malformed discovery reports.
+    func updateTemplateCapabilities(_ capabilities: AltViewTemplateCapabilities) {
+        queue.async { [weak self] in
+            self?.templateCapabilities = capabilities
+            self?.broadcastFeedback()
         }
     }
     func updateOutputReadiness(_ readiness: AltViewOutputReadiness) {
@@ -221,7 +230,8 @@ final class FixtureReceiverServer: @unchecked Sendable {
             guard let id = message.senderID, let name = message.name, state.register(connection: peer.id, senderID: id, name: name) else {
                 peer.close("Invalid sender identity."); return
             }
-            peer.send(AltViewWireMessage(kind: .welcome, receiverID: receiverID, ownerID: state.owner?.id, ownerName: state.owner?.name))
+            peer.send(AltViewWireMessage(kind: .welcome, receiverID: receiverID, ownerID: state.owner?.id, ownerName: state.owner?.name,
+                templates: templateCapabilities.templates, templatePolicy: templateCapabilities.policy))
             sendFeedback(to: peer)
             publish()
             return
@@ -281,7 +291,8 @@ final class FixtureReceiverServer: @unchecked Sendable {
         guard state.senders[peer.id] != nil else { return }
         let hasSnapshot = acknowledgementsEnabled && state.ownerConnection == peer.id && state.revision > 0
         peer.send(AltViewWireMessage(kind: .feedback, lease: hasSnapshot ? state.lease : nil,
-                              revision: hasSnapshot ? state.revision : nil, outputReadiness: outputReadiness))
+                              revision: hasSnapshot ? state.revision : nil, outputReadiness: outputReadiness,
+                              templates: templateCapabilities.templates, templatePolicy: templateCapabilities.policy))
     }
     private func publish() {
         status.connections = state.senders.count
@@ -292,6 +303,7 @@ final class FixtureReceiverServer: @unchecked Sendable {
         status.ownerID = state.owner?.id
         status.ownerName = state.owner?.name
         status.content = state.content
+        status.revision = state.revision
         delivery.offer(status)
     }
 }
