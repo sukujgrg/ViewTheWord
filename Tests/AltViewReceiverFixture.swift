@@ -63,6 +63,7 @@ struct FixtureReceiverStatus: Equatable, Sendable {
     var port: UInt16?
     var connections = 0
     var pendingResumes = 0
+    var rejectedSnapshots = 0
     var connectedSenders: [FixtureSenderIdentity] = []
     var ownerID: UUID?
     var ownerName: String?
@@ -188,6 +189,17 @@ final class FixtureReceiverServer: @unchecked Sendable {
             self.publish()
         }
     }
+    private var suspendedOwnershipNames = Set<String>()
+    func setOwnershipReportsSuspended(_ suspended: Bool, for name: String) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            if suspended { self.suspendedOwnershipNames.insert(name) }
+            else {
+                self.suspendedOwnershipNames.remove(name)
+                self.broadcastOwnership()
+            }
+        }
+    }
     private func stopOnQueue() {
         timer?.cancel(); timer = nil
         listener?.stateUpdateHandler = nil
@@ -198,6 +210,7 @@ final class FixtureReceiverServer: @unchecked Sendable {
         suspendedResumes.removeAll()
         for peer in closing { peer.onClose = nil; peer.close(nil) }
         state = FixtureReceiverState()
+        suspendedOwnershipNames.removeAll()
         status = FixtureReceiverStatus()
     }
     private func accept(_ connection: NWConnection) {
@@ -268,6 +281,9 @@ final class FixtureReceiverServer: @unchecked Sendable {
             if state.apply(connection: peer.id, lease: lease, revision: revision, content: content) {
                 publish()
                 sendFeedback(to: peer)
+            } else {
+                status.rejectedSnapshots += 1
+                publish()
             }
         case .release:
             if state.release(connection: peer.id, lease: message.lease) {
@@ -281,7 +297,10 @@ final class FixtureReceiverServer: @unchecked Sendable {
     }
     private func broadcastOwnership() {
         let message = AltViewWireMessage(kind: .ownership, lease: state.lease, ownerID: state.owner?.id, ownerName: state.owner?.name)
-        for (id, peer) in peers where state.senders[id] != nil { peer.send(message) }
+        for (id, peer) in peers {
+            guard let sender = state.senders[id], !suspendedOwnershipNames.contains(sender.name) else { continue }
+            peer.send(message)
+        }
         broadcastFeedback()
     }
     private func broadcastFeedback() {

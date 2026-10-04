@@ -54,6 +54,7 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
         for field in [hostField, portField, codeField] { field.delegate = self }
         for button in [connectButton, disconnectButton] { button.target = self; button.bezelStyle = .rounded }
         connectButton.action = #selector(connect(_:)); disconnectButton.action = #selector(disconnect(_:))
+        connectButton.keyEquivalent = "\r"
         let hint = NSTextField(wrappingLabelWithString: "The last receiver connects automatically at startup and reconnects after a network drop. Project a verse to send it; Blank and Stop follow ViewTheWord. Appearance and display are set in AltView.")
         hint.font = .systemFont(ofSize: 11); hint.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 11)

@@ -253,11 +253,11 @@ final class AltViewNetworkTests: XCTestCase {
         defer { a.disconnect(); b.disconnect(); receiver.stop() }
         try await eventually { state.receiver.port != nil }
         let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!)
-        let aID = UUID(), bID = UUID()
+        let aID = UUID(), bID = UUID(), aIntent = UUID()
         a.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: aID)
         b.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: bID)
         try await eventually { state.a.connected && state.b.connected }
-        a.submit(.init(connectionID: aID, content: .init(body: "A"), intent: UUID()))
+        a.submit(.init(connectionID: aID, content: .init(body: "A"), intent: aIntent))
         try await eventually { state.a.ownsOutput }
         receiver.dropConnections(named: "A")
         try await eventually { !state.a.connected }
@@ -265,7 +265,7 @@ final class AltViewNetworkTests: XCTestCase {
         XCTAssertNil(state.a.feedback.output)
         b.submit(.init(connectionID: bID, content: .init(body: "B"), intent: UUID()))
         try await eventually { state.b.ownsOutput }
-        a.submit(.init(connectionID: aID, content: .init(body: "A offline change"), intent: UUID()))
+        a.submit(.init(connectionID: aID, content: .init(body: "A automatic refresh", visible: false), intent: aIntent))
         try await eventually { state.a.connected }
         XCTAssertFalse(state.a.ownsOutput)
         XCTAssertEqual(state.receiver.content.body, "B")
@@ -275,11 +275,144 @@ final class AltViewNetworkTests: XCTestCase {
         try await eventually { !state.a.connected }
         XCTAssertFalse(state.a.feedback.accepted)
         XCTAssertNil(state.a.feedback.output)
+        a.submit(.init(connectionID: aID, content: .init(body: "Cancelled offline projection"), intent: UUID()))
+        try await Task.sleep(nanoseconds: 50_000_000)
         a.submit(.init(connectionID: aID, content: nil, intent: nil))
         try await eventually { state.a.connected }
         XCTAssertFalse(state.a.ownsOutput)
         XCTAssertNil(state.receiver.ownerName)
         XCTAssertEqual(state.receiver.content, .empty)
+    }
+    func testExplicitProjectionDuringReconnectTakesFromCurrentSender() async throws {
+        let state = AltViewNetworkObservation()
+        let receiver = FixtureReceiverServer(receiverID: UUID()) { value in MainActor.assumeIsolated { state.receiver = value } }
+        receiver.start(name: "Handoff", key: key, advertise: false)
+        let a = AltViewSenderClient(name: "ViewTheWord") { value in MainActor.assumeIsolated { state.a = value } }
+        let b = AltViewSenderClient(name: "eucaly") { value in MainActor.assumeIsolated { state.b = value } }
+        defer { a.disconnect(); b.disconnect(); receiver.stop() }
+        try await eventually { state.receiver.port != nil }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!)
+        let aID = UUID(), bID = UUID(), bIntent = UUID()
+        a.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: aID)
+        b.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: bID)
+        try await eventually { state.a.connected && state.b.connected }
+        b.submit(.init(connectionID: bID, content: .init(body: "Lyrics"), intent: bIntent))
+        try await eventually { state.b.feedback.accepted && state.a.ownerName == "eucaly" }
+
+        receiver.dropConnections(named: "ViewTheWord")
+        try await eventually { state.a.waitingToRetry }
+        a.submit(.init(connectionID: aID, content: .init(body: "Earlier verse"), intent: UUID()))
+        let intent = UUID()
+        a.submit(.init(connectionID: aID, content: .init(body: "Latest verse"), intent: intent))
+        // Blank and translation refresh retain the queued explicit takeover.
+        a.submit(.init(connectionID: aID, content: .init(body: "Latest translated verse", visible: false), intent: intent))
+        try await eventually { state.a.feedback.accepted && state.receiver.content.body == "Latest translated verse" }
+        XCTAssertEqual(state.a.connectionID, aID, "No manual reconnect is needed")
+        XCTAssertTrue(state.a.ownsOutput)
+        XCTAssertTrue(state.b.connected, "The previous sender keeps its connection")
+        XCTAssertFalse(state.b.ownsOutput)
+        XCTAssertFalse(state.receiver.content.visible)
+
+        // Explicit verse activation takes output back over the same connection,
+        // even if the text is identical to the previous local publication.
+        b.submit(.init(connectionID: bID, content: .init(body: "Lyrics"), intent: UUID()))
+        try await eventually { state.b.feedback.accepted && !state.a.ownsOutput }
+        a.submit(.init(connectionID: aID, content: .init(body: "Latest translated verse"), intent: UUID()))
+        try await eventually { state.a.feedback.accepted && state.receiver.content.body == "Latest translated verse" }
+        XCTAssertEqual(state.receiver.connections, 2)
+        XCTAssertTrue(state.receiver.content.visible)
+    }
+    func testExplicitTakeSurvivesDisconnectBeforeGrant() async throws {
+        let state = AltViewNetworkObservation()
+        let receiver = FixtureReceiverServer(receiverID: UUID()) { value in MainActor.assumeIsolated { state.receiver = value } }
+        receiver.grantDelay = 0.4
+        receiver.start(name: "Pending handoff", key: key, advertise: false)
+        let a = AltViewSenderClient(name: "ViewTheWord") { value in MainActor.assumeIsolated { state.a = value } }
+        let b = AltViewSenderClient(name: "eucaly") { value in MainActor.assumeIsolated { state.b = value } }
+        defer { a.disconnect(); b.disconnect(); receiver.stop() }
+        try await eventually { state.receiver.port != nil }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!)
+        let aID = UUID(), bID = UUID()
+        a.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: aID)
+        b.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: bID)
+        try await eventually { state.a.connected && state.b.connected }
+        a.submit(.init(connectionID: aID, content: .init(body: "Requested verse"), intent: UUID()))
+        try await eventually { state.receiver.ownerName == "ViewTheWord" }
+        XCTAssertFalse(state.a.ownsOutput, "The grant has not arrived yet")
+        receiver.dropConnections(named: "ViewTheWord")
+        try await eventually { state.a.waitingToRetry }
+        b.submit(.init(connectionID: bID, content: .init(body: "Lyrics"), intent: UUID()))
+        try await eventually { state.b.feedback.accepted }
+        try await eventually { state.a.feedback.accepted && state.receiver.content.body == "Requested verse" }
+        XCTAssertTrue(state.a.ownsOutput)
+        XCTAssertTrue(state.b.connected)
+        XCTAssertEqual(state.a.connectionID, aID)
+    }
+    func testExplicitProjectionSurvivesStaleLeaseUntilOwnershipReportArrives() async throws {
+        let state = AltViewNetworkObservation()
+        let receiver = FixtureReceiverServer(receiverID: UUID()) { value in MainActor.assumeIsolated { state.receiver = value } }
+        receiver.start(name: "Stale lease", key: key, advertise: false)
+        let a = AltViewSenderClient(name: "ViewTheWord") { value in MainActor.assumeIsolated { state.a = value } }
+        let b = AltViewSenderClient(name: "eucaly") { value in MainActor.assumeIsolated { state.b = value } }
+        defer { a.disconnect(); b.disconnect(); receiver.stop() }
+        try await eventually { state.receiver.port != nil }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!)
+        let aID = UUID(), bID = UUID()
+        a.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: aID)
+        b.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: bID)
+        try await eventually { state.a.connected && state.b.connected }
+        a.submit(.init(connectionID: aID, content: .init(body: "First verse"), intent: UUID()))
+        try await eventually { state.a.feedback.accepted }
+        receiver.setOwnershipReportsSuspended(true, for: "ViewTheWord")
+        b.submit(.init(connectionID: bID, content: .init(body: "Lyrics"), intent: UUID()))
+        try await eventually { state.b.feedback.accepted && state.receiver.content.body == "Lyrics" }
+        XCTAssertTrue(state.a.ownsOutput, "The sender has not received the lease revocation yet")
+        let intent = UUID()
+        a.submit(.init(connectionID: aID, content: .init(body: "Explicit verse"), intent: intent))
+        try await eventually { state.receiver.rejectedSnapshots > 0 }
+        XCTAssertEqual(state.receiver.content.body, "Lyrics")
+        a.submit(.init(connectionID: aID, content: .init(body: "Newest verse", visible: false), intent: intent))
+        try await eventually { state.receiver.rejectedSnapshots > 1 }
+        receiver.setOwnershipReportsSuspended(false, for: "ViewTheWord")
+        try await eventually { state.a.feedback.accepted && state.receiver.content.body == "Newest verse" }
+        XCTAssertFalse(state.receiver.content.visible)
+        XCTAssertTrue(state.b.connected)
+        XCTAssertEqual(state.receiver.connections, 2)
+        // Acceptance settles the explicit request. A later owner's projection wins.
+        b.submit(.init(connectionID: bID, content: .init(body: "Later lyrics"), intent: UUID()))
+        try await eventually { state.b.feedback.accepted && !state.a.ownsOutput }
+        a.submit(.init(connectionID: aID, content: .init(body: "Background refresh"), intent: intent))
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(state.receiver.content.body, "Later lyrics")
+        XCTAssertFalse(state.a.ownsOutput)
+    }
+    func testStopCancelsExplicitProjectionWaitingForStaleLeaseRevocation() async throws {
+        let state = AltViewNetworkObservation()
+        let receiver = FixtureReceiverServer(receiverID: UUID()) { value in MainActor.assumeIsolated { state.receiver = value } }
+        let a = AltViewSenderClient(name: "A") { value in MainActor.assumeIsolated { state.a = value } }
+        let b = AltViewSenderClient(name: "B") { value in MainActor.assumeIsolated { state.b = value } }
+        receiver.start(name: "Stale lease cancellation", key: key, advertise: false)
+        defer { a.disconnect(); b.disconnect(); receiver.stop() }
+        try await eventually { state.receiver.port != nil }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!)
+        let aID = UUID(), bID = UUID()
+        a.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: aID)
+        b.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: bID)
+        a.submit(.init(connectionID: aID, content: .init(body: "First"), intent: UUID()))
+        try await eventually { state.a.feedback.accepted && state.b.connected }
+        receiver.setOwnershipReportsSuspended(true, for: "A")
+        b.submit(.init(connectionID: bID, content: .init(body: "Other app"), intent: UUID()))
+        try await eventually { state.b.feedback.accepted && state.receiver.content.body == "Other app" }
+        a.submit(.init(connectionID: aID, content: .init(body: "Cancelled request"), intent: UUID()))
+        try await eventually { state.receiver.rejectedSnapshots > 0 }
+        a.submit(.init(connectionID: aID, content: nil, intent: nil))
+        try await eventually { !state.a.ownsOutput }
+        receiver.setOwnershipReportsSuspended(false, for: "A")
+        try await eventually { state.a.ownerName == "B" }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(state.receiver.content.body, "Other app")
+        XCTAssertTrue(state.b.ownsOutput)
+        XCTAssertFalse(state.a.ownsOutput)
     }
     func testIdleDisconnectBeforeResumeGrantStillRestoresLatestSnapshot() async throws {
         let state = AltViewNetworkObservation()

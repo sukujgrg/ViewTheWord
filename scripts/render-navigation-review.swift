@@ -4,8 +4,12 @@ import Network
 // Offline Settings fixture: never starts sockets or reads/writes pairing secrets.
 private final class ReviewAltViewSender: AltViewSending, @unchecked Sendable {
     var connectionID: UUID?
+    var connectionKeys: [Data] = []
     var onStatus: (@Sendable (AltViewSenderStatus) -> Void)?
-    func connect(to endpoint: NWEndpoint, key: Data, expectedReceiverID: UUID?, connectionID: UUID) { self.connectionID = connectionID }
+    func connect(to endpoint: NWEndpoint, key: Data, expectedReceiverID: UUID?, connectionID: UUID) {
+        self.connectionID = connectionID
+        connectionKeys.append(key)
+    }
     func disconnect() { connectionID = nil }
     func submit(_ submission: AltViewSubmission) { preconditionFailure("Settings must not publish") }
 }
@@ -114,6 +118,10 @@ struct NativeWorkspaceReview {
         if CommandLine.arguments.contains("--settings-only") {
             try await checkNativeSettings(output: output, sources: sources)
             try await checkSettingsImportLifecycle(output: output)
+            return
+        }
+        if CommandLine.arguments.contains("--altview-pairing-only") {
+            try await checkNativeSettings(output: output, sources: sources, pairingOnly: true)
             return
         }
         if CommandLine.arguments.contains("--passage-tabs-only") {
@@ -711,7 +719,86 @@ struct NativeWorkspaceReview {
         precondition(Set(library.urls.map(\.lastPathComponent)) == ["ENG_FIRST.bible", "ENG_EXISTINGREPLACE.bible", "ENG_LAST.bible"])
         reviewLog("PASS queued import sheets: all files, explicit Replace/Cancel, failures continue, one active-tab presenter")
     }
-    @MainActor static func checkNativeSettings(output: URL, sources: BibleSources, inspecting: Bool = false) async throws {
+    @MainActor private static func checkAltViewPairing(_ pane: AltViewSettingsController, window: NSWindow,
+                                                      service: AltViewProjectionService, sender: ReviewAltViewSender,
+                                                      sources: BibleSources) async throws {
+        let focus = ReviewFocusGuard(window: window)
+        let fields = [pane.hostField, pane.portField, pane.codeField]
+        let originalValues = fields.map(\.stringValue)
+        defer {
+            focus.stop(); service.disconnect(); service.stop()
+            window.makeFirstResponder(nil)
+            for (field, value) in zip(fields, originalValues) { field.stringValue = value }
+        }
+        let reference = VerseReference(book: "John", chapter: 3, verse: 16)!
+        let projection = PreparedProjection(pair: TranslationPair(reference: reference,
+            primary: AVerse(reference: reference, verse: "Existing local projection"), secondary: nil),
+            sources: sources, owner: .verseRowSelection(reference))!
+        service.publish(projection, blanked: false, explicit: true)
+        func enter(_ text: String, in field: NSTextField) throws {
+            try focus.check()
+            guard window.makeFirstResponder(field), let editor = field.currentEditor() as? NSTextView else {
+                throw ReviewFailure(description: "Pairing regression requires the actual field editor")
+            }
+            editor.selectAll(nil)
+            editor.insertText(text, replacementRange: editor.selectedRange())
+            precondition(field.stringValue == text)
+        }
+        func press(_ characters: String, code: UInt16) throws {
+            try focus.check()
+            precondition(window.makeFirstResponder(pane.codeField))
+            precondition(pane.codeField.currentEditor() != nil && window.firstResponder === pane.codeField.currentEditor())
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero,
+                modifierFlags: code == 76 ? .numericPad : [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, characters: characters,
+                charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)!
+            // AppKit dispatches the key equivalent while the real secure editor has focus.
+            let enabled = pane.connectButton.isEnabled
+            guard window.performKeyEquivalent(with: event) == enabled else {
+                throw ReviewFailure(description: "Native Connect Only default action must handle Return/Enter exactly when enabled")
+            }
+        }
+        try enter("127.0.0.1", in: pane.hostField)
+        try enter("0", in: pane.portField)
+        try enter("invalid", in: pane.codeField)
+        try press("\r", code: 36)
+        try await waitUntil { pane.statusLabel.stringValue == "Enter a port from 1 to 65535." }
+        precondition(!service.isEnabled && sender.connectionKeys.isEmpty)
+        try enter("49721", in: pane.portField)
+        try press("\r", code: 36)
+        try await waitUntil { pane.statusLabel.stringValue.contains("eight-character pairing code") }
+        precondition(!service.isEnabled && sender.connectionKeys.isEmpty)
+
+        for (index, key) in [("\r", UInt16(36)), ("\u{3}", UInt16(76))].enumerated() {
+            try enter("ABCD2345", in: pane.codeField)
+            try press(key.0, code: key.1)
+            try await waitUntil { service.isEnabled }
+            guard service.isEnabled, let connectionID = service.status.connectionID else {
+                throw ReviewFailure(description: "Return/Enter in the pairing editor must connect")
+            }
+            precondition(!pane.connectButton.isEnabled)
+            try press(key.0, code: key.1)
+            precondition(service.status.connectionID == connectionID, "Repeated Enter must not restart pending preparation")
+            try await waitUntil { sender.connectionKeys.count == index + 1 }
+            try focus.check()
+            precondition(sender.connectionID == connectionID && sender.connectionKeys.last == Data("ABCD2345".utf8))
+            try press(key.0, code: key.1)
+            precondition(service.status.connectionID == connectionID && sender.connectionKeys.count == index + 1,
+                         "Disabled Connect Only must not restart connection setup")
+            sender.onStatus?(.init(connectionID: connectionID, connected: true, message: "Connected"))
+            try await waitUntil { pane.disconnectButton.title == "Disconnect" && pane.codeField.stringValue.isEmpty }
+            try press(key.0, code: key.1)
+            precondition(service.status.connectionID == connectionID && sender.connectionKeys.count == index + 1,
+                         "Enter while connected must leave the connection intact")
+            // The sender fixture traps every submission, including requests to take output.
+            precondition(service.currentContent?.body == "Existing local projection")
+            service.disconnect()
+            try await waitUntil { pane.connectButton.isEnabled }
+        }
+        reviewLog("PASS AltView pairing: field-editor Return/keypad Enter, validation, disabled setup/connected action, Connect Only never publishes")
+    }
+
+    @MainActor static func checkNativeSettings(output: URL, sources: BibleSources, inspecting: Bool = false, pairingOnly: Bool = false) async throws {
         let suite = "ViewTheWord.NativeSettingsReview"
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
@@ -732,6 +819,12 @@ struct NativeWorkspaceReview {
         try await waitUntil { window.isKeyWindow }
         func descendants(_ controller: NSViewController) -> [NSViewController] { [controller] + controller.children.flatMap(descendants) }
         precondition(!descendants(settings.settings).contains { String(describing: type(of: $0)).contains("NSHostingController") })
+        if !inspecting {
+            settings.settings.selectedTabViewItemIndex = 2
+            try await waitUntil { settings.settings.altView.codeField.window === window }
+            try await checkAltViewPairing(settings.settings.altView, window: window, service: altView, sender: sender, sources: sources)
+            if pairingOnly { return }
+        }
         for (name, dark) in [("light", false), ("dark", true)] {
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             for (index, pane) in [(0, "display"), (1, "library"), (2, "altview")] {
