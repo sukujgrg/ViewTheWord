@@ -51,7 +51,10 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
     private var revision: UInt64 = 0
     private var latest: AltViewDisplayContent?
     private var lastIntent: UUID?
+    // A cached lease can already be revoked. Retain explicit projection until
+    // its snapshot is accepted or a fresh ownership grant resolves the request.
     private var pendingTake = false
+    private var pendingProjectionRevision: UInt64?
     private enum GrantRequest { case take, resume }
     private var awaitingGrant: GrantRequest?
     private var wantsConnection = false
@@ -98,7 +101,7 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
         reconnectWork?.cancel(); reconnectWork = nil
         timer?.cancel(); timer = nil
         peer?.onClose = nil; peer?.close(nil); peer = nil
-        lease = nil; awaitingGrant = nil
+        lease = nil; awaitingGrant = nil; pendingProjectionRevision = nil
         status.connected = false; status.ownsOutput = false
         status.waitingToRetry = false
         status.feedback = AltViewDeliveryFeedback()
@@ -129,28 +132,33 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
         status.submissionID = submission.id
         let explicit = submission.intent != nil && submission.intent != lastIntent
         lastIntent = submission.intent
-        if explicit, status.connected, lease == nil {
-            if awaitingGrant == .resume {
-                // v2 cannot distinguish a refused resume from an unrelated
-                // ownership broadcast. Retire that uncertain request before
-                // taking explicitly, so its late grant cannot race the new take.
-                stopTransport()
-                restoreOwnership = false; pendingTake = true
-                openConnection()
-            } else if awaitingGrant == nil {
-                awaitingGrant = .take
-                peer?.discardPendingState()
-                peer?.send(AltViewWireMessage(kind: .take))
-            }
-        } else if explicit, !status.connected, !hasConnected {
+        if explicit {
             pendingTake = true
+            pendingProjectionRevision = nil
+            requestPendingTake()
         }
-        // During established reconnects only a former owner can resume, and only
-        // if unowned. Offline activity must not later steal another sender's output.
+        // Background updates preserve an existing request but cannot create one.
+        // Without a pending explicit take, reconnect only resumes unowned output.
         sendLatest()
+    }
+    private func requestPendingTake() {
+        guard pendingTake, lease == nil, status.connected else { return }
+        if awaitingGrant == .resume {
+            // v2 cannot distinguish a refused resume from an unrelated
+            // ownership broadcast. Retire that uncertain request before
+            // taking explicitly, so its late grant cannot race the new take.
+            stopTransport()
+            restoreOwnership = false
+            openConnection()
+        } else if awaitingGrant == nil {
+            awaitingGrant = .take
+            peer?.discardPendingState()
+            peer?.send(AltViewWireMessage(kind: .take))
+        }
     }
     private func stopOutput() {
         latest = nil; lastIntent = nil; pendingTake = false; restoreOwnership = false
+        pendingProjectionRevision = nil
         status.requestedTemplate = nil
         peer?.discardPendingState()
         if awaitingGrant != nil {
@@ -189,7 +197,7 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
         peer.onClose = { [weak self, weak peer] reason in
             guard let self, let peer, self.peer === peer else { return }
             self.restoreOwnership = self.status.ownsOutput || self.restoreOwnership
-            self.peer = nil; self.lease = nil; self.awaitingGrant = nil
+            self.peer = nil; self.lease = nil; self.awaitingGrant = nil; self.pendingProjectionRevision = nil
             self.status.connected = false; self.status.ownsOutput = false
             self.status.feedback = AltViewDeliveryFeedback()
             self.status.templateCapabilities = AltViewTemplateCapabilities()
@@ -224,13 +232,14 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
             status.connected = true; status.receiverID = receiverID; status.ownerName = message.ownerName
             status.message = message.ownerName.map { "Connected · output controlled by \($0)" } ?? "Connected · waiting for projection"
             if pendingTake, latest != nil {
-                pendingTake = false; awaitingGrant = .take; peer?.send(AltViewWireMessage(kind: .take))
+                awaitingGrant = .take; peer?.send(AltViewWireMessage(kind: .take))
             } else if restoreOwnership, latest != nil, message.ownerID == nil {
                 awaitingGrant = .resume; peer?.send(AltViewWireMessage(kind: .resume))
             } else { restoreOwnership = false }
             publish()
         case .granted:
             guard status.connected, awaitingGrant != nil, let lease = message.lease else { fail("Unexpected AltView grant."); return }
+            pendingTake = false; pendingProjectionRevision = nil
             awaitingGrant = nil; self.lease = lease; revision = 0
             status.feedback.resetSnapshot()
             status.ownsOutput = true; restoreOwnership = true
@@ -240,7 +249,7 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
             guard status.connected else { fail("Ownership before welcome."); return }
             status.ownerName = message.ownerName
             if message.ownerID != senderID || message.lease != lease {
-                lease = nil; status.ownsOutput = false
+                lease = nil; status.ownsOutput = false; pendingProjectionRevision = nil
                 if awaitingGrant != .resume || message.ownerID != nil { restoreOwnership = false }
                 status.feedback.resetSnapshot()
                 // Broadcasts are unsolicited, including when an idle sender
@@ -248,6 +257,7 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
                 // a valid grant may still follow on this connection.
                 peer?.discardPendingState()
                 status.message = message.ownerName.map { "Output controlled by \($0)" } ?? "Connected · waiting for projection"
+                requestPendingTake()
             }
             publish()
         case .feedback:
@@ -257,6 +267,10 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
             }
             status.templateCapabilities = AltViewTemplateCapabilities(templates: message.templates, policy: message.templatePolicy)
             status.feedback.receive(message, lease: lease, now: ProcessInfo.processInfo.systemUptime)
+            if let pendingProjectionRevision, status.feedback.acceptedRevision >= pendingProjectionRevision {
+                pendingTake = false
+                self.pendingProjectionRevision = nil
+            }
             publish()
         case .heartbeat: break
         case .error: fail(message.detail ?? "AltView rejected the message.")
@@ -267,6 +281,7 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
         guard let latest, let lease, status.connected else { return }
         guard revision < UInt64.max else { fail("Session revision exhausted. Connect again."); return }
         revision += 1
+        if pendingTake, pendingProjectionRevision == nil { pendingProjectionRevision = revision }
         status.feedback.sent(revision, now: ProcessInfo.processInfo.systemUptime)
         peer?.send(AltViewWireMessage(kind: .state, lease: lease, revision: revision,
                                       content: status.templateCapabilities.contentForSending(latest)))
