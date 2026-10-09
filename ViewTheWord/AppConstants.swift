@@ -28,6 +28,9 @@ enum AppDefaultsKey {
     static let showOnlyPrimary = "showOnlyPrimary"
     static let chapterHistorySplitAutosaveName = "chapterHistorySplit"
     static let bookmarkHistorySplitAutosaveName = "bookmarkHistorySplit"
+    static let projectionMonitorAssignment = "projectionMonitorAssignmentV1"
+    static let projectionMonitorLabels = "projectionMonitorLabelsV1"
+    // Read once for migration; runtime IDs are never the saved monitor identity.
     static let projectorScreenDisplayID = "projectorScreenDisplayID"
     static let searchRecents = "searchRecents"
 }

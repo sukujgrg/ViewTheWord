@@ -74,6 +74,7 @@ struct FixtureReceiverStatus: Equatable, Sendable {
 
 final class FixtureReceiverServer: @unchecked Sendable {
     let receiverID: UUID
+    private let capabilities: [String]
     private let queue = DispatchQueue(label: "com.suku.AltView.receiver", qos: .userInitiated)
     private var listener: NWListener?
     private var peers: [UUID: AltViewPeerChannel] = [:]
@@ -84,8 +85,9 @@ final class FixtureReceiverServer: @unchecked Sendable {
     private var timer: DispatchSourceTimer?
     private let delivery: AltViewSnapshotMailbox<FixtureReceiverStatus>
 
-    init(receiverID: UUID, callbackQueue: DispatchQueue = .main, onStatus: @escaping @Sendable (FixtureReceiverStatus) -> Void) {
+    init(receiverID: UUID, capabilities: [String] = [], callbackQueue: DispatchQueue = .main, onStatus: @escaping @Sendable (FixtureReceiverStatus) -> Void) {
         self.receiverID = receiverID
+        self.capabilities = capabilities
         delivery = AltViewSnapshotMailbox(queue: callbackQueue, consume: onStatus)
     }
     func start(name: String, key: Data, port: UInt16 = 0, advertise: Bool = true) {
@@ -244,7 +246,7 @@ final class FixtureReceiverServer: @unchecked Sendable {
                 peer.close("Invalid sender identity."); return
             }
             peer.send(AltViewWireMessage(kind: .welcome, receiverID: receiverID, ownerID: state.owner?.id, ownerName: state.owner?.name,
-                templates: templateCapabilities.templates, templatePolicy: templateCapabilities.policy))
+                templates: templateCapabilities.templates, templatePolicy: templateCapabilities.policy, capabilities: capabilities))
             sendFeedback(to: peer)
             publish()
             return

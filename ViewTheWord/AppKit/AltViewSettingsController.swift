@@ -9,7 +9,7 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
     private var templateMenuEntries: [AltViewTemplateDescriptor]?
     private var unavailableTemplate: AltViewContentTemplate?
     let hostField = NSTextField()
-    let portField = NSTextField(string: "49721")
+    let portField = NSTextField()
     let codeField = NSSecureTextField()
     let connectButton = NSButton(title: "Connect Only", target: nil, action: nil)
     let disconnectButton = NSButton(title: "Disconnect", target: nil, action: nil)
@@ -18,24 +18,22 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
     private let service: AltViewProjectionService
     private var receivers: [AltViewDestination] = []
     private var selected: AltViewDestination?
-    private var discoveryNote: String?
     private var subscription: AnyCancellable?
     var discoveryEnabled = true
-    private lazy var discovery = AltViewReceiverDiscovery { [weak self] receivers, error in
-        MainActor.assumeIsolated { self?.applyReceivers(receivers, error: error) }
-    }
+
 
     init(service: AltViewProjectionService) {
         self.service = service
-        self.selected = service.destination?.host == nil ? service.destination : nil
+        self.selected = service.destination?.host == nil || service.destination?.localReceiverID != nil ? service.destination : nil
         super.init(nibName: nil, bundle: nil)
         hostField.stringValue = service.destination?.host ?? ""
-        portField.stringValue = String(service.destination?.port ?? 49721)
+        portField.stringValue = service.destination.flatMap { $0.host == nil ? nil : $0.port }.map(String.init) ?? ""
+        portField.placeholderString = "Port"
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func loadView() {
         view = NSView()
-        let explanation = NSTextField(wrappingLabelWithString: "Send the primary translation to AltView on another Mac. If its verse is missing, send the secondary translation.")
+        let explanation = NSTextField(wrappingLabelWithString: "Send the primary translation to AltView on This Mac or another Mac. If its verse is missing, send the secondary translation.")
         explanation.font = .systemFont(ofSize: 12)
         explanation.textColor = .secondaryLabelColor
         receiverPicker.target = self; receiverPicker.action = #selector(destinationChanged(_:))
@@ -55,7 +53,7 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
         for button in [connectButton, disconnectButton] { button.target = self; button.bezelStyle = .rounded }
         connectButton.action = #selector(connect(_:)); disconnectButton.action = #selector(disconnect(_:))
         connectButton.keyEquivalent = "\r"
-        let hint = NSTextField(wrappingLabelWithString: "The last receiver connects automatically at startup and reconnects after a network drop. Project a verse to send it; Blank and Stop follow ViewTheWord. Appearance and display are set in AltView.")
+        let hint = NSTextField(wrappingLabelWithString: "The last receiver connects automatically at startup and reconnects after a network drop. Project a verse to send it; Blank and Stop follow ViewTheWord. Choose This Mac when AltView runs here; its current port is discovered automatically. This does not restrict AltView’s LAN listener. Appearance and displays are set in AltView.")
         hint.font = .systemFont(ofSize: 11); hint.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.maximumNumberOfLines = 0
@@ -74,7 +72,7 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
             stack.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -16)
         ])
         for child in stack.arrangedSubviews { child.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
-        applyReceivers([], error: nil)
+        refreshReceivers()
         subscription = service.objectWillChange.sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.render() }
         }
@@ -87,24 +85,28 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
     }
     override func viewWillAppear() { super.viewWillAppear(); startDiscovery(); render() }
     override func viewWillDisappear() { super.viewWillDisappear(); stopDiscovery() }
-    func startDiscovery() { if discoveryEnabled { discovery.start() } }
-    func stopDiscovery() { discovery.stop() }
-    private func applyReceivers(_ discovered: [AltViewDiscoveredReceiver], error: String?) {
-        discoveryNote = error
-        receivers = discovered.compactMap(AltViewDestination.init)
-        if let selected, !receivers.contains(selected) { receivers.insert(selected, at: 0) }
-        receiverPicker.removeAllItems()
-        receiverPicker.addItem(withTitle: "Manual address")
-        for (index, receiver) in receivers.enumerated() {
-            let item = NSMenuItem(title: receiver.name, action: nil, keyEquivalent: "")
-            item.tag = index + 1
-            receiverPicker.menu?.addItem(item)
+    func startDiscovery() { if discoveryEnabled { service.startDiscovery() } }
+    func stopDiscovery() { if discoveryEnabled { service.stopDiscovery() } }
+    private func refreshReceivers() {
+        var freshReceivers = service.receivers
+        if let id = selected?.localReceiverID, let fresh = freshReceivers.first(where: { $0.localReceiverID == id }) { selected = fresh }
+        if let selected, !freshReceivers.contains(selected) { freshReceivers.insert(selected, at: 0) }
+        // Status and acknowledgement updates must not replace an open menu.
+        if receivers != freshReceivers || receiverPicker.numberOfItems == 0 {
+            receivers = freshReceivers
+            receiverPicker.removeAllItems()
+            receiverPicker.addItem(withTitle: "Manual address")
+            for (index, receiver) in receivers.enumerated() {
+                let item = NSMenuItem(title: receiver.name, action: nil, keyEquivalent: "")
+                item.tag = index + 1
+                receiverPicker.menu?.addItem(item)
+            }
         }
         receiverPicker.selectItem(at: selected.flatMap { receivers.firstIndex(of: $0) }.map { $0 + 1 } ?? 0)
-        render()
     }
     private func render() {
         guard isViewLoaded else { return }
+        refreshReceivers()
         hostField.isEnabled = selected == nil; portField.isEnabled = selected == nil
         let connecting = service.isEnabled && !service.status.connected && service.status.failureReason == nil
         disconnectButton.isEnabled = service.status.connected || connecting
@@ -112,7 +114,7 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
         connectButton.isEnabled = !service.isEnabled || service.status.failureReason != nil
         refreshTemplatePicker()
         statusBadge.render(service)
-        statusLabel.stringValue = service.detail + (discoveryNote.map { "\n\($0)" } ?? "")
+        statusLabel.stringValue = service.detail + (service.discoveryNote.map { "\n\($0)" } ?? "")
         statusLabel.toolTip = statusLabel.stringValue
         if service.status.connected { codeField.stringValue = "" }
     }

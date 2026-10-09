@@ -46,10 +46,11 @@ final class NativeWorkspaceTests: XCTestCase {
         defaults.set(source.primary.absoluteString, forKey: AppDefaultsKey.primaryBibleName)
         defaults.set(alternate.absoluteString, forKey: AppDefaultsKey.secondaryBibleName)
         let library = library ?? BibleLibrary(preloadedURLs: [source.primary, alternate])
+        let live = LiveProjectionController(library: library, defaults: defaults, projectionDisplays: selectedTestProjectionDisplays())
         let workspace = MainWorkspaceController(navigation: VerseTargetModel(readerFactory: readerFactory),
             history: HistoryStore(fileURL: directory.appendingPathComponent("history.json")),
             bookmarks: BookmarkStore(fileURL: directory.appendingPathComponent("bookmarks.json")),
-            library: library, defaults: defaults)
+            liveProjection: live)
         // Projection intent is tested without opening live output on a display.
         workspace.liveProjection.projectorWindowFactory = { _ in nil }
         let controller = MainWindowController(workspace: workspace, savesFrame: false)
@@ -67,6 +68,26 @@ final class NativeWorkspaceTests: XCTestCase {
         workspace.render()
         try await Task.sleep(nanoseconds: 20_000_000)
         workspace.view.layoutSubtreeIfNeeded()
+    }
+    func testProjectionMenuKeepsItsButtonTitleAndFirstCommandVisibleAcrossRefreshes() throws {
+        let (controller, directory) = try mounted()
+        defer { controller.close(); try? FileManager.default.removeItem(at: directory) }
+        let subject = controller.workspace
+        for _ in 0..<3 {
+            subject.rebuildOptionMenus()
+            let button = subject.projectionOptions
+            let menu = try XCTUnwrap(button.menu)
+            XCTAssertEqual(button.title, "Projection")
+            XCTAssertEqual(menu.items.filter { !$0.isHidden && !$0.isSeparatorItem }.map(\.title),
+                           ["Projection monitor", "Text alignment", "Reading direction", "Stack translations vertically",
+                            "Show translation names", "Transparent background"])
+            let monitorItem = try XCTUnwrap(menu.items.first { $0.title == "Projection monitor" })
+            let monitors = try XCTUnwrap(monitorItem.submenu)
+            XCTAssertEqual(monitors.items.map(\.title), ["1 · Fixture Monitor"])
+            button.selectItem(at: 1)
+            button.synchronizeTitleAndSelectedItem()
+            XCTAssertEqual(button.title, "Projection", "Choosing a menu command must not change the toolbar title")
+        }
     }
     func testNativeHierarchyAndSnapshotPreserveToolbarEditor() async throws {
         let (controller, directory) = try mounted()

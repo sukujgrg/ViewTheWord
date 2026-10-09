@@ -1,14 +1,34 @@
 // Adapted from AltView’s protocol v1 implementation (2026-10-02).
 import Foundation
 import Network
+import CryptoKit
+import Darwin
+
+enum AltViewLocalReceiverMarker {
+    static let current: String? = {
+        var length = 0
+        guard sysctlbyname("kern.bootsessionuuid", nil, &length, nil, 0) == 0, (1...128).contains(length) else { return nil }
+        var bytes = [CChar](repeating: 0, count: length)
+        guard sysctlbyname("kern.bootsessionuuid", &bytes, &length, nil, 0) == 0 else { return nil }
+        let value = String(cString: bytes)
+        guard !value.isEmpty else { return nil }
+        return SHA256.hash(data: Data("AltView local v1:\(value)".utf8)).map { String(format: "%02x", $0) }.joined()
+    }()
+}
 
 struct AltViewDiscoveredReceiver: Sendable {
     let name: String
     let endpoint: NWEndpoint
     var receiverID: UUID?
+    var isLocal = false
 }
 
-final class AltViewReceiverDiscovery: @unchecked Sendable {
+protocol AltViewDiscovering: AnyObject {
+    func start()
+    func stop()
+}
+
+final class AltViewReceiverDiscovery: AltViewDiscovering, @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.suku.AltView.discovery")
     private var browser: NWBrowser?
     // UI entry points and delivery generations are main-queue owned.
@@ -48,12 +68,17 @@ final class AltViewReceiverDiscovery: @unchecked Sendable {
         }
     }
     // Keep identity parsing and filtering independent of live Bonjour availability.
-    func receiver(endpoint: NWEndpoint, metadata: NWBrowser.Result.Metadata) -> AltViewDiscoveredReceiver? {
+    func receiver(endpoint: NWEndpoint, metadata: NWBrowser.Result.Metadata, localMarker: String? = AltViewLocalReceiverMarker.current) -> AltViewDiscoveredReceiver? {
         guard case .service(let name, _, _, _) = endpoint else { return nil }
         let id: UUID?
         if case .bonjour(let record) = metadata { id = record["receiverID"].flatMap(UUID.init(uuidString:)) }
         else { id = nil }
         if let id, id == excludingReceiverID { return nil }
+        if let id, let localMarker, case .bonjour(let record) = metadata,
+           record["localMarker"] == localMarker, let raw = record["port"], let port = UInt16(raw), port > 0 {
+            return AltViewDiscoveredReceiver(name: "This Mac · \(name)",
+                endpoint: .hostPort(host: "127.0.0.1", port: .init(rawValue: port)!), receiverID: id, isLocal: true)
+        }
         return AltViewDiscoveredReceiver(name: name, endpoint: endpoint, receiverID: id)
     }
     func stop() {

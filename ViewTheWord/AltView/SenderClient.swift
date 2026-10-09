@@ -15,6 +15,7 @@ struct AltViewSenderStatus: Equatable, Sendable {
     var submissionID: UUID?
     var templateCapabilities = AltViewTemplateCapabilities()
     var requestedTemplate: AltViewContentTemplate?
+    var capabilities: Set<String> = []
     var templateDetail: String { templateCapabilities.detail(requested: requestedTemplate) }
 }
 
@@ -30,7 +31,12 @@ struct AltViewSubmission: Sendable {
 protocol AltViewSending: AnyObject {
     func connect(to endpoint: NWEndpoint, key: Data, expectedReceiverID: UUID?, connectionID: UUID)
     func submit(_ submission: AltViewSubmission)
+    func updateEndpoint(_ endpoint: NWEndpoint, connectionID: UUID)
     func disconnect()
+}
+
+extension AltViewSending {
+    func updateEndpoint(_ endpoint: NWEndpoint, connectionID: UUID) {}
 }
 
 /// Mutable transport state belongs exclusively to queue. The only cross-queue
@@ -87,6 +93,15 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
             self.openConnection()
         }
     }
+    func updateEndpoint(_ endpoint: NWEndpoint, connectionID: UUID) {
+        queue.async { [weak self] in
+            guard let self, self.wantsConnection, self.status.connectionID == connectionID, self.endpoint != endpoint else { return }
+            self.restoreOwnership = self.status.ownsOutput || self.restoreOwnership
+            self.endpoint = endpoint
+            self.stopTransport()
+            self.openConnection()
+        }
+    }
     func submit(_ submission: AltViewSubmission) {
         let mailbox = inputLock.withLock { submissions }
         mailbox?.offer(submission)
@@ -106,6 +121,7 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
         status.waitingToRetry = false
         status.feedback = AltViewDeliveryFeedback()
         status.templateCapabilities = AltViewTemplateCapabilities()
+        status.capabilities = []
     }
     private func disconnectOnQueue() {
         wantsConnection = false; restoreOwnership = false; pendingTake = false
@@ -119,7 +135,7 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
         guard let content = submission.content else { status.outputIssue = nil; stopOutput(); return }
         // Check escaped JSON size before taking output, as well as text bounds.
         guard content.isValid,
-              (try? AltViewFrameCodec.encode(AltViewWireMessage(kind: .state, lease: UUID(), revision: UInt64.max, content: content))) != nil else {
+              (try? AltViewFrameCodec.encode(AltViewWireMessage(kind: .state, lease: UUID(), revision: UInt64.max, content: contentForSending(content)))) != nil else {
             stopOutput()
             lastIntent = submission.intent // A later automatic refresh still cannot take output.
             status.outputIssue = "AltView text limit exceeded; remote output stopped."
@@ -143,6 +159,7 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
     }
     private func requestPendingTake() {
         guard pendingTake, lease == nil, status.connected else { return }
+        guard validateLatestForSending() else { return }
         if awaitingGrant == .resume {
             // v2 cannot distinguish a refused resume from an unrelated
             // ownership broadcast. Retire that uncertain request before
@@ -184,7 +201,7 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
         self.peer = peer
         peer.onReady = { [weak self, weak peer] in
             guard let self, let peer, self.peer === peer else { return }
-            peer.send(AltViewWireMessage(kind: .hello, senderID: self.senderID, name: self.name))
+            peer.send(AltViewWireMessage(kind: .hello, senderID: self.senderID, name: self.name, capabilities: AltViewProtocol.capabilities))
             self.queue.asyncAfter(deadline: .now() + AltViewProtocol.timeout) { [weak self, weak peer] in
                 guard let self, let peer, self.peer === peer, !self.status.connected else { return }
                 peer.close("Receiver did not complete the handshake.", retryable: true)
@@ -201,6 +218,7 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
             self.status.connected = false; self.status.ownsOutput = false
             self.status.feedback = AltViewDeliveryFeedback()
             self.status.templateCapabilities = AltViewTemplateCapabilities()
+            self.status.capabilities = []
             self.timer?.cancel(); self.timer = nil
             guard peer.retryableFailure else {
                 self.fail(reason ?? "The receiving Mac rejected the connection.")
@@ -227,10 +245,14 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
             if let expectedReceiverID, expectedReceiverID != receiverID { fail("Receiver identity changed. Enter its code to pair again."); return }
             status.feedback = AltViewDeliveryFeedback()
             status.templateCapabilities = AltViewTemplateCapabilities(templates: message.templates, policy: message.templatePolicy)
+            status.capabilities = Set(message.capabilities ?? []).intersection(AltViewProtocol.capabilities)
             expectedReceiverID = receiverID
             hasConnected = true; attempts = 0
             status.connected = true; status.receiverID = receiverID; status.ownerName = message.ownerName
             status.message = message.ownerName.map { "Connected · output controlled by \($0)" } ?? "Connected · waiting for projection"
+            // A queued snapshot was checked before capabilities were known.
+            // Reject it before take/resume can clear another sender's output.
+            guard validateLatestForSending() else { return }
             if pendingTake, latest != nil {
                 awaitingGrant = .take; peer?.send(AltViewWireMessage(kind: .take))
             } else if restoreOwnership, latest != nil, message.ownerID == nil {
@@ -280,12 +302,29 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
     private func sendLatest() {
         guard let latest, let lease, status.connected else { return }
         guard revision < UInt64.max else { fail("Session revision exhausted. Connect again."); return }
+        guard validateLatestForSending() else { return }
+        let content = contentForSending(latest)
         revision += 1
         if pendingTake, pendingProjectionRevision == nil { pendingProjectionRevision = revision }
         status.feedback.sent(revision, now: ProcessInfo.processInfo.systemUptime)
-        peer?.send(AltViewWireMessage(kind: .state, lease: lease, revision: revision,
-                                      content: status.templateCapabilities.contentForSending(latest)))
+        peer?.send(AltViewWireMessage(kind: .state, lease: lease, revision: revision, content: content))
         publish()
+    }
+    private func validateLatestForSending() -> Bool {
+        guard let latest else { return true }
+        guard latest.isValid,
+              (try? AltViewFrameCodec.encode(AltViewWireMessage(kind: .state, lease: UUID(), revision: UInt64.max,
+                                                               content: contentForSending(latest)))) != nil else {
+            let intent = lastIntent
+            stopOutput(); lastIntent = intent
+            status.outputIssue = "AltView text limit exceeded; remote output stopped."
+            publish()
+            return false
+        }
+        return true
+    }
+    private func contentForSending(_ snapshot: AltViewDisplayContent) -> AltViewDisplayContent {
+        status.templateCapabilities.contentForSending(snapshot)
     }
     private func scheduleReconnect() {
         guard wantsConnection else { return }
