@@ -278,9 +278,9 @@ extension MainWorkspaceController: NSToolbarDelegate {
         previewButton.isEnabled = live
         blankButton.isEnabled = live
         stopButton.isEnabled = live || liveProjection.isProjecting
-        let screen = resolveProjectorTargetScreen(preferredDisplayID: preferredDisplayID)
-        let disconnected = preferredDisplayID != 0 && !NSScreen.screens.contains { $0.displayID == preferredDisplayID }
-        screenLabel.stringValue = "Output: \(screen?.localizedName ?? "No display")\(disconnected ? " · preferred display disconnected" : "")"
+        let displays = liveProjection.projectionDisplays
+        screenLabel.stringValue = "Output: \(displays.selectionLabel)\(displays.selectionProblem == nil ? "" : " · unavailable")"
+        screenLabel.toolTip = displays.selectionProblem
     }
 
     func renderTabHeading(_ sources: BibleSources?) {

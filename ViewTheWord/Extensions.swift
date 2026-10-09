@@ -48,39 +48,15 @@ extension Array: @retroactive RawRepresentable where Element: Codable {
     }
 }
 
-extension NSScreen {
-    var displayID: Int {
-        (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? Int) ?? 0
-    }
-}
-
-func resolveProjectorTargetScreen(preferredDisplayID: Int = 0) -> NSScreen? {
-    let screens = NSScreen.screens.filter { $0.frame.width > 0 && $0.frame.height > 0 }
-    if preferredDisplayID != 0,
-       let match = screens.first(where: { $0.displayID == preferredDisplayID }) {
-        return match
-    }
-    return screens.last ?? NSScreen.main
-}
-
 extension View {
-    private func newWindowInternal(with title: String) -> NSWindow? {
-        let transparentBackground = UserDefaults.standard.bool(forKey: AppDefaultsKey.transparentBackground)
-
+    /// The shared live controller has already resolved its UUID assignment.
+    /// This helper never chooses a monitor or reads output preferences.
+    private func newWindowInternal(with title: String, on targetScreen: NSScreen) -> NSWindow {
         let window = ProjectorWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 0, height: 0),
-            styleMask: [.closable, .borderless],
-            backing: .buffered,
-            defer: true
+            contentRect: ProjectionScreenResolver.screenRelativeContentRect(for: targetScreen.frame),
+            styleMask: [.closable, .borderless], backing: .buffered, defer: true, screen: targetScreen
         )
-
-        let preferredDisplayID = UserDefaults.standard.integer(forKey: AppDefaultsKey.projectorScreenDisplayID)
-        guard let targetScreen = resolveProjectorTargetScreen(preferredDisplayID: preferredDisplayID) else {
-            logger.warning("No screen available for projector window")
-            return nil
-        }
-
-        window.setFrame(targetScreen.frame, display: true)
+        window.setFrame(targetScreen.frame, display: false)
         window.level = NSWindow.Level.screenSaver
         window.isReleasedWhenClosed = false
         window.title = title
@@ -89,23 +65,11 @@ extension View {
         window.tabbingMode = .disallowed
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-        if transparentBackground {
-            window.isOpaque = false
-            window.backgroundColor = NSColor.clear
-        } else {
-            window.isOpaque = true
-            window.backgroundColor = NSColor.black
-        }
-
         return window
     }
 
-    func openNewWindow(with title: String = "new Window") -> NSWindow? {
-        guard let window = newWindowInternal(with: title) else {
-            logger.error("Failed to create projector window")
-            return nil
-        }
-        let priorKeyWindow = NSApplication.shared.keyWindow
+    func makeProjectorWindow(with title: String, on screen: NSScreen) -> NSWindow {
+        let window = newWindowInternal(with: title, on: screen)
         let hostView = NSHostingView(rootView: self)
         hostView.sizingOptions = []
         hostView.translatesAutoresizingMaskIntoConstraints = false
@@ -120,13 +84,6 @@ extension View {
         ])
 
         window.contentView = container
-        window.orderFrontRegardless()  // useful when showing over a fullscreen background video.
-
-        // Keep keyboard focus on the main app window so verse navigation shortcuts
-        // continue working while projection is visible.
-        if let priorKeyWindow, priorKeyWindow != window {
-            priorKeyWindow.makeKey()
-        }
         return window
     }
 }

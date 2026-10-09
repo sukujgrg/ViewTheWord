@@ -22,6 +22,113 @@ final class AltViewNetworkTests: XCTestCase {
         XCTFail("Network condition did not complete", file: file, line: line)
         throw NSError(domain: "AltViewTests", code: 1)
     }
+    func testFrameLimitsUseNegotiatedCapabilitiesAndKeepTransportHealthy() async throws {
+        let text = String(repeating: "\u{01}", count: 6_000)
+        let content = AltViewDisplayContent(body: text, confidence: .init(body: text))
+        XCTAssertTrue(content.isValid)
+        XCTAssertThrowsError(try AltViewFrameCodec.encode(AltViewWireMessage(kind: .state, content: content)))
+        for capabilities in [[], AltViewProtocol.capabilities] {
+            let state = AltViewNetworkObservation()
+            let receiver = FixtureReceiverServer(receiverID: UUID(), capabilities: capabilities) { value in MainActor.assumeIsolated { state.receiver = value } }
+            let sender = AltViewSenderClient(name: "Frame limits") { value in MainActor.assumeIsolated { state.a = value } }
+            defer { sender.disconnect(); receiver.stop() }
+            receiver.start(name: "Frames", key: key, advertise: false)
+            try await eventually { state.receiver.port != nil }
+            let id = UUID(), intent = UUID()
+            sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!), key: key, expectedReceiverID: nil, connectionID: id)
+            sender.submit(.init(connectionID: id, content: content, intent: intent))
+            if capabilities.isEmpty {
+                try await eventually { state.a.feedback.accepted && state.receiver.content.body == text }
+                XCTAssertNil(state.receiver.content.confidence); XCTAssertNil(state.a.outputIssue)
+            } else {
+                try await eventually { state.a.connected && state.a.outputIssue != nil && state.receiver.ownerID == nil }
+                XCTAssertEqual(state.receiver.content, .empty)
+                sender.submit(.init(connectionID: id, content: .init(body: "Automatic refresh"), intent: intent))
+                try await Task.sleep(nanoseconds: 100_000_000)
+                XCTAssertNil(state.receiver.ownerID, "A failed publication cannot make an automatic refresh take output")
+            }
+            XCTAssertTrue(state.a.connected)
+        }
+    }
+    func testQueuedConfidenceFrameRejectionPreservesAnotherSendersOutput() async throws {
+        let state = AltViewNetworkObservation()
+        let receiver = FixtureReceiverServer(receiverID: UUID(), capabilities: AltViewProtocol.capabilities) {
+            value in MainActor.assumeIsolated { state.receiver = value }
+        }
+        let a = AltViewSenderClient(name: "A") { value in MainActor.assumeIsolated { state.a = value } }
+        let b = AltViewSenderClient(name: "B") { value in MainActor.assumeIsolated { state.b = value } }
+        defer { a.disconnect(); b.disconnect(); receiver.stop() }
+        receiver.start(name: "Frames", key: key, advertise: false)
+        try await eventually { state.receiver.port != nil }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!)
+        let bID = UUID()
+        b.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: bID)
+        b.submit(.init(connectionID: bID, content: .init(body: "Existing presentation"), intent: UUID()))
+        try await eventually { state.b.feedback.accepted }
+        let owner = state.receiver.ownerID
+        let aID = UUID(), intent = UUID()
+        let text = String(repeating: "\u{01}", count: 6_000)
+        a.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: aID)
+        a.submit(.init(connectionID: aID, content: .init(body: text, confidence: .init(body: text)), intent: intent))
+        try await eventually { state.a.connected && state.a.outputIssue != nil }
+        XCTAssertEqual(state.receiver.ownerID, owner, "Reject the negotiated frame before requesting ownership")
+        XCTAssertEqual(state.receiver.content.body, "Existing presentation")
+        a.submit(.init(connectionID: aID, content: .init(body: "Automatic refresh"), intent: intent))
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(state.receiver.ownerID, owner)
+        XCTAssertEqual(state.receiver.content.body, "Existing presentation")
+        a.submit(.init(connectionID: aID, content: .init(body: "New explicit projection", confidence: .init(body: "Confidence")), intent: UUID()))
+        try await eventually { state.a.feedback.accepted && state.receiver.content.body == "New explicit projection" }
+        XCTAssertEqual(state.receiver.content.confidence?.body, "Confidence")
+    }
+    func testEndpointChangesRestoreOnlyUnownedOutputAndKeepExplicitTakeAndStop() async throws {
+        let firstState = AltViewNetworkObservation(), secondState = AltViewNetworkObservation()
+        let receiverID = UUID()
+        let first = FixtureReceiverServer(receiverID: receiverID, capabilities: AltViewProtocol.capabilities) {
+            value in MainActor.assumeIsolated { firstState.receiver = value }
+        }
+        let second = FixtureReceiverServer(receiverID: receiverID, capabilities: AltViewProtocol.capabilities) {
+            value in MainActor.assumeIsolated { secondState.receiver = value }
+        }
+        let a = AltViewSenderClient(name: "A") { value in MainActor.assumeIsolated { firstState.a = value } }
+        let b = AltViewSenderClient(name: "B") { value in MainActor.assumeIsolated { secondState.b = value } }
+        defer { a.disconnect(); b.disconnect(); first.stop(); second.stop() }
+        first.start(name: "First port", key: key, advertise: false)
+        second.start(name: "Second port", key: key, advertise: false)
+        try await eventually { firstState.receiver.port != nil && secondState.receiver.port != nil }
+        let firstEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: firstState.receiver.port!)!)
+        let secondEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: secondState.receiver.port!)!)
+        let aID = UUID(), intent = UUID()
+        a.connect(to: firstEndpoint, key: key, expectedReceiverID: receiverID, connectionID: aID)
+        a.submit(.init(connectionID: aID, content: .init(body: "Hidden verse", visible: false, confidence: .init(body: "Stage verse")), intent: intent))
+        try await eventually { firstState.a.feedback.accepted }
+        a.updateEndpoint(secondEndpoint, connectionID: aID)
+        try await eventually { secondState.receiver.content.body == "Hidden verse" && firstState.a.feedback.accepted }
+        XCTAssertFalse(secondState.receiver.content.visible)
+        XCTAssertEqual(secondState.receiver.content.confidence?.body, "Stage verse")
+        let bID = UUID()
+        b.connect(to: secondEndpoint, key: key, expectedReceiverID: receiverID, connectionID: bID)
+        b.submit(.init(connectionID: bID, content: .init(body: "Other owner"), intent: UUID()))
+        try await eventually { secondState.b.feedback.accepted && !firstState.a.ownsOutput }
+        a.updateEndpoint(firstEndpoint, connectionID: aID)
+        try await eventually { firstState.a.connected && firstState.receiver.connections == 1 && secondState.receiver.connections == 1 }
+        a.updateEndpoint(secondEndpoint, connectionID: aID)
+        try await eventually { firstState.a.connected && secondState.receiver.connections == 2 }
+        XCTAssertEqual(secondState.receiver.content.body, "Other owner", "Port recovery alone cannot take another sender's output")
+        a.updateEndpoint(firstEndpoint, connectionID: aID)
+        a.submit(.init(connectionID: aID, content: .init(body: "Explicit during port change"), intent: UUID()))
+        a.updateEndpoint(secondEndpoint, connectionID: aID)
+        try await eventually { secondState.receiver.content.body == "Explicit during port change" && firstState.a.feedback.accepted }
+        a.updateEndpoint(firstEndpoint, connectionID: aID)
+        a.submit(.init(connectionID: aID, content: nil, intent: nil))
+        a.updateEndpoint(secondEndpoint, connectionID: aID)
+        try await eventually { firstState.a.connected && secondState.receiver.ownerID == nil }
+        XCTAssertEqual(secondState.receiver.content, .empty)
+        a.disconnect()
+        a.updateEndpoint(firstEndpoint, connectionID: aID)
+        try await eventually { firstState.a.connectionID == nil && secondState.receiver.connections == 1 && firstState.receiver.connections == 0 }
+        XCTAssertEqual(firstState.receiver.connections, 0, "Late discovery cannot reopen a cancelled sender")
+    }
     func testTemplateDiscoveryUpdatesObserversAndResolvesEverySnapshotAndReconnect() async throws {
         let state = AltViewNetworkObservation()
         let receiver = FixtureReceiverServer(receiverID: UUID()) { value in MainActor.assumeIsolated { state.receiver = value } }

@@ -11,10 +11,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var presentationTask: Task<Void, Never>?
     private var presentingSheet = false
 
-    init(library: BibleLibrary? = nil, defaults: UserDefaults = .standard, altView: AltViewProjectionService? = nil) {
+    init(library: BibleLibrary? = nil, defaults: UserDefaults = .standard, altView: AltViewProjectionService? = nil, projectionDisplays: ProjectionDisplayManager? = nil) {
         let library = library ?? .shared
         self.library = library
-        settings = NativeSettingsController(library: library, defaults: defaults, altView: altView ?? AltViewProjectionService(defaults: defaults))
+        settings = NativeSettingsController(library: library, defaults: defaults, altView: altView ?? AltViewProjectionService(defaults: defaults), projectionDisplays: projectionDisplays)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 340),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Settings"
@@ -119,12 +119,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
 @MainActor
 final class NativeSettingsController: NSTabViewController {
+    let monitors: ProjectionMonitorSettingsController
     let display: DisplaySettingsController
     let altView: AltViewSettingsController
     let bibleLibrary: BibleLibrarySettingsController
 
-    init(library: BibleLibrary, defaults: UserDefaults, altView: AltViewProjectionService? = nil) {
+    init(library: BibleLibrary, defaults: UserDefaults, altView: AltViewProjectionService? = nil, projectionDisplays: ProjectionDisplayManager? = nil) {
         self.altView = AltViewSettingsController(service: altView ?? AltViewProjectionService(defaults: defaults))
+        monitors = ProjectionMonitorSettingsController(displays: projectionDisplays ?? ProjectionDisplayManager(defaults: defaults))
         display = DisplaySettingsController(defaults: defaults)
         bibleLibrary = BibleLibrarySettingsController(library: library)
         super.init(nibName: nil, bundle: nil)
@@ -133,7 +135,8 @@ final class NativeSettingsController: NSTabViewController {
         transitionOptions = []
         for (controller, label, symbol) in [(display as NSViewController, "Display", "display"),
                                            (bibleLibrary, "Bible Library", "books.vertical"),
-                                           (self.altView, "AltView", "network")] {
+                                           (self.altView, "AltView", "network"),
+                                           (monitors, "Monitors", "display.2")] {
             let item = NSTabViewItem(viewController: controller)
             item.label = label
             item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)

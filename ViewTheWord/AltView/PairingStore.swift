@@ -6,13 +6,19 @@ import LocalAuthentication
 struct AltViewDestination: Codable, Equatable, Sendable {
     var name: String
     var host: String?
-    var port: UInt16 = 49721
+    var port: UInt16 = 0
     var serviceDomain: String?
+    var localReceiverID: UUID?
 
-    init(name: String, host: String? = nil, port: UInt16 = 49721, serviceDomain: String? = nil) {
-        self.name = name; self.host = host; self.port = port; self.serviceDomain = serviceDomain
+    init(name: String, host: String? = nil, port: UInt16 = 0, serviceDomain: String? = nil) {
+        self.name = name; self.host = host; self.port = port; self.serviceDomain = serviceDomain; self.localReceiverID = nil
     }
     init?(_ receiver: AltViewDiscoveredReceiver) {
+        if receiver.isLocal, let id = receiver.receiverID, case .hostPort(_, let port) = receiver.endpoint {
+            self.init(name: receiver.name, host: "127.0.0.1", port: port.rawValue)
+            localReceiverID = id
+            return
+        }
         guard case .service(let name, _, let domain, _) = receiver.endpoint else { return nil }
         self.init(name: name, serviceDomain: domain)
     }
@@ -21,10 +27,12 @@ struct AltViewDestination: Codable, Equatable, Sendable {
         return .service(name: name, type: AltViewProtocol.serviceType, domain: serviceDomain ?? "local.", interface: nil)
     }
     var account: String {
+        if let localReceiverID { return "local:\(localReceiverID)" }
         if let host { return "host:\(host.lowercased()):\(port)" }
         return "bonjour:\(name):\(serviceDomain ?? "local.")"
     }
     var isValid: Bool {
+        if localReceiverID != nil, host != "127.0.0.1" { return false }
         if let host { return !host.isEmpty && !host.contains(where: \.isWhitespace) && port != 0 }
         return !name.isEmpty && serviceDomain != nil
     }

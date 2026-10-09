@@ -205,7 +205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for url in urls { BibleLibrary.shared.importFile(url, presenter: .main) }
     }
     @objc func showSettings(_ sender: Any?) {
-        if settingsWindow == nil { settingsWindow = SettingsWindowController(altView: passages.liveProjection.altView) }
+        if settingsWindow == nil { settingsWindow = SettingsWindowController(altView: passages.liveProjection.altView, projectionDisplays: passages.liveProjection.projectionDisplays) }
         settingsWindow?.showWindow(sender)
     }
     @objc func showHelp(_ sender: Any?) {

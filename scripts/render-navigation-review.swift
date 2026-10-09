@@ -1,6 +1,15 @@
 import AppKit
 import Network
 
+@MainActor
+private func reviewProjectionDisplays() -> ProjectionDisplayManager {
+    let monitor = ProjectionMonitor(id: 10, identity: "11111111-1111-1111-1111-111111111111",
+                                    name: "Review Monitor", frame: CGRect(x: -10000, y: -10000, width: 1920, height: 1080))
+    let displays = ProjectionDisplayManager(displays: { [monitor] })
+    precondition(displays.select(monitor.target))
+    return displays
+}
+
 // Offline Settings fixture: never starts sockets or reads/writes pairing secrets.
 private final class ReviewAltViewSender: AltViewSending, @unchecked Sendable {
     var connectionID: UUID?
@@ -74,10 +83,12 @@ struct NativeWorkspaceReview {
         defer { withExtendedLifetime(menuDelegate) {} }
         defaults.set(sources.primary.absoluteString, forKey: AppDefaultsKey.primaryBibleName)
         defaults.set(sources.secondary!.absoluteString, forKey: AppDefaultsKey.secondaryBibleName)
-        let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [sources.primary, sources.secondary!]), defaults: defaults)
+        let inspectingProjection = CommandLine.arguments.contains("--inspect-projection")
+        let displays = inspectingProjection ? ProjectionDisplayManager(defaults: defaults) : reviewProjectionDisplays()
+        let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [sources.primary, sources.secondary!]), defaults: defaults, projectionDisplays: displays)
         // Exercise logical output lifetime without sending fixture content to a display.
         var outputCreations = 0
-        live.projectorWindowFactory = { _ in outputCreations += 1; return nil }
+        if !inspectingProjection { live.projectorWindowFactory = { _ in outputCreations += 1; return nil } }
         let tabs = PassageTabsController(liveProjection: live,
             history: HistoryStore(fileURL: output.appendingPathComponent("history.json")),
             bookmarks: BookmarkStore(fileURL: output.appendingPathComponent("bookmarks.json")), savesFrames: false)
@@ -111,6 +122,15 @@ struct NativeWorkspaceReview {
             throw ReviewFailure(description: "Window-event checks require the review app to be active. Keep Native Workspace Review in front while the script runs: running=\(NSApp.isRunning), active=\(NSApp.isActive), key=\(NSApp.keyWindow?.title ?? "nil"), visible=\(window.isVisible)")
         }
         defer { tabs.shutdown(); for tab in tabs.windows { tab.close() }; defaults.removePersistentDomain(forName: "ViewTheWord.NativeWorkspaceReview") }
+        if inspectingProjection {
+            let settings = SettingsWindowController(library: live.library, defaults: defaults, altView: live.altView, projectionDisplays: displays)
+            settings.settings.selectedTabViewItemIndex = 3
+            settings.showWindow(nil)
+            reviewLog("INSPECT projection: isolated preferences, real monitors and projector lifecycle. Close the passage window to finish.")
+            while window.isVisible { try await Task.sleep(nanoseconds: 100_000_000) }
+            settings.close()
+            return
+        }
         if CommandLine.arguments.contains("--inspect-settings") {
             try await checkNativeSettings(output: output, sources: sources, inspecting: true)
             return
@@ -461,7 +481,7 @@ struct NativeWorkspaceReview {
         let defaults = UserDefaults(suiteName: defaultsName)!
         defaults.removePersistentDomain(forName: defaultsName)
         defaults.set(true, forKey: AppDefaultsKey.showOnlyPrimary)
-        let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [output.appendingPathComponent("ENG_TEST.bible")]), defaults: defaults)
+        let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [output.appendingPathComponent("ENG_TEST.bible")]), defaults: defaults, projectionDisplays: reviewProjectionDisplays())
         var opens = 0
         live.projectorWindowFactory = { _ in opens += 1; return nil }
         let tabs = PassageTabsController(liveProjection: live,
@@ -548,7 +568,7 @@ struct NativeWorkspaceReview {
         let defaultsName = "ViewTheWord.DelayedSearchReview"
         let defaults = UserDefaults(suiteName: defaultsName)!
         defaults.set(true, forKey: AppDefaultsKey.showOnlyPrimary)
-        let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [output.appendingPathComponent("ENG_TEST.bible")]), defaults: defaults)
+        let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [output.appendingPathComponent("ENG_TEST.bible")]), defaults: defaults, projectionDisplays: reviewProjectionDisplays())
         live.projectorWindowFactory = { _ in nil }
         let tabs = PassageTabsController(liveProjection: live,
             history: HistoryStore(fileURL: output.appendingPathComponent("focus-history.json")),
@@ -686,7 +706,7 @@ struct NativeWorkspaceReview {
         })
         let defaultsName = "ViewTheWord.QueuedImportsReview"
         let defaults = UserDefaults(suiteName: defaultsName)!
-        let live = LiveProjectionController(library: library, defaults: defaults)
+        let live = LiveProjectionController(library: library, defaults: defaults, projectionDisplays: reviewProjectionDisplays())
         live.projectorWindowFactory = { _ in nil }
         let tabs = PassageTabsController(liveProjection: live,
             history: HistoryStore(fileURL: output.appendingPathComponent("import-history.json")),
@@ -810,7 +830,15 @@ struct NativeWorkspaceReview {
         let library = BibleLibrary(preloadedURLs: catalog, catalogProvider: { catalog })
         let sender = ReviewAltViewSender()
         let altView = AltViewProjectionService(defaults: defaults) { callback in sender.onStatus = callback; return sender }
-        let settings = SettingsWindowController(library: library, defaults: defaults, altView: altView)
+        let monitorFixtures = (1...4).map { index in
+            let identity = String(repeating: "\(index)", count: 8) + "-1111-1111-1111-111111111111"
+            let size = index == 4 ? CGSize(width: 2560, height: 1440) : CGSize(width: 1920, height: 1080)
+            return ProjectionMonitor(id: UInt32(index), identity: identity, name: index == 4 ? "DELL U3223QE" : "Same TV",
+                                     frame: CGRect(origin: CGPoint(x: -10000, y: -10000), size: size))
+        }
+        let monitors = ProjectionDisplayManager(displays: { monitorFixtures })
+        for (monitor, name) in zip(monitorFixtures, ["Front Left", "Front Right", "Lobby"]) { monitors.rename(monitor.target, to: name) }
+        let settings = SettingsWindowController(library: library, defaults: defaults, altView: altView, projectionDisplays: monitors)
         settings.settings.altView.discoveryEnabled = false // Appearance fixtures never browse the live network.
         let window = settings.window!
         positionFixtureWindow(window)
@@ -827,7 +855,7 @@ struct NativeWorkspaceReview {
         }
         for (name, dark) in [("light", false), ("dark", true)] {
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-            for (index, pane) in [(0, "display"), (1, "library"), (2, "altview")] {
+            for (index, pane) in [(0, "display"), (1, "library"), (2, "altview"), (3, "monitors")] {
                 settings.settings.selectedTabViewItemIndex = index
                 try await Task.sleep(nanoseconds: 100_000_000)
                 window.contentView?.layoutSubtreeIfNeeded()
@@ -838,7 +866,7 @@ struct NativeWorkspaceReview {
                 try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("settings-\(pane)-\(name).png"))
             }
         }
-        altView.connect(to: .init(name: "Fixture", host: "127.0.0.1"), code: "ABCD2345")
+        altView.connect(to: .init(name: "Fixture", host: "127.0.0.1", port: 49721), code: "ABCD2345")
         try await waitUntil { sender.connectionID != nil }
         let entries = [AltViewTemplateDescriptor(id: .scripture, name: "Scripture"), .init(id: .lyrics, name: "Lyrics")]
         for (name, capabilities) in [

@@ -18,6 +18,11 @@ final class LiveProjectionController: ObservableObject {
         }
     }
 
+    let projectionDisplays: ProjectionDisplayManager
+    private let sleepPrevention: ProjectionSleepPrevention
+    private let displayOwner = UUID()
+    private var displayObservation: UUID?
+    private(set) var activeMonitor: ProjectionMonitorTarget?
     let altView: AltViewProjectionService
     let projector: ProjectorViewModel
     let library: BibleLibrary
@@ -37,19 +42,21 @@ final class LiveProjectionController: ObservableObject {
     private var subscriptions = Set<AnyCancellable>()
     private var preferenceTask: Task<Void, Never>?
     private var repositionTask: Task<Void, Never>?
-    private var previousDisplayID: Int
     private var previousTransparency: Bool
 
     init(projector: ProjectorViewModel? = nil, library: BibleLibrary? = nil,
          defaults: UserDefaults = .standard,
-         refreshReader: VerseTargetModel? = nil, altView: AltViewProjectionService? = nil) {
+         refreshReader: VerseTargetModel? = nil, altView: AltViewProjectionService? = nil,
+         projectionDisplays: ProjectionDisplayManager? = nil, sleepPrevention: ProjectionSleepPrevention? = nil) {
         self.altView = altView ?? AltViewProjectionService(defaults: defaults)
         self.projector = projector ?? ProjectorViewModel()
         self.library = library ?? .shared
         self.defaults = defaults
         self.refreshReader = refreshReader ?? VerseTargetModel()
-        previousDisplayID = defaults.integer(forKey: AppDefaultsKey.projectorScreenDisplayID)
+        self.projectionDisplays = projectionDisplays ?? ProjectionDisplayManager(defaults: defaults)
+        self.sleepPrevention = sleepPrevention ?? ProjectionSleepPrevention()
         previousTransparency = defaults.bool(forKey: AppDefaultsKey.transparentBackground)
+        displayObservation = self.projectionDisplays.observe { [weak self] in self?.projectionDisplaysChanged() }
         // Catalog recovery retracts only its own notice, even after output has
         // stopped or every passage tab has closed. It never resumes projection.
         self.library.$urls.map(\.isEmpty).removeDuplicates()
@@ -59,8 +66,6 @@ final class LiveProjectionController: ObservableObject {
             }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification, object: defaults)
             .sink { [weak self] _ in self?.schedulePreferences() }.store(in: &subscriptions)
-        NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
-            .sink { [weak self] _ in self?.scheduleProjectorReposition() }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)
             .sink { [weak self] note in
                 guard let self, let window = note.object as? NSWindow, window === self.ownedProjectorWindow else { return }
@@ -72,10 +77,22 @@ final class LiveProjectionController: ObservableObject {
                 self.closeProjector()
             }.store(in: &subscriptions)
     }
-    deinit { preferenceTask?.cancel(); repositionTask?.cancel() }
+    deinit {
+        preferenceTask?.cancel()
+        repositionTask?.cancel()
+        sleepPrevention.stop()
+        let displays = projectionDisplays
+        let observation = displayObservation
+        let owner = displayOwner
+        let window = ownedProjectorWindow
+        DispatchQueue.main.async {
+            if let observation { displays.removeObserver(observation) }
+            window?.close()
+            displays.unlock(owner: owner)
+        }
+    }
 
     var message: String? { notice?.message }
-    var preferredDisplayID: Int { defaults.integer(forKey: AppDefaultsKey.projectorScreenDisplayID) }
 
     /// Only the tab supplying live output can refresh its translations. Keep the
     /// latest choices while another tab prepares output; that explicit intent wins.
@@ -150,11 +167,29 @@ final class LiveProjectionController: ObservableObject {
 
     func publish(_ projection: PreparedProjection, intent token: UUID, preserveBlanking: Bool = false) {
         guard token == intent, let pendingSource, pendingSource.sources == projection.sources else { return }
+        projectionDisplays.refresh()
+        guard token == intent else { return }
+        // A refresh may stop an output whose monitor disappeared. Background
+        // translation work must never reopen it; only a fresh explicit intent can.
+        guard !preserveBlanking || activeMonitor != nil else { finishIntent(token); return }
+        guard let monitor = projectionDisplays.resolvedMonitor() else {
+            finishIntent(token)
+            notice = .projectionFailure(projectionDisplays.selectionProblem ?? "Choose a projection monitor in Settings.")
+            return
+        }
+        guard openProjector(on: monitor) else {
+            finishIntent(token)
+            notice = .projectionFailure("The projection monitor is not ready. Choose it in Settings and project again.")
+            return
+        }
         finishIntent(token)
         source = pendingSource
         isClosing = false
         projector.project(projection.data, owner: projection.owner, preserveBlanking: preserveBlanking)
-        openProjector()
+        if let window = ownedProjectorWindow {
+            if !preserveBlanking { bringProjectorToFront(window) }
+            sleepPrevention.start()
+        }
         altView.publish(projection, blanked: projector.isBlanked, explicit: !preserveBlanking)
     }
     func publishRow(_ projection: PreparedProjection, from tabID: UUID) {
@@ -196,10 +231,6 @@ final class LiveProjectionController: ObservableObject {
     }
     func refreshPreferences() {
         refreshSourceIfNeeded()
-        if previousDisplayID != preferredDisplayID {
-            previousDisplayID = preferredDisplayID
-            scheduleProjectorReposition()
-        }
         let transparent = defaults.bool(forKey: AppDefaultsKey.transparentBackground)
         if transparent != previousTransparency {
             previousTransparency = transparent
@@ -211,39 +242,75 @@ final class LiveProjectionController: ObservableObject {
         window.isOpaque = !transparent
         window.backgroundColor = transparent ? .clear : .black
     }
+    private func projectionDisplaysChanged() {
+        guard let target = activeMonitor else { return }
+        if let problem = projectionDisplays.problem(for: target) {
+            notice = .projectionFailure("Projection stopped. \(problem) Project again when the monitor is ready.")
+            closeProjector(preservingMessage: true)
+        } else { scheduleProjectorReposition() }
+    }
     private func repositionProjector(_ window: NSWindow) {
-        guard let screen = resolveProjectorTargetScreen(preferredDisplayID: preferredDisplayID), window.frame != screen.frame else { return }
-        window.setFrame(screen.frame, display: true)
+        guard let target = activeMonitor, let monitor = projectionDisplays.resolve(target) else {
+            notice = .projectionFailure("Projection stopped because its monitor is unavailable. Reconnect it and project again.")
+            closeProjector(preservingMessage: true)
+            return
+        }
+        let frame: CGRect
+        if projectorWindowFactory != nil { frame = monitor.frame }
+        else {
+            guard let screen = ProjectionScreenResolver.screen(for: monitor) else {
+                notice = .projectionFailure("Projection stopped because its monitor is unavailable. Reconnect it and project again.")
+                closeProjector(preservingMessage: true)
+                return
+            }
+            // Use the resolved screen's current geometry, not an earlier
+            // inventory frame during a rapid rearrangement of displays.
+            frame = screen.frame
+        }
+        guard window.frame != frame else { return }
+        window.setFrame(frame, display: true)
     }
     func scheduleProjectorReposition() {
         repositionTask?.cancel()
         repositionTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 120_000_000)
-            guard !Task.isCancelled, let self, self.windowOpened, let window = self.ownedProjectorWindow else { return }
+            guard !Task.isCancelled, let self, self.activeMonitor != nil, let window = self.ownedProjectorWindow else { return }
             self.repositionProjector(window)
         }
     }
-    private func openProjector() {
-        if let window = ownedProjectorWindow {
-            applyProjectorAppearance(window)
-            // Display notifications use the coalesced path, even during rapid verse activation.
-            scheduleProjectorReposition()
-            let priorKeyWindow = NSApplication.shared.keyWindow
-            window.orderFrontRegardless()
-            if let priorKeyWindow, priorKeyWindow !== window { priorKeyWindow.makeKey() }
-            windowOpened = true
-            return
+    /// Selection is validated once here for all callers. Only explicit passage
+    /// publication raises output above an existing full-screen presentation.
+    private func openProjector(on monitor: ProjectionMonitor) -> Bool {
+        if activeMonitor != nil {
+            guard activeMonitor?.identity == monitor.identity else { return false }
+            if let window = ownedProjectorWindow {
+                applyProjectorAppearance(window)
+                scheduleProjectorReposition()
+            }
+            return true
         }
-        guard !windowOpened, projector.projectionOwner != nil else { return }
-        windowOpened = true
+        guard !projectionDisplays.isLocked else { return false }
+        let window: NSWindow?
         if let projectorWindowFactory {
-            // A nil fixture window suppresses display output while retaining live state.
-            ownedProjectorWindow = projectorWindowFactory(projector)
+            // A nil fixture suppresses native output; it holds no sleep activity.
+            window = projectorWindowFactory(projector)
         } else {
-            ownedProjectorWindow = ProjectorView().environmentObject(projector).openNewWindow(with: AppWindowTitle.projector)
-            if ownedProjectorWindow == nil { windowOpened = false }
+            guard let screen = ProjectionScreenResolver.screen(for: monitor) else { return false }
+            window = ProjectorView().environmentObject(projector).makeProjectorWindow(with: AppWindowTitle.projector, on: screen)
         }
-        if let window = ownedProjectorWindow { applyProjectorAppearance(window) }
+        ownedProjectorWindow = window
+        activeMonitor = monitor.target
+        projectionDisplays.lock(monitor.target, owner: displayOwner)
+        windowOpened = true
+        if let window {
+            applyProjectorAppearance(window)
+        }
+        return true
+    }
+    private func bringProjectorToFront(_ window: NSWindow) {
+        let priorKeyWindow = NSApplication.shared.keyWindow
+        window.orderFrontRegardless()
+        if let priorKeyWindow, priorKeyWindow !== window { priorKeyWindow.makeKey() }
     }
     func dismissMessage() { notice = nil }
 
@@ -256,6 +323,9 @@ final class LiveProjectionController: ObservableObject {
         else { handleProjectorWindowClosed() }
     }
     func handleProjectorWindowClosed() {
+        sleepPrevention.stop()
+        activeMonitor = nil
+        projectionDisplays.unlock(owner: displayOwner)
         altView.stop()
         isClosing = true
         repositionTask?.cancel()
@@ -290,6 +360,9 @@ final class LiveProjectionController: ObservableObject {
         preferenceTask?.cancel()
         closeProjector()
         altView.disconnect()
+        projectionDisplays.closeIdentification()
+        if let displayObservation { projectionDisplays.removeObserver(displayObservation) }
+        displayObservation = nil
         subscriptions.removeAll()
     }
 }
@@ -302,7 +375,7 @@ extension MainWorkspaceController {
     @objc func showPreview(_ sender: Any?) {
         guard windowOpened else { return }
         if preview.isShown { preview.performClose(sender); return }
-        let size = resolveProjectorTargetScreen(preferredDisplayID: preferredDisplayID)?.frame.size ?? NSSize(width: 1920, height: 1080)
+        let size = liveProjection.ownedProjectorWindow?.frame.size ?? liveProjection.projectionDisplays.resolvedMonitor()?.frame.size ?? NSSize(width: 1920, height: 1080)
         preview.behavior = .transient
         preview.contentViewController = NSHostingController(rootView: ProjectionPreview(outputSize: size).environmentObject(projector))
         preview.show(relativeTo: previewButton.bounds, of: previewButton, preferredEdge: .maxY)

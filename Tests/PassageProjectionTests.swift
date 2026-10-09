@@ -66,7 +66,7 @@ final class PassageProjectionTests: XCTestCase {
                 $0 == primary ? reader : alternateReader
             }
             live = LiveProjectionController(library: BibleLibrary(catalogProvider: { [catalog] in catalog.urls }), defaults: defaults,
-                                            refreshReader: VerseTargetModel(readerFactory: factory))
+                                            refreshReader: VerseTargetModel(readerFactory: factory), projectionDisplays: selectedTestProjectionDisplays())
             let history = HistoryStore(fileURL: directory.appendingPathComponent("history.json"))
             let bookmarks = BookmarkStore(fileURL: directory.appendingPathComponent("bookmarks.json"))
             first = MainWorkspaceController(navigation: VerseTargetModel(readerFactory: factory), history: history, bookmarks: bookmarks, liveProjection: live)

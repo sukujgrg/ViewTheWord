@@ -12,6 +12,15 @@ final class AltViewProjectionService: ObservableObject {
     @Published private(set) var pairingNote: String?
     // A private choice until the next explicit projection. Empty saved value means receiver layout.
     @Published private(set) var selectedTemplate: AltViewContentTemplate? = .scripture
+    @Published private(set) var receivers: [AltViewDestination] = []
+    @Published private(set) var discoveryNote: String?
+    private var discoveryVisible = false
+    private var discoveryRunning = false
+    private var discoveryRetryTask: Task<Void, Never>?
+    private var discoveryRetryAttempt = 0
+    private lazy var discovery: any AltViewDiscovering = discoveryFactory { [weak self] receivers, error in
+        MainActor.assumeIsolated { self?.receiveDiscovered(receivers.compactMap(AltViewDestination.init), notice: error) }
+    }
     private(set) var destination: AltViewDestination?
     private(set) var currentContent: AltViewDisplayContent?
     private var connectionID: UUID?
@@ -20,21 +29,29 @@ final class AltViewProjectionService: ObservableObject {
     private var startedSender = false
     private var pairings: [String: AltViewPairing] = [:]
     private var pendingKey: Data?
+    private var pendingReceiverID: UUID?
     private var savedConnectionID: UUID?
     private var connectionTask: Task<Void, Never>?
     private var didRestoreConnection = false
     private let defaults: UserDefaults
     private let store: any AltViewPairingStoring
+    private let discoveryFactory: (@escaping ([AltViewDiscoveredReceiver], String?) -> Void) -> any AltViewDiscovering
     private let senderFactory: (@escaping @Sendable (AltViewSenderStatus) -> Void) -> any AltViewSending
     private lazy var sender: any AltViewSending = senderFactory { [weak self] status in
         MainActor.assumeIsolated { self?.receive(status) }
     }
 
-    init(defaults: UserDefaults = .standard, store: any AltViewPairingStoring = AltViewPairingStore(),
+    convenience init(defaults: UserDefaults = .standard, store: any AltViewPairingStoring = AltViewPairingStore(),
          senderFactory: @escaping (@escaping @Sendable (AltViewSenderStatus) -> Void) -> any AltViewSending = {
              AltViewSenderClient(name: "ViewTheWord · \(Host.current().localizedName ?? "Mac")", onStatus: $0)
          }) {
-        self.defaults = defaults; self.store = store; self.senderFactory = senderFactory
+        self.init(defaults: defaults, store: store, discoveryFactory: { AltViewReceiverDiscovery(onChange: $0) },
+                  senderFactory: senderFactory)
+    }
+    init(defaults: UserDefaults, store: any AltViewPairingStoring,
+         discoveryFactory: @escaping (@escaping ([AltViewDiscoveredReceiver], String?) -> Void) -> any AltViewDiscovering,
+         senderFactory: @escaping (@escaping @Sendable (AltViewSenderStatus) -> Void) -> any AltViewSending) {
+        self.defaults = defaults; self.store = store; self.senderFactory = senderFactory; self.discoveryFactory = discoveryFactory
         if let saved = defaults.string(forKey: AppDefaultsKey.altViewTemplate) {
             let template = AltViewContentTemplate(rawValue: saved)
             if saved.isEmpty { selectedTemplate = nil }
@@ -80,6 +97,40 @@ final class AltViewProjectionService: ObservableObject {
         connect(to: destination, code: "")
     }
 
+    func startDiscovery() { discoveryVisible = true; refreshDiscovery() }
+    func stopDiscovery() { discoveryVisible = false; refreshDiscovery() }
+    private func refreshDiscovery() {
+        let needed = discoveryVisible || (isEnabled && destination?.localReceiverID != nil)
+        guard needed != discoveryRunning else { return }
+        discoveryRunning = needed
+        discoveryRetryTask?.cancel(); discoveryRetryTask = nil; discoveryRetryAttempt = 0
+        // A restarted browser must resolve dynamic ports from its new inventory.
+        receivers = []; discoveryNote = nil
+        if needed { discovery.start() } else { discovery.stop() }
+    }
+    func receiveDiscovered(_ receivers: [AltViewDestination], notice: String?) {
+        self.receivers = receivers; discoveryNote = notice
+        discoveryRetryTask?.cancel(); discoveryRetryTask = nil
+        if notice != nil, discoveryRunning { scheduleDiscoveryRetry() }
+        else if notice == nil { discoveryRetryAttempt = 0 }
+        guard isEnabled, let id = destination?.localReceiverID,
+              let fresh = receivers.first(where: { $0.localReceiverID == id && $0.isValid }) else { return }
+        destination = fresh
+        if startedSender, let connectionID { sender.updateEndpoint(fresh.endpoint, connectionID: connectionID) }
+        else { startSenderIfReady() }
+    }
+    private func scheduleDiscoveryRetry() {
+        let delay = AltViewSenderClient.reconnectDelay(attempt: discoveryRetryAttempt)
+        discoveryRetryAttempt = min(discoveryRetryAttempt + 1, 5)
+        discoveryRetryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.discoveryRunning else { return }
+            self.discoveryRetryTask = nil
+            self.receivers = []
+            self.discovery.stop()
+            self.discovery.start()
+        }
+    }
     func connect(to destination: AltViewDestination, code: String) {
         guard destination.isValid else { pairingNote = "Enter a host name and a port from 1 to 65535."; return }
         let enteredCode = !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -89,6 +140,7 @@ final class AltViewProjectionService: ObservableObject {
         self.destination = destination
         let id = UUID()
         connectionID = id; isEnabled = true; pairingNote = nil
+        refreshDiscovery()
         status = AltViewSenderStatus(connectionID: id, message: "Preparing connection…")
         let remembered = pairings[destination.account]
         connectionTask = Task { [weak self, store] in
@@ -111,25 +163,41 @@ final class AltViewProjectionService: ObservableObject {
                 return
             }
             self.pendingKey = key
-            self.startedSender = true
-            self.sender.connect(to: destination.endpoint, key: key, expectedReceiverID: parsed == nil ? pairing?.receiverID : nil, connectionID: id)
-            if self.publicationIntent != nil { self.submit() }
+            self.pendingReceiverID = (parsed == nil ? pairing?.receiverID : nil) ?? destination.localReceiverID
+            self.startSenderIfReady()
         }
+    }
+    private func startSenderIfReady() {
+        guard !startedSender, isEnabled, let connectionID, let key = pendingKey, var destination else { return }
+        if let id = destination.localReceiverID {
+            guard let fresh = receivers.first(where: { $0.localReceiverID == id && $0.isValid }) else {
+                status = AltViewSenderStatus(connectionID: connectionID, waitingToRetry: true,
+                                            message: "Waiting to discover AltView on This Mac. Open AltView and enable receiving.")
+                return
+            }
+            destination = fresh
+            self.destination = fresh
+        }
+        startedSender = true
+        sender.connect(to: destination.endpoint, key: key, expectedReceiverID: pendingReceiverID, connectionID: connectionID)
+        if publicationIntent != nil { submit() }
     }
     func disconnect() {
         didRestoreConnection = true
         connectionTask?.cancel(); connectionTask = nil
-        connectionID = nil; publicationIntent = nil; pendingKey = nil; savedConnectionID = nil
+        connectionID = nil; publicationIntent = nil; pendingKey = nil; pendingReceiverID = nil; savedConnectionID = nil
         if startedSender { sender.disconnect() }
         startedSender = false; isEnabled = false
         status = AltViewSenderStatus(); pairingNote = nil; latestSubmissionID = nil
+        refreshDiscovery()
     }
     func publish(_ projection: PreparedProjection, blanked: Bool, explicit: Bool) {
         let data = projection.data
         // Background translation refreshes retain the published choice, like Blank and reconnect.
         let template = explicit ? selectedTemplate : currentContent?.template
         currentContent = AltViewDisplayContent(title: data.title, body: data.primaryText,
-                                              footer: data.primaryTranslationName, visible: !blanked, template: template)
+                                              footer: data.primaryTranslationName, visible: !blanked, template: template,
+                                              confidence: AltViewConfidenceText(title: data.title, body: data.primaryText, footer: data.primaryTranslationName))
         guard connectionID != nil else { return }
         if explicit { publicationIntent = UUID() }
         guard publicationIntent != nil else { return }

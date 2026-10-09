@@ -121,7 +121,6 @@ final class MainWorkspaceController: NSViewController {
         let value = defaults.double(forKey: AppDefaultsKey.verseRowFontSize)
         return value > 0 ? value : 17
     }
-    var preferredDisplayID: Int { defaults.integer(forKey: AppDefaultsKey.projectorScreenDisplayID) }
 
     override func loadView() {
         view = NSView()
@@ -129,7 +128,7 @@ final class MainWorkspaceController: NSViewController {
         buildInterface()
         connectActions()
         previousSources = sources
-        for publisher in [navigation.objectWillChange, liveProjection.objectWillChange, liveProjection.altView.objectWillChange, projector.objectWillChange, history.objectWillChange,
+        for publisher in [navigation.objectWillChange, liveProjection.objectWillChange, liveProjection.projectionDisplays.objectWillChange, liveProjection.altView.objectWillChange, projector.objectWillChange, history.objectWillChange,
                           bookmarks.objectWillChange, library.objectWillChange] {
             publisher.sink { [weak self] _ in self?.scheduleRender() }.store(in: &subscriptions)
         }

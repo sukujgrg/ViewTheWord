@@ -46,10 +46,11 @@ final class NativeWorkspaceTests: XCTestCase {
         defaults.set(source.primary.absoluteString, forKey: AppDefaultsKey.primaryBibleName)
         defaults.set(alternate.absoluteString, forKey: AppDefaultsKey.secondaryBibleName)
         let library = library ?? BibleLibrary(preloadedURLs: [source.primary, alternate])
+        let live = LiveProjectionController(library: library, defaults: defaults, projectionDisplays: selectedTestProjectionDisplays())
         let workspace = MainWorkspaceController(navigation: VerseTargetModel(readerFactory: readerFactory),
             history: HistoryStore(fileURL: directory.appendingPathComponent("history.json")),
             bookmarks: BookmarkStore(fileURL: directory.appendingPathComponent("bookmarks.json")),
-            library: library, defaults: defaults)
+            liveProjection: live)
         // Projection intent is tested without opening live output on a display.
         workspace.liveProjection.projectorWindowFactory = { _ in nil }
         let controller = MainWindowController(workspace: workspace, savesFrame: false)

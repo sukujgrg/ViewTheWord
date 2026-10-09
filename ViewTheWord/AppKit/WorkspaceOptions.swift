@@ -36,16 +36,18 @@ extension MainWorkspaceController {
 
         let projectionMenu = NSMenu(title: "Projection")
         projectionMenu.autoenablesItems = false
-        projectionMenu.addItem(withTitle: "Projection", action: nil, keyEquivalent: "")
-        projectionMenu.submenu("Output display") { menu in
-            menu.command("Automatic", checked: preferredDisplayID == 0) { [weak self] in self?.setPreference(0, key: AppDefaultsKey.projectorScreenDisplayID) }
-            for screen in NSScreen.screens {
-                menu.command(screen.localizedName, checked: preferredDisplayID == screen.displayID) { [weak self] in
-                    self?.setPreference(screen.displayID, key: AppDefaultsKey.projectorScreenDisplayID)
+        projectionMenu.submenu("Projection monitor") { menu in
+            let displays = liveProjection.projectionDisplays
+            if displays.target == nil { menu.command("Choose a monitor…", enabled: false) {} }
+            for display in displays.displays {
+                let target = display.target
+                menu.command(displays.label(for: target), checked: displays.target?.identity == target.identity,
+                             enabled: !displays.isLocked && displays.problem(for: target) == nil) {
+                    [weak displays] in displays?.select(target)
                 }
             }
-            if preferredDisplayID != 0 && !NSScreen.screens.contains(where: { $0.displayID == preferredDisplayID }) {
-                menu.command("Preferred display (disconnected)", checked: true, enabled: false) {}
+            if let target = displays.target, !displays.displays.contains(where: { $0.identity == target.identity }) {
+                menu.command(displays.label(for: target) + " · Unavailable", checked: true, enabled: false) {}
             }
         }
         projectionMenu.submenu("Text alignment") { menu in
