@@ -14,13 +14,21 @@ enum AltViewProtocol {
     static let timeout: TimeInterval = 5
 }
 
+struct AltViewConfidenceTranslation: Codable, Equatable, Sendable {
+    var body = ""
+    var footer = ""
+    var hasText: Bool { !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var isValid: Bool { body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 }
+}
+
 struct AltViewConfidenceText: Codable, Equatable, Sendable {
     var title = ""
     var body = ""
     var footer = ""
+    var secondary: AltViewConfidenceTranslation?
     static let empty = Self()
-    var hasText: Bool { [title, body, footer].contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }
-    var isValid: Bool { title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 }
+    var hasText: Bool { [title, body, footer].contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } || secondary?.hasText == true }
+    var isValid: Bool { title.utf8.count <= 512 && body.utf8.count <= 24_000 && footer.utf8.count <= 1_024 && (secondary?.isValid ?? true) }
 }
 
 enum AltViewEmptyRegionBehavior: String, Codable, Sendable { case collapse, reserve }

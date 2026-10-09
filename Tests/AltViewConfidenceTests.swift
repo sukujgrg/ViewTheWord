@@ -21,6 +21,19 @@ final class AltViewConfidenceTests: XCTestCase {
         XCTAssertNil(try destination("0").localReceiverID)
         XCTAssertFalse(AltViewDestination(name: "Manual", host: "127.0.0.1").isValid, "Manual connections require the receiver’s actual port")
     }
+    func testSecondaryConfidenceRoundTripsAndSingleTranslationHasNoSecondary() throws {
+        let content = AltViewDisplayContent(body: "Audience primary", confidence: .init(title: "John 3:16", body: "Primary",
+            footer: "NIV", secondary: .init(body: "Secondary", footer: "NLT")))
+        var decoder = AltViewFrameDecoder()
+        XCTAssertEqual(try decoder.append(AltViewFrameCodec.encode(.init(kind: .state, content: content))).first?.content, content)
+        let single = AltViewConfidenceText(title: "John 3:16", body: "Primary", footer: "NIV")
+        XCTAssertNil(try JSONDecoder().decode(AltViewConfidenceText.self, from: JSONEncoder().encode(single)).secondary)
+        var oversized = content
+        oversized.confidence?.secondary?.body = String(repeating: "é", count: 12_001)
+        XCTAssertFalse(oversized.isValid)
+        oversized.confidence?.secondary = .init(body: "Secondary", footer: String(repeating: "é", count: 513))
+        XCTAssertFalse(oversized.isValid)
+    }
     func testConfidenceTextExtensionRoundTripsAndDoesNotChangeAudienceVisibility() throws {
         let content = AltViewDisplayContent(title: "John 3:16", body: "Primary verse", footer: "Primary name", visible: false,
             confidence: .init(title: "John 3:16", body: "Primary verse", footer: "Primary name"))

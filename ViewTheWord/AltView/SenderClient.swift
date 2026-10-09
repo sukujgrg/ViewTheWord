@@ -324,9 +324,7 @@ final class AltViewSenderClient: AltViewSending, @unchecked Sendable {
         return true
     }
     private func contentForSending(_ snapshot: AltViewDisplayContent) -> AltViewDisplayContent {
-        var content = status.templateCapabilities.contentForSending(snapshot)
-        if !status.capabilities.contains(AltViewProtocol.confidenceText) { content.confidence = nil }
-        return content
+        status.templateCapabilities.contentForSending(snapshot)
     }
     private func scheduleReconnect() {
         guard wantsConnection else { return }

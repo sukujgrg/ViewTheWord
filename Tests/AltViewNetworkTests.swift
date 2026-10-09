@@ -22,7 +22,53 @@ final class AltViewNetworkTests: XCTestCase {
         XCTFail("Network condition did not complete", file: file, line: line)
         throw NSError(domain: "AltViewTests", code: 1)
     }
-    func testFrameLimitsUseNegotiatedCapabilitiesAndKeepTransportHealthy() async throws {
+    func testCompleteConfidenceSnapshotIsSentWithoutCapabilityFiltering() async throws {
+        let content = AltViewDisplayContent(title: "John 3:16", body: "Primary", footer: "NIV",
+            confidence: .init(title: "John 3:16", body: "Primary", footer: "NIV", secondary: .init(body: "Secondary", footer: "NLT")))
+        for capabilities in [[], AltViewProtocol.capabilities] {
+            let state = AltViewNetworkObservation()
+            let receiver = FixtureReceiverServer(receiverID: UUID(), capabilities: capabilities) { value in MainActor.assumeIsolated { state.receiver = value } }
+            let sender = AltViewSenderClient(name: "Dual translation") { value in MainActor.assumeIsolated { state.a = value } }
+            defer { sender.disconnect(); receiver.stop() }
+            receiver.start(name: "Dual translation", key: key, advertise: false)
+            try await eventually { state.receiver.port != nil }
+            let id = UUID(), intent = UUID()
+            sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!), key: key, expectedReceiverID: nil, connectionID: id)
+            sender.submit(.init(connectionID: id, content: content, intent: intent))
+            try await eventually { state.a.feedback.accepted }
+            XCTAssertEqual(state.receiver.content.body, "Primary"); XCTAssertEqual(state.receiver.content.footer, "NIV")
+            XCTAssertEqual(state.receiver.content.confidence, content.confidence)
+            var single = content; single.confidence?.secondary = nil; single.visible = false
+            sender.submit(.init(connectionID: id, content: single, intent: intent))
+            try await eventually { !state.receiver.content.visible && state.a.feedback.accepted }
+            XCTAssertNil(state.receiver.content.confidence?.secondary, "Complete snapshots clear obsolete secondary text")
+        }
+    }
+    func testEscapedSecondaryFrameIsRejectedBeforeTakingAnotherSendersOutput() async throws {
+        let state = AltViewNetworkObservation()
+        let receiver = FixtureReceiverServer(receiverID: UUID(), capabilities: AltViewProtocol.capabilities) { value in MainActor.assumeIsolated { state.receiver = value } }
+        let a = AltViewSenderClient(name: "A") { value in MainActor.assumeIsolated { state.a = value } }
+        let b = AltViewSenderClient(name: "B") { value in MainActor.assumeIsolated { state.b = value } }
+        defer { a.disconnect(); b.disconnect(); receiver.stop() }
+        receiver.start(name: "Frames", key: key, advertise: false)
+        try await eventually { state.receiver.port != nil }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!)
+        let bID = UUID()
+        b.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: bID)
+        b.submit(.init(connectionID: bID, content: .init(body: "Existing presentation"), intent: UUID()))
+        try await eventually { state.b.feedback.accepted }
+        let owner = state.receiver.ownerID, aID = UUID()
+        let content = AltViewDisplayContent(body: "Primary", confidence: .init(body: "Primary",
+            secondary: .init(body: String(repeating: "\u{01}", count: 12_000), footer: "Secondary")))
+        XCTAssertTrue(content.isValid)
+        XCTAssertThrowsError(try AltViewFrameCodec.encode(.init(kind: .state, content: content)))
+        a.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: aID)
+        a.submit(.init(connectionID: aID, content: content, intent: UUID()))
+        try await eventually { state.a.connected && state.a.outputIssue != nil }
+        XCTAssertEqual(state.receiver.ownerID, owner); XCTAssertEqual(state.receiver.content.body, "Existing presentation")
+        XCTAssertTrue(state.a.connected)
+    }
+    func testCompleteConfidenceFrameLimitsKeepTransportHealthy() async throws {
         let text = String(repeating: "\u{01}", count: 6_000)
         let content = AltViewDisplayContent(body: text, confidence: .init(body: text))
         XCTAssertTrue(content.isValid)
@@ -37,16 +83,11 @@ final class AltViewNetworkTests: XCTestCase {
             let id = UUID(), intent = UUID()
             sender.connect(to: .hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!), key: key, expectedReceiverID: nil, connectionID: id)
             sender.submit(.init(connectionID: id, content: content, intent: intent))
-            if capabilities.isEmpty {
-                try await eventually { state.a.feedback.accepted && state.receiver.content.body == text }
-                XCTAssertNil(state.receiver.content.confidence); XCTAssertNil(state.a.outputIssue)
-            } else {
-                try await eventually { state.a.connected && state.a.outputIssue != nil && state.receiver.ownerID == nil }
-                XCTAssertEqual(state.receiver.content, .empty)
-                sender.submit(.init(connectionID: id, content: .init(body: "Automatic refresh"), intent: intent))
-                try await Task.sleep(nanoseconds: 100_000_000)
-                XCTAssertNil(state.receiver.ownerID, "A failed publication cannot make an automatic refresh take output")
-            }
+            try await eventually { state.a.connected && state.a.outputIssue != nil && state.receiver.ownerID == nil }
+            XCTAssertEqual(state.receiver.content, .empty)
+            sender.submit(.init(connectionID: id, content: .init(body: "Automatic refresh"), intent: intent))
+            try await Task.sleep(nanoseconds: 100_000_000)
+            XCTAssertNil(state.receiver.ownerID, "A failed publication cannot make an automatic refresh take output")
             XCTAssertTrue(state.a.connected)
         }
     }
@@ -71,7 +112,7 @@ final class AltViewNetworkTests: XCTestCase {
         a.connect(to: endpoint, key: key, expectedReceiverID: nil, connectionID: aID)
         a.submit(.init(connectionID: aID, content: .init(body: text, confidence: .init(body: text)), intent: intent))
         try await eventually { state.a.connected && state.a.outputIssue != nil }
-        XCTAssertEqual(state.receiver.ownerID, owner, "Reject the negotiated frame before requesting ownership")
+        XCTAssertEqual(state.receiver.ownerID, owner, "Reject the complete frame before requesting ownership")
         XCTAssertEqual(state.receiver.content.body, "Existing presentation")
         a.submit(.init(connectionID: aID, content: .init(body: "Automatic refresh"), intent: intent))
         try await Task.sleep(nanoseconds: 100_000_000)

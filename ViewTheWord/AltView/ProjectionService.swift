@@ -195,9 +195,15 @@ final class AltViewProjectionService: ObservableObject {
         let data = projection.data
         // Background translation refreshes retain the published choice, like Blank and reconnect.
         let template = explicit ? selectedTemplate : currentContent?.template
+        let secondary: AltViewConfidenceTranslation? = data.secondaryText.flatMap { text in
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text != "\u{200c}" else { return nil }
+            return AltViewConfidenceTranslation(body: text, footer: data.secondaryTranslationName ?? "")
+        }
+        // Audience stays primary-only; Confidence carries both committed translations.
         currentContent = AltViewDisplayContent(title: data.title, body: data.primaryText,
                                               footer: data.primaryTranslationName, visible: !blanked, template: template,
-                                              confidence: AltViewConfidenceText(title: data.title, body: data.primaryText, footer: data.primaryTranslationName))
+                                              confidence: AltViewConfidenceText(title: data.title, body: data.primaryText,
+                                                  footer: data.primaryTranslationName, secondary: secondary))
         guard connectionID != nil else { return }
         if explicit { publicationIntent = UUID() }
         guard publicationIntent != nil else { return }

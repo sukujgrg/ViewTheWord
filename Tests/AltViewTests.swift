@@ -166,6 +166,37 @@ final class AltViewProjectionTests: XCTestCase {
             primary: primary.map { AVerse(reference: reference, verse: $0) },
             secondary: secondary.map { AVerse(reference: reference, verse: $0) }), sources: sources, owner: .verseRowSelection(reference))!
     }
+    func testSecondaryConfidenceRefreshClearsMissingTranslationAndKeepsAudiencePrimary() async throws {
+        let suite = "AltViewDualConfidence.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let client = RecordingAltViewSender()
+        let service = AltViewProjectionService(defaults: defaults, store: MemoryAltViewPairings()) { callback in
+            client.callback = callback; return client
+        }
+        defer { service.disconnect() }
+        service.connect(to: .init(name: "Test", host: "127.0.0.1", port: 54321), code: "ABCD2345")
+        try await eventually { !client.connections.isEmpty }
+        service.publish(projection(), blanked: false, explicit: true)
+        let first = try XCTUnwrap(client.submissions.last)
+        XCTAssertEqual(first.content?.body, "Primary text")
+        XCTAssertEqual(first.content?.footer, "English · NIV")
+        XCTAssertEqual(first.content?.confidence?.secondary, .init(body: "Secondary text", footer: "English · NLT"))
+        service.setBlanked(true)
+        XCTAssertEqual(client.submissions.last?.content?.confidence, first.content?.confidence)
+        for missing in [nil, " \n ", "\u{200c}"] as [String?] {
+            service.publish(projection(secondary: missing), blanked: true, explicit: false)
+            XCTAssertNil(client.submissions.last?.content?.confidence?.secondary)
+            XCTAssertEqual(client.submissions.last?.content?.body, "Primary text")
+            XCTAssertEqual(client.submissions.last?.intent, first.intent, "Translation refresh cannot create a takeover")
+        }
+        service.publish(projection(secondary: "New companion"), blanked: true, explicit: false)
+        XCTAssertEqual(client.submissions.last?.content?.confidence?.secondary?.body, "New companion")
+        XCTAssertEqual(client.submissions.last?.content?.visible, false)
+        XCTAssertEqual(client.submissions.last?.content?.body, "Primary text")
+        service.stop()
+        XCTAssertNil(client.submissions.last?.content)
+    }
     func testTemplatePickerUsesReceiverIDsAndKeepsChangesPrivateUntilProjection() async throws {
         _ = NSApplication.shared
         let suite = "AltViewTemplates.\(UUID())"
@@ -287,7 +318,8 @@ final class AltViewProjectionTests: XCTestCase {
         let first = try XCTUnwrap(client.submissions.last)
         XCTAssertEqual(first.content?.body, "Primary text")
         XCTAssertEqual(first.content?.footer, "English · NIV")
-        XCTAssertEqual(first.content?.confidence, .init(title: "John 3:16", body: "Primary text", footer: "English · NIV"))
+        XCTAssertEqual(first.content?.confidence, .init(title: "John 3:16", body: "Primary text", footer: "English · NIV",
+                                                       secondary: .init(body: "Secondary text", footer: "English · NLT")))
         XCTAssertEqual(first.content?.visible, true)
         live.toggleBlank()
         XCTAssertEqual(client.submissions.last?.content?.visible, false)
