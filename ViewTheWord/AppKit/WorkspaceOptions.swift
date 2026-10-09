@@ -36,6 +36,11 @@ extension MainWorkspaceController {
 
         let projectionMenu = NSMenu(title: "Projection")
         projectionMenu.autoenablesItems = false
+        // AppKit uses the first item as the pull-down button's title.
+        // Hide it before attachment so rebuilding an open menu cannot show it.
+        let projectionTitle = NSMenuItem(title: "Projection", action: nil, keyEquivalent: "")
+        projectionTitle.isHidden = true
+        projectionMenu.addItem(projectionTitle)
         projectionMenu.submenu("Projection monitor") { menu in
             let displays = liveProjection.projectionDisplays
             if displays.target == nil { menu.command("Choose a monitor…", enabled: false) {} }
