@@ -778,6 +778,8 @@ struct NativeWorkspaceReview {
                 throw ReviewFailure(description: "Native Connect Only default action must handle Return/Enter exactly when enabled")
             }
         }
+        pane.receiverPicker.selectItem(withTitle: "Manual address")
+        pane.receiverPicker.sendAction(pane.receiverPicker.action, to: pane)
         try enter("127.0.0.1", in: pane.hostField)
         try enter("0", in: pane.portField)
         try enter("invalid", in: pane.codeField)

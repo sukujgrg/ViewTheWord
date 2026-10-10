@@ -159,6 +159,118 @@ final class AltViewProjectionTests: XCTestCase {
         }
         XCTFail("Condition did not settle")
     }
+    private func settingsService(saved: AltViewDestination? = nil) -> (AltViewProjectionService, RecordingAltViewSender) {
+        let suite = "AltViewSettings.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        if let saved { defaults.set(try! JSONEncoder().encode(saved), forKey: AppDefaultsKey.altViewDestination) }
+        let client = RecordingAltViewSender()
+        let service = AltViewProjectionService(defaults: defaults, store: MemoryAltViewPairings(),
+            discoveryFactory: { _ in RecordingAltViewDiscovery() }, senderFactory: { callback in
+                client.callback = callback; return client
+            })
+        return (service, client)
+    }
+    private func local(_ id: UUID, port: UInt16) -> AltViewDestination {
+        var receiver = AltViewDestination(name: "This Mac · Receiver", host: "127.0.0.1", port: port)
+        receiver.localReceiverID = id
+        return receiver
+    }
+
+    func testThisMacDefaultWaitsForLocalDiscoveryAndConnectsOnlyToItsLatestPort() async throws {
+        _ = NSApplication.shared
+        let (service, client) = settingsService()
+        service.startDiscovery()
+        defer { service.disconnect(); service.stopDiscovery() }
+        let pane = AltViewSettingsController(service: service)
+        pane.discoveryEnabled = false
+        pane.loadViewIfNeeded()
+        XCTAssertEqual(pane.receiverPicker.selectedItem?.title, "This Mac")
+        XCTAssertFalse(pane.hostField.isEnabled)
+        XCTAssertFalse(pane.connectButton.isEnabled)
+        XCTAssertTrue(pane.statusLabel.stringValue.contains("Open AltView on this Mac"))
+        let remote = AltViewDestination(name: "Hall", serviceDomain: "local.")
+        service.receiveDiscovered([remote], notice: nil)
+        try await eventually { pane.receiverPicker.itemTitles.contains("Hall") }
+        XCTAssertEqual(pane.receiverPicker.selectedItem?.title, "This Mac")
+        XCTAssertFalse(pane.connectButton.isEnabled, "Discovery must not substitute a remote receiver")
+        let id = UUID()
+        service.receiveDiscovered([remote, local(id, port: 54321)], notice: nil)
+        try await eventually { pane.connectButton.isEnabled }
+        XCTAssertNil(service.destination, "Selecting the default is private until Connect Only")
+        XCTAssertTrue(client.connections.isEmpty)
+        let item = pane.receiverPicker.item(at: 0)
+        let fresh = local(id, port: 54322)
+        service.receiveDiscovered([remote, fresh], notice: nil)
+        await Task.yield()
+        XCTAssertTrue(pane.receiverPicker.item(at: 0) === item, "Port refresh must keep the open menu stable")
+        pane.codeField.stringValue = "ABCD2345"
+        pane.connectButton.performClick(nil)
+        try await eventually { !client.connections.isEmpty }
+        XCTAssertEqual(service.destination, fresh)
+        XCTAssertEqual(client.connections.last?.1, id)
+        XCTAssertEqual(client.endpoints.last, fresh.endpoint)
+        XCTAssertTrue(client.submissions.isEmpty)
+    }
+
+    func testExplicitManualAndRemoteChoicesSurviveLocalDiscovery() async throws {
+        _ = NSApplication.shared
+        let (service, client) = settingsService()
+        let pane = AltViewSettingsController(service: service)
+        pane.discoveryEnabled = false
+        pane.loadViewIfNeeded()
+        pane.receiverPicker.selectItem(withTitle: "Manual address")
+        pane.receiverPicker.sendAction(pane.receiverPicker.action, to: pane)
+        let remote = AltViewDestination(name: "Hall", serviceDomain: "local.")
+        service.receiveDiscovered([remote, local(UUID(), port: 54321)], notice: nil)
+        try await eventually { pane.receiverPicker.itemTitles.contains("Hall") }
+        XCTAssertEqual(pane.receiverPicker.selectedItem?.title, "Manual address")
+        XCTAssertTrue(pane.hostField.isEnabled)
+        pane.receiverPicker.selectItem(withTitle: "Hall")
+        pane.receiverPicker.sendAction(pane.receiverPicker.action, to: pane)
+        service.receiveDiscovered([remote, local(UUID(), port: 54322)], notice: nil)
+        await Task.yield()
+        XCTAssertEqual(pane.receiverPicker.selectedItem?.title, "Hall")
+        XCTAssertFalse(pane.hostField.isEnabled)
+        XCTAssertTrue(client.connections.isEmpty)
+        XCTAssertTrue(client.submissions.isEmpty)
+    }
+
+    func testSavedReceiverChoicesSurviveLocalDiscovery() async throws {
+        _ = NSApplication.shared
+        let id = UUID()
+        let savedReceivers = [AltViewDestination(name: "Saved", host: "receiver.local", port: 54321),
+                              AltViewDestination(name: "Hall", serviceDomain: "local."), local(id, port: 54321)]
+        for saved in savedReceivers {
+            let (service, client) = settingsService(saved: saved)
+            service.startDiscovery()
+            defer { service.disconnect(); service.stopDiscovery() }
+            let pane = AltViewSettingsController(service: service)
+            pane.discoveryEnabled = false
+            pane.loadViewIfNeeded()
+            service.receiveDiscovered([local(UUID(), port: 54322)], notice: nil)
+            try await eventually {
+                pane.receiverPicker.item(at: 0)?.toolTip == "This Mac · Receiver"
+                    && (saved.localReceiverID == nil || pane.receiverPicker.numberOfItems > 2)
+            }
+            XCTAssertEqual(pane.receiverPicker.selectedItem?.title,
+                           saved.localReceiverID != nil ? "This Mac" : saved.host != nil ? "Manual address" : "Hall")
+            if saved.localReceiverID != nil {
+                pane.codeField.stringValue = "ABCD2345"
+                pane.connectButton.performClick(nil)
+                await Task.yield()
+                XCTAssertEqual(service.destination?.localReceiverID, id)
+                XCTAssertTrue(client.connections.isEmpty)
+                let fresh = local(id, port: 54323)
+                service.receiveDiscovered([fresh], notice: nil)
+                try await eventually { !client.connections.isEmpty }
+                XCTAssertEqual(client.endpoints.last, fresh.endpoint)
+                XCTAssertEqual(client.connections.last?.1, id)
+            }
+            XCTAssertTrue(client.submissions.isEmpty)
+        }
+    }
+
     private func projection(primary: String? = "Primary text", secondary: String? = "Secondary text") -> PreparedProjection {
         let reference = VerseReference(book: "John", chapter: 3, verse: 16)!
         let sources = BibleSources(primary: URL(fileURLWithPath: "/ENG_NIV.bible"), secondary: URL(fileURLWithPath: "/ENG_NLT.bible"), revision: 1)
