@@ -71,7 +71,7 @@ final class PassageProjectionTests: XCTestCase {
             let bookmarks = BookmarkStore(fileURL: directory.appendingPathComponent("bookmarks.json"))
             first = MainWorkspaceController(navigation: VerseTargetModel(readerFactory: factory), history: history, bookmarks: bookmarks, liveProjection: live)
             second = MainWorkspaceController(navigation: VerseTargetModel(readerFactory: factory), history: history, bookmarks: bookmarks, liveProjection: live)
-            live.projectorWindowFactory = { [weak self] _ in self?.opens += 1; return nil }
+            live.nativeWindowFactory = { [weak self] _, _, _ in self?.opens += 1; return nil }
         }
         func useAlternate(in workspace: MainWorkspaceController) {
             var selection = workspace.translations
@@ -103,7 +103,7 @@ final class PassageProjectionTests: XCTestCase {
         _ = NSApplication.shared
         let f = try Fixture(); defer { f.cleanUp() }
         var windows: [NSWindow] = []
-        f.live.projectorWindowFactory = { _ in
+        f.live.nativeWindowFactory = { _, _, _ in
             let window = HiddenProjectionWindow(contentRect: NSRect(x: -10000, y: -10000, width: 100, height: 100),
                                                 styleMask: [.borderless], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
@@ -114,25 +114,25 @@ final class PassageProjectionTests: XCTestCase {
         f.first.navigate(to: john, project: true)
         try await finish(f, reference: john)
         try await eventually { f.live.windowOpened }
-        let original = try XCTUnwrap(f.live.ownedProjectorWindow)
+        let original = try XCTUnwrap(f.live.nativeOutputs.values.first?.window)
         f.second.navigate(to: romans, project: true)
         try await finish(f, reference: romans)
         try await eventually { f.live.projector.projectionOwner?.reference == self.romans }
         f.second.shutdown()
-        XCTAssertTrue(f.live.ownedProjectorWindow === original)
+        XCTAssertTrue(f.live.nativeOutputs.values.first?.window === original)
         XCTAssertEqual(windows.count, 1)
         XCTAssertNil(original.windowController)
         f.live.closeProjector()
         try await eventually { !f.live.windowOpened }
-        XCTAssertNil(f.live.ownedProjectorWindow)
+        XCTAssertNil(f.live.nativeOutputs.values.first?.window)
         let row = try XCTUnwrap(f.first.navigation.prepareRowProjection(john, sources: XCTUnwrap(f.first.sources)))
         f.live.publishRow(row, from: f.first.tabID)
-        let replacement = try XCTUnwrap(f.live.ownedProjectorWindow)
+        let replacement = try XCTUnwrap(f.live.nativeOutputs.values.first?.window)
         XCTAssertFalse(replacement === original)
         XCTAssertEqual(windows.count, 2)
         NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: original)
         try await Task.sleep(nanoseconds: 30_000_000)
-        XCTAssertTrue(f.live.ownedProjectorWindow === replacement)
+        XCTAssertTrue(f.live.nativeOutputs.values.first?.window === replacement)
         XCTAssertEqual(f.live.projector.projectionOwner?.reference, john)
     }
 

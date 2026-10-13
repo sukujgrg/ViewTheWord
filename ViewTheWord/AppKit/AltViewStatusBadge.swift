@@ -53,6 +53,17 @@ final class AltViewStatusBadge: NSView {
         needsDisplay = true
     }
 
+    func render(_ services: [AltViewProjectionService]) {
+        if services.count == 1, let service = services.first { render(service, showOutputStatus: true); return }
+        let connected = services.filter { $0.status.connected }.count
+        let enabled = services.filter(\.isEnabled).count
+        label.stringValue = services.isEmpty ? "AltView off" : "AltView · \(connected) connected"
+        indicatorColor = connected > 0 ? .systemGreen : enabled > 0 ? .systemOrange : .tertiaryLabelColor
+        toolTip = services.map { [$0.destination?.name, $0.summary, $0.detail].compactMap { $0 }.joined(separator: "\n") }.joined(separator: "\n\n")
+        setAccessibilityValue(label.stringValue); setAccessibilityHelp(toolTip)
+        invalidateIntrinsicContentSize(); needsDisplay = true
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         indicatorColor.withAlphaComponent(0.12).setFill()
         NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2).fill()

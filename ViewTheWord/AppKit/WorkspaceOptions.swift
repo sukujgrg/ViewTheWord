@@ -2,8 +2,9 @@ import AppKit
 
 extension MainWorkspaceController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(showPreview(_:)) || menuItem.action == #selector(toggleBlank(_:)) { return windowOpened }
-        if menuItem.action == #selector(stopProjection(_:)) { return windowOpened || liveProjection.isProjecting }
+        if menuItem.action == #selector(showPreview(_:)) { return windowOpened || liveProjection.hasNativeWindows }
+        if menuItem.action == #selector(toggleBlank(_:)) { return windowOpened }
+        if menuItem.action == #selector(stopProjection(_:)) { return windowOpened || liveProjection.isProjecting || liveProjection.hasNativeWindows }
         return true
     }
 }
@@ -41,43 +42,11 @@ extension MainWorkspaceController {
         let projectionTitle = NSMenuItem(title: "Projection", action: nil, keyEquivalent: "")
         projectionTitle.isHidden = true
         projectionMenu.addItem(projectionTitle)
-        projectionMenu.submenu("Projection monitor") { menu in
-            let displays = liveProjection.projectionDisplays
-            if displays.target == nil { menu.command("Choose a monitor…", enabled: false) {} }
-            for display in displays.displays {
-                let target = display.target
-                menu.command(displays.label(for: target), checked: displays.target?.identity == target.identity,
-                             enabled: !displays.isLocked && displays.problem(for: target) == nil) {
-                    [weak displays] in displays?.select(target)
-                }
-            }
-            if let target = displays.target, !displays.displays.contains(where: { $0.identity == target.identity }) {
-                menu.command(displays.label(for: target) + " · Unavailable", checked: true, enabled: false) {}
-            }
-        }
-        projectionMenu.submenu("Text alignment") { menu in
-            let current = defaults.string(forKey: AppDefaultsKey.projectorTextAlignment) ?? ProjectorTextAlignmentMode.center.rawValue
-            for mode in ProjectorTextAlignmentMode.allCases {
-                menu.command(mode.rawValue.capitalized, checked: current == mode.rawValue) { [weak self] in
-                    self?.setPreference(mode.rawValue, key: AppDefaultsKey.projectorTextAlignment)
-                }
-            }
-        }
-        projectionMenu.submenu("Reading direction") { menu in
-            let current = defaults.string(forKey: AppDefaultsKey.projectorReadingDirection) ?? ProjectorReadingDirectionMode.auto.rawValue
-            for (mode, title) in [(ProjectorReadingDirectionMode.auto, "Automatic"), (.leftToRight, "Left to right"), (.rightToLeft, "Right to left")] {
-                menu.command(title, checked: current == mode.rawValue) { [weak self] in self?.setPreference(mode.rawValue, key: AppDefaultsKey.projectorReadingDirection) }
-            }
-        }
+        projectionMenu.command("Project selected passage") { [weak self] in self?.projectSelectedPassage(nil) }
+        projectionMenu.command("Blank", enabled: windowOpened) { [weak self] in self?.toggleBlank(nil) }
+        projectionMenu.command("Stop", enabled: windowOpened || liveProjection.isProjecting || liveProjection.hasNativeWindows) { [weak self] in self?.stopProjection(nil) }
         projectionMenu.addItem(.separator())
-        for (title, key) in [("Stack translations vertically", AppDefaultsKey.projectorDualLayoutVertical),
-                             ("Show translation names", AppDefaultsKey.projectorShowTranslationInfo),
-                             ("Transparent background", AppDefaultsKey.transparentBackground)] {
-            projectionMenu.command(title, checked: defaults.bool(forKey: key)) { [weak self] in
-                guard let self else { return }
-                self.setPreference(!self.defaults.bool(forKey: key), key: key)
-            }
-        }
+        projectionMenu.command("Manage Outputs…") { [weak self] in self?.manageOutputs(nil) }
         projectionOptions.menu = projectionMenu
     }
 

@@ -46,6 +46,10 @@ private final class RecordingAltViewSender: AltViewSending, @unchecked Sendable 
     func updateEndpoint(_ endpoint: NWEndpoint, connectionID: UUID) { endpointUpdates.append((endpoint, connectionID)) }
     func submit(_ submission: AltViewSubmission) { submissions.append(submission) }
     func disconnect() { disconnects += 1 }
+    func welcome() {
+        guard let connection = connections.last else { return }
+        callback?(.init(connectionID: connection.0, connected: true, receiverID: connection.1 ?? UUID()))
+    }
 }
 
 private final class RecordingAltViewDiscovery: AltViewDiscovering {
@@ -165,7 +169,7 @@ final class AltViewProjectionTests: XCTestCase {
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
         if let saved { defaults.set(try! JSONEncoder().encode(saved), forKey: AppDefaultsKey.altViewDestination) }
         let client = RecordingAltViewSender()
-        let service = AltViewProjectionService(defaults: defaults, store: MemoryAltViewPairings(),
+        let service = configuredAltViewService(defaults: defaults, store: MemoryAltViewPairings(),
             discoveryFactory: { _ in RecordingAltViewDiscovery() }, senderFactory: { callback in
                 client.callback = callback; return client
             })
@@ -182,7 +186,7 @@ final class AltViewProjectionTests: XCTestCase {
         let (service, client) = settingsService()
         service.startDiscovery()
         defer { service.disconnect(); service.stopDiscovery() }
-        let pane = AltViewSettingsController(service: service)
+        let pane = AltViewDestinationEditor(service: service)
         pane.discoveryEnabled = false
         pane.loadViewIfNeeded()
         XCTAssertEqual(pane.receiverPicker.selectedItem?.title, "This Mac")
@@ -190,18 +194,18 @@ final class AltViewProjectionTests: XCTestCase {
         XCTAssertFalse(pane.connectButton.isEnabled)
         XCTAssertTrue(pane.statusLabel.stringValue.contains("Open AltView on this Mac"))
         let remote = AltViewDestination(name: "Hall", serviceDomain: "local.")
-        service.receiveDiscovered([remote], notice: nil)
+        service.discovery.receive([remote], notice: nil)
         try await eventually { pane.receiverPicker.itemTitles.contains("Hall") }
         XCTAssertEqual(pane.receiverPicker.selectedItem?.title, "This Mac")
         XCTAssertFalse(pane.connectButton.isEnabled, "Discovery must not substitute a remote receiver")
         let id = UUID()
-        service.receiveDiscovered([remote, local(id, port: 54321)], notice: nil)
+        service.discovery.receive([remote, local(id, port: 54321)], notice: nil)
         try await eventually { pane.connectButton.isEnabled }
         XCTAssertNil(service.destination, "Selecting the default is private until Connect Only")
         XCTAssertTrue(client.connections.isEmpty)
         let item = pane.receiverPicker.item(at: 0)
         let fresh = local(id, port: 54322)
-        service.receiveDiscovered([remote, fresh], notice: nil)
+        service.discovery.receive([remote, fresh], notice: nil)
         await Task.yield()
         XCTAssertTrue(pane.receiverPicker.item(at: 0) === item, "Port refresh must keep the open menu stable")
         pane.codeField.stringValue = "ABCD2345"
@@ -216,19 +220,19 @@ final class AltViewProjectionTests: XCTestCase {
     func testExplicitManualAndRemoteChoicesSurviveLocalDiscovery() async throws {
         _ = NSApplication.shared
         let (service, client) = settingsService()
-        let pane = AltViewSettingsController(service: service)
+        let pane = AltViewDestinationEditor(service: service)
         pane.discoveryEnabled = false
         pane.loadViewIfNeeded()
         pane.receiverPicker.selectItem(withTitle: "Manual address")
         pane.receiverPicker.sendAction(pane.receiverPicker.action, to: pane)
         let remote = AltViewDestination(name: "Hall", serviceDomain: "local.")
-        service.receiveDiscovered([remote, local(UUID(), port: 54321)], notice: nil)
+        service.discovery.receive([remote, local(UUID(), port: 54321)], notice: nil)
         try await eventually { pane.receiverPicker.itemTitles.contains("Hall") }
         XCTAssertEqual(pane.receiverPicker.selectedItem?.title, "Manual address")
         XCTAssertTrue(pane.hostField.isEnabled)
         pane.receiverPicker.selectItem(withTitle: "Hall")
         pane.receiverPicker.sendAction(pane.receiverPicker.action, to: pane)
-        service.receiveDiscovered([remote, local(UUID(), port: 54322)], notice: nil)
+        service.discovery.receive([remote, local(UUID(), port: 54322)], notice: nil)
         await Task.yield()
         XCTAssertEqual(pane.receiverPicker.selectedItem?.title, "Hall")
         XCTAssertFalse(pane.hostField.isEnabled)
@@ -245,10 +249,10 @@ final class AltViewProjectionTests: XCTestCase {
             let (service, client) = settingsService(saved: saved)
             service.startDiscovery()
             defer { service.disconnect(); service.stopDiscovery() }
-            let pane = AltViewSettingsController(service: service)
+            let pane = AltViewDestinationEditor(service: service)
             pane.discoveryEnabled = false
             pane.loadViewIfNeeded()
-            service.receiveDiscovered([local(UUID(), port: 54322)], notice: nil)
+            service.discovery.receive([local(UUID(), port: 54322)], notice: nil)
             try await eventually {
                 pane.receiverPicker.item(at: 0)?.toolTip == "This Mac · Receiver"
                     && (saved.localReceiverID == nil || pane.receiverPicker.numberOfItems > 2)
@@ -262,7 +266,7 @@ final class AltViewProjectionTests: XCTestCase {
                 XCTAssertEqual(service.destination?.localReceiverID, id)
                 XCTAssertTrue(client.connections.isEmpty)
                 let fresh = local(id, port: 54323)
-                service.receiveDiscovered([fresh], notice: nil)
+                service.discovery.receive([fresh], notice: nil)
                 try await eventually { !client.connections.isEmpty }
                 XCTAssertEqual(client.endpoints.last, fresh.endpoint)
                 XCTAssertEqual(client.connections.last?.1, id)
@@ -283,12 +287,13 @@ final class AltViewProjectionTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let client = RecordingAltViewSender()
-        let service = AltViewProjectionService(defaults: defaults, store: MemoryAltViewPairings()) { callback in
+        let service = configuredAltViewService(defaults: defaults, store: MemoryAltViewPairings()) { callback in
             client.callback = callback; return client
         }
         defer { service.disconnect() }
         service.connect(to: .init(name: "Test", host: "127.0.0.1", port: 54321), code: "ABCD2345")
         try await eventually { !client.connections.isEmpty }
+        client.welcome()
         service.publish(projection(), blanked: false, explicit: true)
         let first = try XCTUnwrap(client.submissions.last)
         XCTAssertEqual(first.content?.body, "Primary text")
@@ -315,11 +320,11 @@ final class AltViewProjectionTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let client = RecordingAltViewSender()
-        let service = AltViewProjectionService(defaults: defaults, store: MemoryAltViewPairings()) {
+        let service = configuredAltViewService(defaults: defaults, store: MemoryAltViewPairings()) {
             callback in client.callback = callback; return client
         }
         defer { service.disconnect() }
-        let pane = AltViewSettingsController(service: service)
+        let pane = AltViewDestinationEditor(service: service)
         pane.discoveryEnabled = false
         pane.loadViewIfNeeded()
         XCTAssertEqual(service.selectedTemplate, .scripture)
@@ -328,7 +333,7 @@ final class AltViewProjectionTests: XCTestCase {
         try await eventually { !client.connections.isEmpty }
         let future = AltViewContentTemplate(rawValue: "future.layout")
         let entries = [AltViewTemplateDescriptor(id: .scripture, name: "Same label"), .init(id: future, name: "Same label")]
-        var status = AltViewSenderStatus(connectionID: client.connections[0].0, connected: true,
+        var status = AltViewSenderStatus(connectionID: client.connections[0].0, connected: true, receiverID: UUID(),
             templateCapabilities: .init(templates: entries, policy: .sender))
         client.callback?(status)
         try await eventually { pane.templatePicker.numberOfItems == 3 && pane.templatePicker.isEnabled }
@@ -364,15 +369,16 @@ final class AltViewProjectionTests: XCTestCase {
         status.templateCapabilities = .init()
         client.callback?(status)
         try await eventually { pane.templateHint.stringValue.contains("does not advertise") }
-        let restored = AltViewProjectionService(defaults: defaults, store: MemoryAltViewPairings()) { _ in RecordingAltViewSender() }
+        let restored = configuredAltViewService(defaults: defaults, store: MemoryAltViewPairings()) { _ in RecordingAltViewSender() }
         XCTAssertEqual(restored.selectedTemplate, future, "Unavailable choices survive relaunch")
         pane.templatePicker.selectItem(at: 0)
         NSApp.sendAction(pane.templatePicker.action!, to: pane.templatePicker.target, from: pane.templatePicker)
         XCTAssertNil(service.selectedTemplate)
         XCTAssertEqual(client.submissions.count, count)
+        client.welcome()
         service.publish(projection(), blanked: false, explicit: true)
         XCTAssertNil(client.submissions.last?.content?.template)
-        let receiverLayout = AltViewProjectionService(defaults: defaults, store: MemoryAltViewPairings()) { _ in RecordingAltViewSender() }
+        let receiverLayout = configuredAltViewService(defaults: defaults, store: MemoryAltViewPairings()) { _ in RecordingAltViewSender() }
         XCTAssertNil(receiverLayout.selectedTemplate, "Receiver layout must not reset to Scripture on relaunch")
         service.disconnect()
         try await eventually { !pane.templatePicker.isEnabled }
@@ -382,10 +388,11 @@ final class AltViewProjectionTests: XCTestCase {
     func testStatusSeparatesLatestAcceptanceAndReadiness() async throws {
         let defaults = UserDefaults(suiteName: "AltViewTests.\(UUID())")!
         let client = RecordingAltViewSender()
-        let service = AltViewProjectionService(defaults: defaults, store: MemoryAltViewPairings()) { callback in client.callback = callback; return client }
+        let service = configuredAltViewService(defaults: defaults, store: MemoryAltViewPairings()) { callback in client.callback = callback; return client }
         defer { service.disconnect() }
         service.connect(to: .init(name: "Test", host: "127.0.0.1", port: 54321), code: "ABCD2345")
         try await eventually { !client.connections.isEmpty }
+        client.welcome()
         service.publish(projection(), blanked: false, explicit: true)
         let submission = try XCTUnwrap(client.submissions.last)
         let lease = UUID()
@@ -413,16 +420,18 @@ final class AltViewProjectionTests: XCTestCase {
         _ = NSApplication.shared
         let defaults = UserDefaults(suiteName: "AltViewTests.\(UUID())")!
         let client = RecordingAltViewSender()
-        let service = AltViewProjectionService(defaults: defaults, store: MemoryAltViewPairings()) { callback in client.callback = callback; return client }
+        let service = configuredAltViewService(defaults: defaults, store: MemoryAltViewPairings()) { callback in client.callback = callback; return client }
         let prepared = projection()
-        let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [prepared.sources.primary, prepared.sources.secondary!]), defaults: defaults, altView: service, projectionDisplays: selectedTestProjectionDisplays())
-        live.projectorWindowFactory = { _ in nil }
+        let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [prepared.sources.primary, prepared.sources.secondary!]), defaults: defaults, projectionDisplays: selectedTestProjectionDisplays(), altViewServiceFactory: { _, _ in service })
+        let remoteID = live.outputs.destinations.first { $0.altView != nil }!.id; live.refreshPreferences()
+        live.nativeWindowFactory = { _, _, _ in nil }
         defer { live.shutdown() }
         let tab = UUID()
         live.publishRow(prepared, from: tab)
         XCTAssertTrue(client.submissions.isEmpty, "Off means no networking")
-        service.connect(to: .init(name: "Test", host: "127.0.0.1", port: 54321), code: "ABCD2345")
+        XCTAssertNil(live.connectAltView(remoteID, to: .init(name: "Test", host: "127.0.0.1", port: 54321), code: "ABCD2345"))
         try await eventually { !client.connections.isEmpty }
+        client.welcome()
         XCTAssertTrue(client.submissions.isEmpty, "Connect Only never sends already-live content")
         live.toggleBlank()
         XCTAssertTrue(client.submissions.isEmpty, "Blank after Connect Only must not acquire output")
@@ -461,7 +470,7 @@ final class AltViewProjectionTests: XCTestCase {
     func testCancelSwitchAndLateStatusesCannotPublishOrSaveOldPairing() async throws {
         let defaults = UserDefaults(suiteName: "AltViewTests.\(UUID())")!
         let client = RecordingAltViewSender()
-        let service = AltViewProjectionService(defaults: defaults, store: MemoryAltViewPairings()) { callback in client.callback = callback; return client }
+        let service = configuredAltViewService(defaults: defaults, store: MemoryAltViewPairings()) { callback in client.callback = callback; return client }
         defer { service.disconnect() }
         service.connect(to: .init(name: "A", host: "a.local", port: 54321), code: "ABCD2345")
         service.disconnect()
@@ -470,6 +479,7 @@ final class AltViewProjectionTests: XCTestCase {
         service.connect(to: .init(name: "B", host: "b.local", port: 54321), code: "ABCD2345")
         try await eventually { client.connections.count == 1 }
         let old = client.connections[0].0
+        client.welcome()
         service.publish(projection(), blanked: false, explicit: true)
         service.connect(to: .init(name: "C", host: "c.local", port: 54321), code: "ABCD2345")
         try await eventually { client.connections.count == 2 }
@@ -488,11 +498,14 @@ final class AltViewProjectionTests: XCTestCase {
         service.publish(projection(primary: "Old"), blanked: false, explicit: true)
         service.publish(projection(primary: "Newest"), blanked: false, explicit: true)
         service.setBlanked(true)
+        try await eventually { !client.connections.isEmpty }
+        client.welcome()
         try await eventually { !client.submissions.isEmpty }
         XCTAssertEqual(client.submissions.last?.content?.body, "Newest")
         XCTAssertEqual(client.submissions.last?.content?.visible, false)
         service.connect(to: .init(name: "B", host: "b.local", port: 54321), code: "ABCD2345")
         let count = client.submissions.count
+        client.welcome()
         service.publish(projection(), blanked: false, explicit: true)
         service.stop()
         try await eventually { client.connections.count == 2 }
@@ -506,7 +519,7 @@ final class AltViewProjectionTests: XCTestCase {
         let destination = AltViewDestination(name: "Test", host: "receiver.local", port: 54321)
         let receiverID = UUID()
         let firstClient = RecordingAltViewSender()
-        let first = AltViewProjectionService(defaults: defaults, store: store) { callback in firstClient.callback = callback; return firstClient }
+        let first = configuredAltViewService(defaults: defaults, store: store) { callback in firstClient.callback = callback; return firstClient }
         defer { first.disconnect() }
         first.connect(to: destination, code: "ABCD2345")
         try await eventually { firstClient.connections.count == 1 }
@@ -518,19 +531,22 @@ final class AltViewProjectionTests: XCTestCase {
         let saved = try await store.read(account: destination.account)
         XCTAssertEqual(saved?.receiverID, receiverID)
         XCTAssertEqual(saved?.key, Data("ABCD2345".utf8))
-        let destinationData = try XCTUnwrap(defaults.data(forKey: AppDefaultsKey.altViewDestination))
-        XCTAssertEqual(try JSONDecoder().decode(AltViewDestination.self, from: destinationData), destination)
+        let destinationData = try XCTUnwrap(defaults.data(forKey: AppDefaultsKey.outputConfiguration))
+        let savedConfiguration = try JSONDecoder().decode(OutputConfiguration.self, from: destinationData)
+        XCTAssertEqual(savedConfiguration.destinations.first { $0.altView != nil }?.altView?.receiver, destination)
         XCTAssertFalse(String(decoding: destinationData, as: UTF8.self).contains("ABCD2345"))
         let secondClient = RecordingAltViewSender()
-        let second = AltViewProjectionService(defaults: defaults, store: store) { callback in secondClient.callback = callback; return secondClient }
+        let second = configuredAltViewService(defaults: defaults, store: store) { callback in secondClient.callback = callback; return secondClient }
         defer { second.disconnect() }
-        second.restoreConnection()
-        second.restoreConnection()
+        let restoredLive = LiveProjectionController(defaults: defaults, altViewServiceFactory: { _, _ in second })
+        defer { restoredLive.shutdown() }
+        restoredLive.restoreOutputConnections()
+        restoredLive.restoreOutputConnections()
         try await eventually { secondClient.connections.count == 1 }
         XCTAssertEqual(secondClient.connections.last?.1, receiverID)
         XCTAssertTrue(secondClient.submissions.isEmpty, "Automatic connection must not claim or publish output")
         second.disconnect()
-        second.restoreConnection()
+        restoredLive.restoreOutputConnections()
         await Task.yield()
         XCTAssertEqual(secondClient.connections.count, 1, "Disconnect lasts for the rest of this app session")
         second.connect(to: destination, code: "ABCD2346")
@@ -542,7 +558,7 @@ final class AltViewProjectionTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let client = RecordingAltViewSender()
-        let service = AltViewProjectionService(defaults: defaults, store: MemoryAltViewPairings(failsSaving: true)) { callback in client.callback = callback; return client }
+        let service = configuredAltViewService(defaults: defaults, store: MemoryAltViewPairings(failsSaving: true)) { callback in client.callback = callback; return client }
         defer { service.disconnect() }
         let destination = AltViewDestination(name: "Test", host: "receiver.local", port: 54321)
         let receiverID = UUID()
@@ -566,15 +582,15 @@ final class AltViewProjectionTests: XCTestCase {
         let destination = AltViewDestination(name: "Test", host: "receiver.local", port: 54321)
         defaults.set(try JSONEncoder().encode(destination), forKey: AppDefaultsKey.altViewDestination)
         let client = RecordingAltViewSender()
-        let service = AltViewProjectionService(defaults: defaults, store: MemoryAltViewPairings(failsReading: true)) {
+        let service = configuredAltViewService(defaults: defaults, store: MemoryAltViewPairings(failsReading: true)) {
             callback in client.callback = callback; return client
         }
         defer { service.disconnect() }
-        let pane = AltViewSettingsController(service: service)
+        let pane = AltViewDestinationEditor(service: service)
         pane.discoveryEnabled = false
         pane.loadViewIfNeeded()
         XCTAssertFalse(pane.disconnectButton.isEnabled)
-        service.restoreConnection()
+        if let destination = service.destination { service.connect(to: destination, code: "") }
         try await eventually { service.status.failureReason != nil && pane.connectButton.isEnabled }
         XCTAssertTrue(service.detail.contains("Could not read the saved pairing from Keychain"))
         XCTAssertTrue(client.connections.isEmpty)
@@ -606,17 +622,18 @@ final class AltViewProjectionTests: XCTestCase {
         defaults.set(try JSONEncoder().encode(destination), forKey: AppDefaultsKey.altViewDestination)
         let store = SuspendedAltViewPairings()
         let client = RecordingAltViewSender()
-        let service = AltViewProjectionService(defaults: defaults, store: store) {
+        let service = configuredAltViewService(defaults: defaults, store: store) {
             callback in client.callback = callback; return client
         }
         defer { service.disconnect() }
-        service.restoreConnection()
+        if let destination = service.destination { service.connect(to: destination, code: "") }
         for _ in 0..<100 {
             if await store.isReading { break }
             await Task.yield()
         }
         let reading = await store.isReading
         XCTAssertTrue(reading)
+        client.welcome()
         service.publish(projection(), blanked: false, explicit: true)
         service.disconnect()
         await store.finish(.init(key: Data("ABCD2345".utf8), receiverID: UUID()))
@@ -630,11 +647,11 @@ final class AltViewProjectionTests: XCTestCase {
         let suite = "AltViewTests.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
-        let service = AltViewProjectionService(defaults: defaults, store: MemoryAltViewPairings()) { _ in
+        let service = configuredAltViewService(defaults: defaults, store: MemoryAltViewPairings()) { _ in
             XCTFail("No receiver has ever been connected")
             return RecordingAltViewSender()
         }
-        service.restoreConnection()
+        if let destination = service.destination { service.connect(to: destination, code: "") }
         await Task.yield()
         XCTAssertFalse(service.isEnabled)
     }
@@ -653,11 +670,12 @@ final class AltViewProjectionTests: XCTestCase {
         let store = MemoryAltViewPairings()
         try await store.save(.init(key: Data("ABCD2345".utf8), receiverID: receiverID), account: saved.account)
         let client = RecordingAltViewSender(), discovery = RecordingAltViewDiscovery()
-        let service = AltViewProjectionService(defaults: defaults, store: store, discoveryFactory: {
+        let service = configuredAltViewService(defaults: defaults, store: store, discoveryFactory: {
             discovery.callback = $0; return discovery
         }) { callback in client.callback = callback; return client }
         defer { service.disconnect() }
-        service.restoreConnection()
+        if let destination = service.destination { service.connect(to: destination, code: "") }
+        client.welcome()
         service.publish(projection(), blanked: false, explicit: true)
         try await eventually { service.status.waitingToRetry }
         XCTAssertEqual(discovery.starts, 1)
@@ -666,6 +684,7 @@ final class AltViewProjectionTests: XCTestCase {
         XCTAssertTrue(client.connections.isEmpty, "Only the saved receiver UUID may resolve setup")
         discovery.callback?([receiver(54323)], nil)
         try await eventually { client.connections.count == 1 }
+        client.welcome()
         XCTAssertEqual(client.endpoints.last, receiver(54323).endpoint)
         XCTAssertEqual(client.connections.last?.1, receiverID)
         XCTAssertEqual(client.submissions.last?.content?.body, "Primary text", "Discovery preserves an explicit projection queued during setup")
@@ -673,6 +692,7 @@ final class AltViewProjectionTests: XCTestCase {
         service.stopDiscovery()
         XCTAssertEqual(discovery.stops, 0, "This Mac port tracking continues with Settings closed")
         discovery.callback?([receiver(54324)], nil)
+        try await eventually { client.endpointUpdates.last?.0 == receiver(54324).endpoint }
         XCTAssertEqual(client.endpointUpdates.last?.0, receiver(54324).endpoint)
         XCTAssertEqual(client.submissions.last?.intent, intent)
         service.disconnect()
@@ -690,7 +710,7 @@ final class AltViewProjectionTests: XCTestCase {
             endpoint: .hostPort(host: "127.0.0.1", port: .init(rawValue: 54321)!), receiverID: UUID(), isLocal: true)
         let destination = try XCTUnwrap(AltViewDestination(discovered))
         let discovery = RecordingAltViewDiscovery(), client = RecordingAltViewSender()
-        let service = AltViewProjectionService(defaults: defaults, store: MemoryAltViewPairings(), discoveryFactory: {
+        let service = configuredAltViewService(defaults: defaults, store: MemoryAltViewPairings(), discoveryFactory: {
             discovery.callback = $0; return discovery
         }) { callback in client.callback = callback; return client }
         defer { service.disconnect() }
@@ -704,7 +724,7 @@ final class AltViewProjectionTests: XCTestCase {
         XCTAssertEqual(discovery.starts, 2, "An enabled local sender retries discovery without reopening Settings")
         XCTAssertEqual(discovery.stops, 1)
         discovery.callback?([discovered], nil)
-        XCTAssertEqual(client.connections.count, 1)
+        try await eventually { client.connections.count == 1 }
         discovery.callback?([], "Discovery temporarily unavailable")
         service.disconnect()
         try await Task.sleep(nanoseconds: 1_100_000_000)
@@ -712,4 +732,24 @@ final class AltViewProjectionTests: XCTestCase {
         XCTAssertEqual(discovery.stops, 2)
     }
 
+}
+
+@MainActor
+private func configuredAltViewService(defaults: UserDefaults, store: any AltViewPairingStoring,
+    discoveryFactory: @escaping (@escaping ([AltViewDiscoveredReceiver], String?) -> Void) -> any AltViewDiscovering = { _ in RecordingAltViewDiscovery() },
+    senderFactory: @escaping (@escaping @Sendable (AltViewSenderStatus) -> Void) -> any AltViewSending) -> AltViewProjectionService {
+    let outputs = OutputConfigurationStore(defaults: defaults, displays: ProjectionDisplayManager(defaults: defaults, displays: { [] }))
+    let id = outputs.destinations.first { $0.altView != nil }?.id ?? outputs.addAltView()
+    let saved = outputs.destination(id)!.altView!
+    let service = AltViewProjectionService(destination: saved.receiver, template: saved.template, store: store,
+        discovery: AltViewDiscoveryService(factory: discoveryFactory), senderFactory: senderFactory)
+    service.onConfigurationChanged = { change in
+        var destination = outputs.destination(id)!, value = outputs.destination(id)!.altView!
+        switch change {
+        case .template(let template): value.template = template
+        case .paired(let receiver, let identity): value.receiver = receiver; value.receiverID = identity; destination.enabled = true
+        }
+        destination.assignment = .altView(value); _ = outputs.update(destination)
+    }
+    return service
 }

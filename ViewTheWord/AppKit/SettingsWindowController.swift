@@ -11,18 +11,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var presentationTask: Task<Void, Never>?
     private var presentingSheet = false
 
-    init(library: BibleLibrary? = nil, defaults: UserDefaults = .standard, altView: AltViewProjectionService? = nil, projectionDisplays: ProjectionDisplayManager? = nil) {
-        let library = library ?? .shared
+    init(library: BibleLibrary? = nil, liveProjection: LiveProjectionController? = nil) {
+        let library = library ?? liveProjection?.library ?? .shared
         self.library = library
-        settings = NativeSettingsController(library: library, defaults: defaults, altView: altView ?? AltViewProjectionService(defaults: defaults), projectionDisplays: projectionDisplays)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 340),
-                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        settings = NativeSettingsController(library: library, liveProjection: liveProjection ?? LiveProjectionController(library: library))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 650),
+                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "Settings"
         window.tabbingMode = .disallowed
         window.toolbarStyle = .preference
         window.isReleasedWhenClosed = false
         window.contentViewController = settings
-        window.setContentSize(NSSize(width: 560, height: 340))
+        window.setContentSize(NSSize(width: 820, height: 650))
+        window.contentMinSize = NSSize(width: 780, height: 580)
         window.center()
         super.init(window: window)
         window.delegate = self
@@ -35,15 +36,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     override func showWindow(_ sender: Any?) {
         library.setSettingsPresented(true)
-        settings.display.reload()
+        settings.outputs.reload()
         super.showWindow(sender)
         window?.makeKeyAndOrderFront(sender)
-        if settings.selectedTabViewItemIndex == 2 { settings.altView.startDiscovery() }
+        if settings.selectedTabViewItemIndex == 0 { settings.outputs.startDiscovery() }
         scheduleAlertPresentation()
     }
     func windowDidBecomeKey(_ notification: Notification) { scheduleAlertPresentation() }
     func windowWillClose(_ notification: Notification) {
-        settings.altView.stopDiscovery()
+        settings.outputs.stopDiscovery()
         library.setSettingsPresented(false)
         if let sheet = window?.attachedSheet { window?.endSheet(sheet, returnCode: .cancel) }
     }
@@ -119,142 +120,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
 @MainActor
 final class NativeSettingsController: NSTabViewController {
-    let monitors: ProjectionMonitorSettingsController
-    let display: DisplaySettingsController
-    let altView: AltViewSettingsController
+    let outputs: ManageOutputsController
     let bibleLibrary: BibleLibrarySettingsController
-
-    init(library: BibleLibrary, defaults: UserDefaults, altView: AltViewProjectionService? = nil, projectionDisplays: ProjectionDisplayManager? = nil) {
-        self.altView = AltViewSettingsController(service: altView ?? AltViewProjectionService(defaults: defaults))
-        monitors = ProjectionMonitorSettingsController(displays: projectionDisplays ?? ProjectionDisplayManager(defaults: defaults))
-        display = DisplaySettingsController(defaults: defaults)
+    init(library: BibleLibrary, liveProjection: LiveProjectionController) {
+        outputs = ManageOutputsController(live: liveProjection)
         bibleLibrary = BibleLibrarySettingsController(library: library)
         super.init(nibName: nil, bundle: nil)
-        title = "Settings"
-        tabStyle = .toolbar
-        transitionOptions = []
-        for (controller, label, symbol) in [(display as NSViewController, "Display", "display"),
-                                           (bibleLibrary, "Bible Library", "books.vertical"),
-                                           (self.altView, "AltView", "network"),
-                                           (monitors, "Monitors", "display.2")] {
-            let item = NSTabViewItem(viewController: controller)
-            item.label = label
-            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
-            addTabViewItem(item)
+        title = "Settings"; tabStyle = .toolbar; transitionOptions = []
+        for (controller, label, symbol) in [(outputs as NSViewController, "Manage Outputs", "display.2"), (bibleLibrary, "Bible Library", "books.vertical")] {
+            let item = NSTabViewItem(viewController: controller); item.label = label
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label); addTabViewItem(item)
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-}
-
-@MainActor
-final class DisplaySettingsController: NSViewController {
-    let rows: [DisplaySettingRow]
-
-    init(defaults: UserDefaults) {
-        rows = [
-            DisplaySettingRow(title: "Verse text", key: AppDefaultsKey.fontSizeVerse,
-                              range: 40...200, fallback: AppDefaults.verseFontSize, defaults: defaults),
-            DisplaySettingRow(title: "Verse reference", key: AppDefaultsKey.fontSizeVerseRef,
-                              range: 20...72, fallback: AppDefaults.referenceFontSize, defaults: defaults),
-            DisplaySettingRow(title: "Padding", key: AppDefaultsKey.projectorPadding,
-                              range: 10...200, fallback: AppDefaults.projectorPadding, defaults: defaults)
-        ]
-        super.init(nibName: nil, bundle: nil)
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func loadView() {
-        view = NSView()
-        let heading = nativeLabel("Projected text", weight: .semibold)
-        let explanation = NSTextField(wrappingLabelWithString: "Font sizes are maximums. Longer passages shrink to fit the display.")
-        explanation.font = .systemFont(ofSize: 12)
-        explanation.textColor = .secondaryLabelColor
-        let spacing = nativeLabel("Spacing", weight: .semibold)
-        let stack = NSStackView(views: [heading, explanation, rows[0], rows[1], separator(), spacing, rows[2]])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 12
-        stack.setCustomSpacing(6, after: heading)
-        stack.setCustomSpacing(20, after: explanation)
-        stack.setCustomSpacing(20, after: rows[1])
-        stack.setCustomSpacing(20, after: stack.arrangedSubviews[4])
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 28),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -28),
-            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 28),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -28)
-        ])
-        for child in stack.arrangedSubviews { child.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
-    }
-    override func viewWillAppear() { super.viewWillAppear(); reload() }
-    func reload() { rows.forEach { $0.reload() } }
-}
-
-/// Native tracking updates the readout continuously; persistence waits for mouse-up.
-/// Keyboard and accessibility actions commit immediately through the same target/action.
-@MainActor
-final class DisplaySettingsSlider: NSSlider {
-    private(set) var isTrackingMouse = false
-    var onTrackingEnded: () -> Void = {}
-    override func mouseDown(with event: NSEvent) {
-        isTrackingMouse = true
-        super.mouseDown(with: event)
-        isTrackingMouse = false
-        onTrackingEnded()
-    }
-}
-
-@MainActor
-final class DisplaySettingRow: NSView {
-    let slider = DisplaySettingsSlider()
-    let valueLabel = nativeLabel()
-    private let key: String
-    private let fallback: Double
-    private let defaults: UserDefaults
-
-    init(title: String, key: String, range: ClosedRange<Double>, fallback: Double, defaults: UserDefaults) {
-        self.key = key
-        self.fallback = fallback
-        self.defaults = defaults
-        super.init(frame: .zero)
-        let label = nativeLabel(title)
-        label.widthAnchor.constraint(equalToConstant: 108).isActive = true
-        slider.minValue = range.lowerBound
-        slider.maxValue = range.upperBound
-        slider.altIncrementValue = 1
-        slider.isContinuous = true
-        slider.target = self
-        slider.action = #selector(sliderChanged(_:))
-        slider.setAccessibilityLabel(title)
-        slider.setAccessibilityHelp("Adjust in points")
-        slider.onTrackingEnded = { [weak self] in self?.commit() }
-        valueLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
-        valueLabel.textColor = .secondaryLabelColor
-        valueLabel.alignment = .right
-        valueLabel.widthAnchor.constraint(equalToConstant: 58).isActive = true
-        pin(horizontalStack([label, slider, valueLabel], spacing: 14), to: self)
-        heightAnchor.constraint(equalToConstant: 30).isActive = true
-        reload()
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    func reload() {
-        guard !slider.isTrackingMouse else { return }
-        let value = (defaults.object(forKey: key) as? NSNumber)?.doubleValue ?? fallback
-        slider.doubleValue = value.isFinite ? min(slider.maxValue, max(slider.minValue, value)) : fallback
-        updateReadout()
-    }
-    @objc private func sliderChanged(_ sender: NSSlider) {
-        updateReadout()
-        if !slider.isTrackingMouse { commit() }
-    }
-    private func updateReadout() { valueLabel.stringValue = "\(Int(slider.doubleValue.rounded())) pts" }
-    private func commit() {
-        let value = slider.doubleValue.rounded()
-        slider.doubleValue = value
-        updateReadout()
-        if (defaults.object(forKey: key) as? NSNumber)?.doubleValue != value { defaults.set(value, forKey: key) }
-    }
 }
 
 @MainActor

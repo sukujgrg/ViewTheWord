@@ -2,7 +2,7 @@ import AppKit
 import Combine
 
 @MainActor
-final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
+final class AltViewDestinationEditor: NSViewController, NSTextFieldDelegate {
     let receiverPicker = NSPopUpButton()
     let templatePicker = NSPopUpButton()
     let templateHint = NSTextField(wrappingLabelWithString: "")
@@ -14,6 +14,7 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
     let connectButton = NSButton(title: "Connect Only", target: nil, action: nil)
     let disconnectButton = NSButton(title: "Disconnect", target: nil, action: nil)
     let statusBadge = AltViewStatusBadge()
+    private let validationLabel = NSTextField(wrappingLabelWithString: "")
     let statusLabel = NSTextField(wrappingLabelWithString: "Not connected")
     private let service: AltViewProjectionService
     private var receivers: [AltViewDestination] = []
@@ -21,21 +22,25 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
     private var usesThisMac: Bool
     private var subscription: AnyCancellable?
     var discoveryEnabled = true
+    var onConnect: (AltViewDestination, String) -> String? = { _, _ in nil }
+    var onSelectReceiver: (AltViewDestination?) -> String? = { _ in nil }
 
 
-    init(service: AltViewProjectionService) {
+    init(service: AltViewProjectionService, assignment: AltViewOutputAssignment? = nil) {
+        let receiver = assignment == nil ? service.destination : assignment?.receiver
         self.service = service
-        self.usesThisMac = service.destination == nil || service.destination?.localReceiverID != nil
-        self.selected = service.destination?.host == nil || service.destination?.localReceiverID != nil ? service.destination : nil
+        onConnect = { receiver, code in service.connect(to: receiver, code: code); return nil }
+        self.usesThisMac = receiver == nil || receiver?.localReceiverID != nil
+        self.selected = receiver?.host == nil || receiver?.localReceiverID != nil ? receiver : nil
         super.init(nibName: nil, bundle: nil)
-        hostField.stringValue = service.destination?.host ?? ""
-        portField.stringValue = service.destination.flatMap { $0.host == nil ? nil : $0.port }.map(String.init) ?? ""
+        hostField.stringValue = receiver?.host ?? ""
+        portField.stringValue = receiver.flatMap { $0.host == nil ? nil : $0.port }.map(String.init) ?? ""
         portField.placeholderString = "Port"
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func loadView() {
         view = NSView()
-        let explanation = NSTextField(wrappingLabelWithString: "Send the primary translation to AltView on This Mac or another Mac. If its verse is missing, send the secondary translation.")
+        let explanation = NSTextField(wrappingLabelWithString: "AltView receives the committed scripture. Its Audience layout uses Primary verse; Confidence can show both translations. Appearance and rendering are controlled in AltView.")
         explanation.font = .systemFont(ofSize: 12)
         explanation.textColor = .secondaryLabelColor
         receiverPicker.target = self; receiverPicker.action = #selector(destinationChanged(_:))
@@ -55,15 +60,16 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
         for button in [connectButton, disconnectButton] { button.target = self; button.bezelStyle = .rounded }
         connectButton.action = #selector(connect(_:)); disconnectButton.action = #selector(disconnect(_:))
         connectButton.keyEquivalent = "\r"
-        let hint = NSTextField(wrappingLabelWithString: "The last receiver connects automatically at startup and reconnects after a network drop. Project a verse to send it; Blank and Stop follow ViewTheWord. This Mac is the default for a new connection; its current port is discovered automatically. Saved receivers keep their selection. This does not restrict AltView’s LAN listener. Appearance and displays are set in AltView.")
+        let hint = NSTextField(wrappingLabelWithString: "Enabled saved receivers connect automatically at startup and reconnects after a network drop. Project a verse to send it; Blank and Stop follow ViewTheWord. This Mac is the default for a new connection; its current port is discovered automatically. Saved receivers keep their selection. This does not restrict AltView’s LAN listener. Appearance and displays are set in AltView.")
         hint.font = .systemFont(ofSize: 11); hint.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.maximumNumberOfLines = 0
         statusLabel.setAccessibilityLabel("AltView status")
+        validationLabel.textColor = .systemOrange; validationLabel.font = .systemFont(ofSize: 12)
         let actions = horizontalStack([connectButton, disconnectButton, NSView(), statusBadge])
         let stack = NSStackView(views: [explanation, row("Receiver", receiverPicker),
                                       row("Address", horizontalStack([hostField, portField])),
-                                      row("Pairing code", codeField), actions, row("Template", templatePicker), templateHint, statusLabel, hint])
+                                      row("Pairing code", codeField), actions, validationLabel, row("Layout", templatePicker), templateHint, statusLabel, hint])
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
@@ -170,6 +176,8 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
         refreshTemplatePicker()
     }
     @objc private func destinationChanged(_ sender: Any?) {
+        let previous = selected, previousLocal = usesThisMac
+        validationLabel.stringValue = ""
         usesThisMac = receiverPicker.indexOfSelectedItem == 0
         if usesThisMac {
             selected = selected?.localReceiverID != nil ? selected : service.receivers.first(where: { $0.localReceiverID != nil && $0.isValid })
@@ -177,6 +185,7 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
             let index = receiverPicker.indexOfSelectedItem - 2
             selected = receivers.indices.contains(index) ? receivers[index] : nil
         }
+        if let issue = onSelectReceiver(selected) { selected = previous; usesThisMac = previousLocal; render(); validationLabel.stringValue = issue; return }
         service.disconnect(); codeField.stringValue = ""
         render()
     }
@@ -186,6 +195,7 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
         render()
     }
     @objc private func connect(_ sender: Any?) {
+        validationLabel.stringValue = ""
         let destination: AltViewDestination
         if let selected { destination = selected }
         else if usesThisMac { render(); return }
@@ -196,7 +206,7 @@ final class AltViewSettingsController: NSViewController, NSTextFieldDelegate {
             let host = hostField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             destination = AltViewDestination(name: host, host: host, port: port)
         }
-        service.connect(to: destination, code: codeField.stringValue)
+        if let issue = onConnect(destination, codeField.stringValue) { validationLabel.stringValue = issue; return }
         render()
     }
     @objc private func disconnect(_ sender: Any?) { service.disconnect(); render() }

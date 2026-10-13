@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Network
 import Security
@@ -671,5 +672,104 @@ final class AltViewNetworkTests: XCTestCase {
         try await eventually { state.a.outputIssue == nil }
         try await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertNil(state.receiver.ownerName, "Recovering valid text is still an automatic refresh, not a takeover")
+    }
+}
+
+private actor ManageOutputPairings: AltViewPairingStoring {
+    var saved: [String: AltViewPairing] = [:]
+    func read(account: String) -> AltViewPairing? { saved[account] }
+    func save(_ pairing: AltViewPairing, account: String) { saved[account] = pairing }
+}
+
+extension AltViewNetworkTests {
+    func testManageOutputsEncryptedPairingRestorationReconnectTakeoverBlankRefreshAndStop() async throws {
+        _ = NSApplication.shared
+        let suite = "ManageOutputs.Encrypted.\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        let state = AltViewNetworkObservation(), pairings = ManageOutputPairings()
+        let receiver = FixtureReceiverServer(receiverID: UUID(), capabilities: AltViewProtocol.capabilities) {
+            value in MainActor.assumeIsolated { state.receiver = value }
+        }
+        let other = AltViewSenderClient(name: "Other application") { value in MainActor.assumeIsolated { state.b = value } }
+        func makeLive() -> LiveProjectionController {
+            LiveProjectionController(defaults: preferences, projectionDisplays: ProjectionDisplayManager(displays: { [] }), altViewServiceFactory: { saved, discovery in
+                AltViewProjectionService(destination: saved.receiver, template: saved.template, store: pairings, discovery: discovery) {
+                    AltViewSenderClient(name: "ViewTheWord output", onStatus: $0)
+                }
+            })
+        }
+        let live = makeLive()
+        defer { live.shutdown(); other.disconnect(); receiver.stop(); preferences.removePersistentDomain(forName: suite) }
+        var native = live.outputs.destinations[0]; native.enabled = false; XCTAssertNil(live.outputs.update(native))
+        let remoteID = live.outputs.addAltView(); live.refreshPreferences()
+        let manager = ManageOutputsController(live: live); manager.discoveryEnabled = false; _ = manager.view
+        manager.selectDestination(remoteID)
+        let editor = try XCTUnwrap(manager.remoteEditor)
+        editor.receiverPicker.selectItem(withTitle: "Manual address")
+        editor.receiverPicker.sendAction(editor.receiverPicker.action, to: editor.receiverPicker.target)
+        receiver.start(name: "Manage Outputs", key: key, advertise: false)
+        try await eventually { state.receiver.port != nil }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .init(rawValue: state.receiver.port!)!)
+        let otherID = UUID(), otherIntent = UUID()
+        other.connect(to: endpoint, key: key, expectedReceiverID: receiver.receiverID, connectionID: otherID)
+        other.submit(.init(connectionID: otherID, content: .init(body: "Other presentation"), intent: otherIntent))
+        try await eventually { state.b.feedback.accepted }
+        let originalOwner = state.receiver.ownerID
+        editor.hostField.stringValue = "127.0.0.1"; editor.portField.stringValue = String(state.receiver.port!)
+        editor.codeField.stringValue = "ABCD2345"; editor.connectButton.performClick(nil)
+        let service = try XCTUnwrap(live.altViewServices[remoteID])
+        try await eventually { service.status.connected && editor.disconnectButton.title == "Disconnect" }
+        XCTAssertEqual(state.receiver.ownerID, originalOwner); XCTAssertEqual(state.receiver.content.body, "Other presentation")
+        XCTAssertFalse(live.windowOpened)
+        let savedReceiver = try XCTUnwrap(live.outputs.destination(remoteID)?.altView?.receiver)
+        for _ in 0..<100 { if await pairings.read(account: savedReceiver.account) != nil { break }; await Task.yield() }
+        let pairing = await pairings.read(account: savedReceiver.account)
+        XCTAssertEqual(pairing?.receiverID, receiver.receiverID)
+        editor.disconnectButton.performClick(nil)
+        try await eventually { !service.isEnabled && state.receiver.connections == 1 }
+        let restored = makeLive(); defer { restored.shutdown() }
+        restored.restoreOutputConnections(); restored.restoreOutputConnections()
+        let restoredService = try XCTUnwrap(restored.altViewServices[remoteID])
+        try await eventually { restoredService.status.connected && state.receiver.connections == 2 }
+        XCTAssertEqual(state.receiver.ownerID, originalOwner); XCTAssertNil(restored.projector.projectionOwner)
+        let reference = VerseReference(book: "John", chapter: 3, verse: 16)!
+        let sources = BibleSources(primary: URL(fileURLWithPath: "/tmp/ENG_NIV.bible"), secondary: URL(fileURLWithPath: "/tmp/ENG_NLT.bible"), revision: 1)
+        func prepared(_ text: String) -> PreparedProjection {
+            PreparedProjection(pair: .init(reference: reference, primary: .init(reference: reference, verse: text), secondary: .init(reference: reference, verse: "Committed secondary")), sources: sources, owner: .verseRowSelection(reference))!
+        }
+        let tab = UUID()
+        restored.publishRow(prepared("Committed primary"), from: tab)
+        try await eventually { restoredService.status.feedback.accepted && state.receiver.content.body == "Committed primary" }
+        XCTAssertTrue(restored.nativeOutputs.isEmpty); XCTAssertTrue(restored.windowOpened)
+        XCTAssertEqual(state.receiver.content.confidence?.secondary?.body, "Committed secondary")
+        restored.toggleBlank()
+        try await eventually { !state.receiver.content.visible && restoredService.status.feedback.accepted }
+        let token = restored.beginIntent(from: tab, sources: sources, using: VerseTargetModel())
+        restored.publish(prepared("Refreshed primary"), intent: token, preserveBlanking: true)
+        try await eventually { state.receiver.content.body == "Refreshed primary" && restoredService.status.feedback.accepted }
+        XCTAssertFalse(state.receiver.content.visible)
+        receiver.dropConnections(named: "ViewTheWord output")
+        try await eventually { restoredService.status.waitingToRetry }
+        try await eventually { restoredService.status.connected && restoredService.status.feedback.accepted && state.receiver.content.body == "Refreshed primary" }
+        XCTAssertFalse(state.receiver.content.visible)
+        other.submit(.init(connectionID: otherID, content: .init(body: "Other takes back"), intent: UUID()))
+        try await eventually { state.receiver.content.body == "Other takes back" && !restoredService.status.ownsOutput }
+        let passive = restored.beginIntent(from: tab, sources: sources, using: VerseTargetModel())
+        restored.publish(prepared("Passive refresh"), intent: passive, preserveBlanking: true)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(state.receiver.content.body, "Other takes back", "Passive refresh cannot take output")
+        restored.publishRow(prepared("Passive refresh"), from: tab)
+        try await eventually { state.receiver.content.body == "Passive refresh" && restoredService.status.feedback.accepted }
+        XCTAssertTrue(state.receiver.content.visible)
+        restored.closeProjector()
+        try await eventually { state.receiver.ownerID == nil && restored.projector.projectionOwner == nil }
+        other.submit(.init(connectionID: otherID, content: .init(body: "Retain another owner"), intent: UUID()))
+        try await eventually { state.receiver.content.body == "Retain another owner" }
+        restored.closeProjector()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(state.receiver.content.body, "Retain another owner")
+        restoredService.disconnect(); receiver.dropConnections(named: "ViewTheWord output")
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertFalse(restoredService.isEnabled); XCTAssertEqual(state.receiver.content.body, "Retain another owner")
     }
 }

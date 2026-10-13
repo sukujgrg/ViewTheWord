@@ -128,7 +128,7 @@ final class MainWorkspaceController: NSViewController {
         buildInterface()
         connectActions()
         previousSources = sources
-        for publisher in [navigation.objectWillChange, liveProjection.objectWillChange, liveProjection.projectionDisplays.objectWillChange, liveProjection.altView.objectWillChange, projector.objectWillChange, history.objectWillChange,
+        for publisher in [navigation.objectWillChange, liveProjection.objectWillChange, liveProjection.projectionDisplays.objectWillChange, liveProjection.outputs.objectWillChange, projector.objectWillChange, history.objectWillChange,
                           bookmarks.objectWillChange, library.objectWillChange] {
             publisher.sink { [weak self] _ in self?.scheduleRender() }.store(in: &subscriptions)
         }

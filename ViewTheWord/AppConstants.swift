@@ -6,11 +6,9 @@ let logger = Logger(
     category: "app"
 )
 
-enum AppWindowTitle {
-    static let projector = "Projector"
-}
-
 enum AppDefaultsKey {
+    static let outputConfiguration = "outputConfiguration"
+    static let outputRecoveryPrefix = "outputConfigurationRecovery."
     static let altViewTemplate = "altViewTemplate"
     static let altViewDestination = "altViewDestination"
     static let fontSizeVerse = "fontSizeVerse"
@@ -35,13 +33,13 @@ enum AppDefaultsKey {
     static let searchRecents = "searchRecents"
 }
 
-enum ProjectorTextAlignmentMode: String, CaseIterable, Sendable {
+enum ProjectorTextAlignmentMode: String, Codable, CaseIterable, Sendable {
     case left
     case center
     case right
 }
 
-enum ProjectorReadingDirectionMode: String, CaseIterable, Sendable {
+enum ProjectorReadingDirectionMode: String, Codable, CaseIterable, Sendable {
     case auto
     case leftToRight
     case rightToLeft

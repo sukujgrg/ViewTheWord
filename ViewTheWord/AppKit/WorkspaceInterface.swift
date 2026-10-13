@@ -268,19 +268,19 @@ extension MainWorkspaceController: NSToolbarDelegate {
         }
     }
     func renderStatus() {
-        altViewStatusBadge.render(liveProjection.altView, showOutputStatus: true)
+        altViewStatusBadge.render(liveProjection.altViewServices.values.map { $0 })
         let live = windowOpened && projector.projectionOwner != nil
-        if !live { preview.performClose(nil) }
+        if !live && !liveProjection.hasNativeWindows { preview.performClose(nil) }
         statusLabel.stringValue = live ? "\(projector.isBlanked ? "Blanked" : "Live") · \(projector.projectorViewData.title)" : "Projection stopped"
         statusLabel.textColor = live && !projector.isBlanked ? .systemGreen : .secondaryLabelColor
         loadingLabel.stringValue = liveProjection.isProjecting ? "Projecting…" : navigation.isLoading ? "Loading…" : ""
         blankButton.title = projector.isBlanked ? "Unblank" : "Blank"
-        previewButton.isEnabled = live
+        previewButton.isEnabled = live || liveProjection.hasNativeWindows
         blankButton.isEnabled = live
-        stopButton.isEnabled = live || liveProjection.isProjecting
-        let displays = liveProjection.projectionDisplays
-        screenLabel.stringValue = "Output: \(displays.selectionLabel)\(displays.selectionProblem == nil ? "" : " · unavailable")"
-        screenLabel.toolTip = displays.selectionProblem
+        stopButton.isEnabled = live || liveProjection.isProjecting || liveProjection.hasNativeWindows
+        screenLabel.stringValue = liveProjection.outputSummary
+        screenLabel.toolTip = liveProjection.message
+
     }
 
     func renderTabHeading(_ sources: BibleSources?) {

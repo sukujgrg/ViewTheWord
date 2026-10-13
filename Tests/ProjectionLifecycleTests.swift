@@ -56,7 +56,7 @@ final class ProjectionLifecycleTests: XCTestCase {
         let defaults = UserDefaults(suiteName: "ProjectionLifecycleTests.\(UUID())")!
         let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [prepared.sources.primary]), defaults: defaults,
                                             projectionDisplays: displays, sleepPrevention: recorder.protection())
-        live.projectorWindowFactory = { _ in
+        live.nativeWindowFactory = { _, _, _ in
             let window = RecordedProjectionWindow(contentRect: CGRect(x: -10000, y: -10000, width: 640, height: 360),
                                                   styleMask: .borderless, backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
@@ -71,16 +71,17 @@ final class ProjectionLifecycleTests: XCTestCase {
         let recorder = ProjectionActivityRecorder()
         let displays = selectedTestProjectionDisplays()
         let live = live(displays, recorder: recorder)
+        if displays.legacyAssignment == nil { assignTestNativeOutput(live, to: displays.displays.first?.target) }
         defer { live.shutdown() }
         let tab = UUID()
         live.publishRow(projection(), from: tab)
-        let window = try XCTUnwrap(live.ownedProjectorWindow as? RecordedProjectionWindow)
+        let window = try XCTUnwrap(live.nativeOutputs.values.first?.window as? RecordedProjectionWindow)
         XCTAssertEqual(window.frontCount, 1)
         XCTAssertEqual(recorder.begun.count, 1)
         XCTAssertTrue(displays.isLocked)
-        XCTAssertFalse(displays.canIdentify(try XCTUnwrap(displays.target)))
+        XCTAssertFalse(displays.canIdentify(try XCTUnwrap(live.nativeOutputs.values.first?.monitor)))
         live.toggleBlank()
-        live.defaults.set(true, forKey: AppDefaultsKey.transparentBackground)
+        var profile = live.outputs.profiles[0]; profile.transparent = true; live.outputs.updateProfile(profile)
         live.refreshPreferences()
         XCTAssertFalse(window.isOpaque)
         XCTAssertEqual(window.backgroundColor, .clear)
@@ -114,22 +115,22 @@ final class ProjectionLifecycleTests: XCTestCase {
         let other = monitor(11, identity: otherIdentity)
         let inventory = ProjectionInventory([original, other])
         let displays = ProjectionDisplayManager(displays: { inventory.monitors })
-        XCTAssertTrue(displays.select(original.target))
         let recorder = ProjectionActivityRecorder()
         let live = live(displays, recorder: recorder)
+        if displays.legacyAssignment == nil { assignTestNativeOutput(live, to: displays.displays.first?.target) }
         defer { live.shutdown() }
         var mirrored = original
         mirrored.isMirrored = true
         let duplicate = monitor(12)
         for unavailable in [[other], [mirrored, other], [original, duplicate, other]] {
             live.publishRow(projection(), from: UUID())
-            let oldWindow = try XCTUnwrap(live.ownedProjectorWindow)
+            let oldWindow = try XCTUnwrap(live.nativeOutputs.values.first?.window)
             let oldFrame = oldWindow.frame
             inventory.monitors = unavailable
             displays.refresh()
             XCTAssertTrue(recorder.balanced)
             XCTAssertEqual(oldWindow.frame, oldFrame, "No fallback screen movement")
-            XCTAssertEqual(displays.target, original.target)
+            XCTAssertEqual(live.outputs.destinations[0].native?.monitor, original.target)
             await settleClose()
             XCTAssertFalse(live.windowOpened)
             XCTAssertNotNil(live.message)
@@ -143,7 +144,7 @@ final class ProjectionLifecycleTests: XCTestCase {
             await settleClose()
             XCTAssertFalse(live.windowOpened)
             XCTAssertEqual(recorder.begun.count, starts)
-            XCTAssertEqual(displays.resolvedMonitor()?.id, 99)
+            XCTAssertEqual(displays.resolve(original.target)?.id, 99)
         }
         XCTAssertEqual(recorder.begun.count, 3)
         live.publishRow(projection(), from: UUID())
@@ -154,12 +155,12 @@ final class ProjectionLifecycleTests: XCTestCase {
         _ = NSApplication.shared
         let inventory = ProjectionInventory([monitor(), monitor(11, identity: otherIdentity)])
         let displays = ProjectionDisplayManager(displays: { inventory.monitors })
-        displays.select(inventory.monitors[0].target)
         let recorder = ProjectionActivityRecorder()
         let live = live(displays, recorder: recorder)
+        if displays.legacyAssignment == nil { assignTestNativeOutput(live, to: displays.displays.first?.target) }
         defer { live.shutdown() }
         live.publishRow(projection(), from: UUID())
-        let window = try XCTUnwrap(live.ownedProjectorWindow as? RecordedProjectionWindow)
+        let window = try XCTUnwrap(live.nativeOutputs.values.first?.window as? RecordedProjectionWindow)
         let moved = ProjectionMonitor(id: 99, identity: identity, name: "Renamed model",
                                       frame: CGRect(x: -12000, y: -11000, width: 800, height: 600))
         inventory.monitors = [monitor(10, identity: otherIdentity), moved]
@@ -167,8 +168,8 @@ final class ProjectionLifecycleTests: XCTestCase {
         try await Task.sleep(nanoseconds: 180_000_000)
         XCTAssertEqual(window.frame, moved.frame)
         XCTAssertEqual(window.frontCount, 1)
-        XCTAssertFalse(displays.select(inventory.monitors[0].target))
-        XCTAssertEqual(displays.target?.identity, identity)
+        XCTAssertNotNil(assignTestNativeOutput(live, to: inventory.monitors[0].target))
+        XCTAssertEqual(live.nativeOutputs.values.first?.monitor.identity, identity)
         XCTAssertEqual(recorder.begun.count, 1)
     }
 
@@ -187,12 +188,12 @@ final class ProjectionLifecycleTests: XCTestCase {
         XCTAssertFalse(live.windowOpened)
         XCTAssertNil(live.projector.projectionOwner)
         XCTAssertNotNil(live.message)
-        XCTAssertTrue(displays.select(inventory.monitors[0].target))
+        XCTAssertNil(assignTestNativeOutput(live, to: inventory.monitors[0].target))
         inventory.monitors = []
         live.publishRow(prepared, from: UUID()) // Rechecks before screen-change notification.
         XCTAssertFalse(live.windowOpened)
         inventory.monitors = [monitor()]
-        live.projectorWindowFactory = { _ in nil }
+        live.nativeWindowFactory = { _, _, _ in nil }
         live.publishRow(prepared, from: UUID())
         XCTAssertTrue(live.windowOpened, "Fixture live state can be tested without a physical output")
         XCTAssertTrue(recorder.begun.isEmpty)
@@ -207,7 +208,7 @@ final class ProjectionLifecycleTests: XCTestCase {
         let displays = selectedTestProjectionDisplays()
         var live: LiveProjectionController? = live(displays, recorder: recorder)
         live?.publishRow(projection(), from: UUID())
-        let window = try XCTUnwrap(live?.ownedProjectorWindow)
+        let window = try XCTUnwrap(live?.nativeOutputs.values.first?.window)
         let owner = WeakProjectionOwner(live)
         live = nil
         XCTAssertNil(owner.value)
@@ -221,9 +222,9 @@ final class ProjectionLifecycleTests: XCTestCase {
         _ = NSApplication.shared
         let inventory = ProjectionInventory([monitor()])
         let displays = ProjectionDisplayManager(displays: { inventory.monitors })
-        displays.select(inventory.monitors[0].target)
         let recorder = ProjectionActivityRecorder()
         let live = live(displays, recorder: recorder)
+        if displays.legacyAssignment == nil { assignTestNativeOutput(live, to: displays.displays.first?.target) }
         defer { live.shutdown() }
         let prepared = projection()
         live.publishRow(prepared, from: UUID())
@@ -259,23 +260,18 @@ final class ProjectionLifecycleTests: XCTestCase {
 
     func testNativeSettingsUsesSharedAuthorityAndDetailsButtonSpansEntireRow() {
         let displays = selectedTestProjectionDisplays()
-        let settings = NativeSettingsController(library: BibleLibrary(preloadedURLs: []), defaults: .standard, projectionDisplays: displays)
-        XCTAssertTrue(settings.monitors.displays === displays)
-        let editor = ProjectionMonitorNameController(displays: displays, target: displays.target!)
+        let recorder = ProjectionActivityRecorder(); let live = live(displays, recorder: recorder)
+        defer { live.shutdown() }
+        let settings = NativeSettingsController(library: live.library, liveProjection: live)
+        XCTAssertTrue(settings.outputs.displays === displays)
+        let target = displays.displays[0].target
+        let editor = ProjectionMonitorNameController(displays: displays, target: target)
         editor.view.layoutSubtreeIfNeeded()
-        XCTAssertTrue(editor.details.isHidden)
-        XCTAssertEqual(editor.disclosure.frame.width, 392, accuracy: 1)
-        editor.disclosure.performClick(nil)
-        XCTAssertFalse(editor.details.isHidden)
-        editor.disclosure.performClick(nil)
-        XCTAssertTrue(editor.details.isHidden)
-        _ = settings.monitors.view
-        settings.monitors.reload()
-        XCTAssertTrue(settings.monitors.picker.isEnabled)
-        let owner = UUID()
-        displays.lock(displays.target!, owner: owner)
-        settings.monitors.reload()
-        XCTAssertFalse(settings.monitors.picker.isEnabled)
-        displays.unlock(owner: owner)
+        XCTAssertTrue(editor.details.isHidden); XCTAssertEqual(editor.disclosure.frame.width, 392, accuracy: 1)
+        editor.disclosure.performClick(nil); XCTAssertFalse(editor.details.isHidden)
+        editor.disclosure.performClick(nil); XCTAssertTrue(editor.details.isHidden)
+        _ = settings.outputs.view; settings.outputs.reload(); XCTAssertTrue(settings.outputs.monitorPicker.isEnabled)
+        live.publishRow(projection(), from: UUID()); settings.outputs.reload()
+        XCTAssertFalse(settings.outputs.monitorPicker.isEnabled)
     }
 }

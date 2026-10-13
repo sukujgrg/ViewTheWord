@@ -50,7 +50,6 @@ private struct ProjectionMonitorLabel: Codable, Equatable {
 /// locate a screen only after its saved macOS UUID has been checked.
 @MainActor
 final class ProjectionDisplayManager: ObservableObject {
-    static let assignmentKey = AppDefaultsKey.projectionMonitorAssignment
     static let labelsKey = AppDefaultsKey.projectionMonitorLabels
     private let defaults: UserDefaults?
     private let displaySource: @MainActor () -> [ProjectionMonitor]
@@ -61,7 +60,7 @@ final class ProjectionDisplayManager: ObservableObject {
     private let identifier = ProjectionMonitorIdentifier()
     @Published private(set) var revision = 0
     private(set) var displays: [ProjectionMonitor]
-    private(set) var target: ProjectionMonitorTarget?
+    let legacyAssignment: ProjectionMonitorTarget? // read once only, used by Output Profiles migration
 
     init(defaults: UserDefaults? = nil,
          displays: @escaping @MainActor () -> [ProjectionMonitor] = { ProjectionScreenResolver.currentMonitors() }) {
@@ -79,35 +78,7 @@ final class ProjectionDisplayManager: ObservableObject {
                                                          nickname: Self.normalizedName(label.nickname) ?? "")
             }
         }
-        if defaults?.object(forKey: Self.assignmentKey) != nil {
-            do {
-                target = try JSONDecoder().decode(ProjectionMonitorTarget?.self,
-                                                 from: defaults?.data(forKey: Self.assignmentKey) ?? Data())
-            } catch {
-                target = ProjectionMonitorTarget(identity: "unreadable", name: "Saved monitor (choose again)")
-            }
-        } else {
-            if let old = defaults?.object(forKey: AppDefaultsKey.projectorScreenDisplayID) {
-                if let number = old as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
-                   let oldID = UInt32(exactly: number.doubleValue) {
-                    if oldID != 0 {
-                        let matches = self.displays.filter { $0.id == oldID }
-                        if matches.count == 1, let match = matches.first,
-                           let identity = match.identity, UUID(uuidString: identity) != nil,
-                           self.displays.filter({ $0.identity == identity }).count == 1 {
-                            target = match.target
-                        } else {
-                            // Never match this unresolved runtime ID on a later launch:
-                            // macOS may have assigned it to a different physical monitor.
-                            target = ProjectionMonitorTarget(identity: "legacy:\(oldID)", name: "Saved monitor (choose again)")
-                        }
-                    }
-                } else {
-                    target = ProjectionMonitorTarget(identity: "legacy:invalid", name: "Saved monitor (choose again)")
-                }
-            }
-            saveTarget()
-        }
+        legacyAssignment = LegacyOutputSettings.monitor(defaults: defaults, displays: self.displays)
         rememberMonitors()
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
@@ -136,11 +107,6 @@ final class ProjectionDisplayManager: ObservableObject {
         return number(for: target).map { "\($0) · \(name)" } ?? name
     }
 
-    var selectionLabel: String {
-        guard let target else { return "Choose a monitor" }
-        return label(for: target)
-    }
-
     func problem(for target: ProjectionMonitorTarget) -> String? {
         let matches = displays.filter { $0.identity == target.identity }
         if matches.count > 1 { return "These monitors have the same identity. Choose a distinguishable monitor." }
@@ -155,21 +121,9 @@ final class ProjectionDisplayManager: ObservableObject {
         return nil
     }
 
-    var selectionProblem: String? {
-        if let target { return problem(for: target) }
-        return displays.isEmpty
-            ? "Connect a monitor, then choose it for projection."
-            : "Choose a projection monitor in Settings before projecting a passage."
-    }
-
     func resolve(_ target: ProjectionMonitorTarget) -> ProjectionMonitor? {
         guard problem(for: target) == nil else { return nil }
         return displays.first { $0.identity == target.identity }
-    }
-
-    func resolvedMonitor() -> ProjectionMonitor? {
-        guard let target else { return nil }
-        return resolve(target)
     }
 
     func refresh() {
@@ -180,17 +134,6 @@ final class ProjectionDisplayManager: ObservableObject {
         guard previous != displays else { return }
         identifier.close()
         changed()
-    }
-
-    @discardableResult
-    func select(_ target: ProjectionMonitorTarget) -> Bool {
-        refresh()
-        guard !isLocked, problem(for: target) == nil else { return false }
-        self.target = target
-        saveTarget()
-        identifier.close()
-        changed()
-        return true
     }
 
     nonisolated static func normalizedName(_ text: String) -> String? {
@@ -228,6 +171,8 @@ final class ProjectionDisplayManager: ObservableObject {
         identifier.show(display, number: number, name: nickname(for: target).isEmpty ? display.name : nickname(for: target))
     }
 
+    func isOutputLocked(_ id: UUID) -> Bool { activeOutputs[id] != nil }
+
     func lock(_ target: ProjectionMonitorTarget, owner: UUID) {
         activeOutputs[owner] = target
         identifier.close()
@@ -248,7 +193,7 @@ final class ProjectionDisplayManager: ObservableObject {
     func removeObserver(_ id: UUID) { observers.removeValue(forKey: id) }
 
     private func rememberMonitors() {
-        for target in displays.map(\.target) + [target].compactMap({ $0 }) {
+        for target in displays.map(\.target) + [legacyAssignment].compactMap({ $0 }) {
             guard UUID(uuidString: target.identity) != nil, labels[target.identity] == nil else { continue }
             labels[target.identity] = ProjectionMonitorLabel(number: (labels.values.map(\.number).max() ?? 0) + 1,
                                                           modelName: target.name)
@@ -259,10 +204,6 @@ final class ProjectionDisplayManager: ObservableObject {
             return left == right ? $0.id < $1.id : left < right
         }
         saveLabels()
-    }
-
-    private func saveTarget() {
-        if let data = try? JSONEncoder().encode(target) { defaults?.set(data, forKey: Self.assignmentKey) }
     }
 
     private func saveLabels() {
