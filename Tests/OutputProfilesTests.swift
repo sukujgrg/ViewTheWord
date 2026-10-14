@@ -107,6 +107,30 @@ final class OutputProfilesTests: XCTestCase {
         editor.controlTextDidEndEditing(.init(name: NSControl.textDidEndEditingNotification, object: editor.nameField))
         XCTAssertEqual(store.profile(original.id)?.name, "Renamed profile"); XCTAssertTrue(editor.validationLabel.stringValue.isEmpty)
     }
+    func testInvalidAltViewOutputNameShowsValidationAndDoesNotFollowSelection() {
+        let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [] }))
+        defer { live.shutdown() }
+        let remote = live.outputs.addAltView(); live.refreshPreferences()
+        let manager = ManageOutputsController(live: live); manager.discoveryEnabled = false; _ = manager.view
+        manager.selectDestination(remote)
+        let original = live.outputs.destination(remote)!
+        manager.controlTextDidBeginEditing(.init(name: NSControl.textDidBeginEditingNotification, object: manager.nameField))
+        manager.nameField.stringValue = "   "
+        manager.controlTextDidEndEditing(.init(name: NSControl.textDidEndEditingNotification, object: manager.nameField))
+        XCTAssertEqual(live.outputs.destination(remote), original)
+        XCTAssertEqual(manager.nameField.stringValue, original.name)
+        let visibleLabels = descendants(manager.view).compactMap { $0 as? NSTextField }
+        XCTAssertTrue(visibleLabels.contains { $0.stringValue == "Use a name up to 80 characters and a valid assignment." },
+                      "AltView destinations need the same visible name validation as native destinations")
+        let section = manager.section
+        section.selectedSegment = 1
+        NSApp.sendAction(section.action!, to: section.target, from: section)
+        section.selectedSegment = 0
+        NSApp.sendAction(section.action!, to: section.target, from: section)
+        XCTAssertFalse(descendants(manager.view).compactMap { $0 as? NSTextField }.contains {
+            $0.stringValue == "Use a name up to 80 characters and a valid assignment."
+        }, "A previous destination's error must not follow a section change")
+    }
     func testAudienceAndLowerThirdCanOptIntoStandbyClockWithoutProjection() {
         for profile in [NativeOutputProfile.audience, .lowerThird] {
             let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [self.monitor(1)] }))
@@ -212,6 +236,27 @@ final class OutputProfilesTests: XCTestCase {
         let encoded = try JSONEncoder().encode(store.configuration); defaults.set(encoded, forKey: AppDefaultsKey.outputConfiguration)
         let restored = OutputConfigurationStore(defaults: defaults, displays: displays)
         XCTAssertEqual(restored.profile(duplicateID), duplicate)
+    }
+    func testProfilesWithTheSameNameRemainIndividuallySelectable() throws {
+        let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [] }))
+        defer { live.shutdown() }
+        let firstCopy = try XCTUnwrap(live.outputs.duplicateProfile(NativeOutputProfile.audienceID))
+        let secondCopy = try XCTUnwrap(live.outputs.duplicateProfile(NativeOutputProfile.audienceID))
+        let id = live.outputs.destinations[0].id
+        assign(live.outputs, id, to: nil, profile: firstCopy)
+        let manager = ManageOutputsController(live: live); _ = manager.view
+        let copies = manager.profilePicker.itemArray.filter { $0.title == "Audience Copy" }
+        manager.profilePicker.menu?.update()
+        XCTAssertTrue(copies.allSatisfy(\.isEnabled))
+        XCTAssertEqual(Set(copies.compactMap { $0.representedObject as? UUID }), [firstCopy, secondCopy])
+        XCTAssertEqual(manager.profilePicker.selectedItem?.representedObject as? UUID, firstCopy)
+        let secondItem = try XCTUnwrap(copies.first { $0.representedObject as? UUID == secondCopy })
+        manager.profilePicker.select(secondItem)
+        NSApp.sendAction(manager.profilePicker.action!, to: manager.profilePicker.target, from: manager.profilePicker)
+        XCTAssertEqual(live.outputs.destination(id)?.native?.profileID, secondCopy)
+        manager.profilePicker.select(try XCTUnwrap(copies.first { $0.representedObject as? UUID == firstCopy }))
+        NSApp.sendAction(manager.profilePicker.action!, to: manager.profilePicker.target, from: manager.profilePicker)
+        XCTAssertEqual(live.outputs.destination(id)?.native?.profileID, firstCopy)
     }
     func testMonitorAndReceiverConflictsDisabledAndMissingAssignments() {
         let inventory = OutputInventory([monitor(1), monitor(2)])
@@ -382,6 +427,31 @@ final class OutputProfilesTests: XCTestCase {
         XCTAssertEqual(live.outputs.profile(NativeOutputProfile.confidenceID)?.standby, .hidden)
         live.closeProjector(); await settle(); XCTAssertNil(live.nativeOutputs[confidence])
     }
+    func testCancelingPreparationClosesAnEmptyOutputWhoseClockWasTurnedOff() async {
+        _ = NSApplication.shared
+        var begins = 0, ends = 0
+        let sleep = ProjectionSleepPrevention(beginActivity: { _, _ in begins += 1; return NSObject() }, endActivity: { _ in ends += 1 })
+        let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [self.monitor(1)] }), sleepPrevention: sleep)
+        defer { live.shutdown() }
+        live.nativeWindowFactory = { _, _, _ in
+            let window = OutputWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; return window
+        }
+        let id = live.outputs.destinations[0].id, tab = UUID(), model = VerseTargetModel()
+        assign(live.outputs, id, to: monitor(1), profile: NativeOutputProfile.confidenceID)
+        live.showStandby(id)
+        let token = live.beginIntent(from: tab, sources: projection().sources, using: model)
+        var profile = live.outputs.profile(NativeOutputProfile.confidenceID)!
+        profile.standby = .hidden; XCTAssertNil(live.outputs.updateProfile(profile)); live.refreshPreferences()
+        await settle()
+        XCTAssertNotNil(live.nativeOutputs[id], "An explicit verse still preparing retains its window")
+        live.detachTab(tab); await settle()
+        XCTAssertFalse(live.isProjecting); XCTAssertNil(live.projector.projectionOwner)
+        XCTAssertNil(live.nativeOutputs[id], "After cancellation an empty output with clock off must close")
+        XCTAssertFalse(live.projectionDisplays.isLocked); XCTAssertEqual(begins, 1); XCTAssertEqual(ends, 1)
+        live.publish(projection(), intent: token)
+        XCTAssertNil(live.projector.projectionOwner); XCTAssertNil(live.nativeOutputs[id])
+    }
     func testRasterRenderingKeepsProfilesIndependentAndConfidenceClockVisibleOnBlank() throws {
         let model = ProjectorViewModel(); model.project(projection(secondary: nil).data, owner: projection().owner)
         func bitmap(_ profile: NativeOutputProfile) throws -> NSBitmapImageRep {
@@ -455,6 +525,25 @@ final class OutputProfilesTests: XCTestCase {
             XCTAssertNil(live.projector.projectionOwner)
             live.publishRow(next, from: tab)
             XCTAssertNotNil(live.nativeOutputs[id], "Fresh explicit projection authorizes the current assignment")
+        }
+    }
+    func testPendingNativeOpeningCannotRegainPermissionByRestoringItsAssignment() async {
+        for disable in [false, true] {
+            let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [self.monitor(1), self.monitor(2)] }))
+            defer { live.shutdown() }; live.nativeWindowFactory = { _, _, _ in nil }
+            let id = live.outputs.destinations[0].id, other = live.outputs.addNative()
+            assign(live.outputs, id, to: monitor(1), profile: NativeOutputProfile.audienceID)
+            // A separate destination keeps the pending projection eligible.
+            assign(live.outputs, other, to: monitor(2), profile: NativeOutputProfile.audienceID)
+            let next = projection("Pending scripture"), model = VerseTargetModel(), tab = UUID()
+            let token = live.beginIntent(from: tab, sources: next.sources, using: model)
+            assign(live.outputs, id, to: disable ? monitor(1) : nil, profile: NativeOutputProfile.audienceID, enabled: !disable)
+            assign(live.outputs, id, to: monitor(1), profile: NativeOutputProfile.audienceID)
+            live.publish(next, intent: token); await settle()
+            XCTAssertNil(live.nativeOutputs[id], "Restoring a previous assignment or enable state cannot revive an older opening permission")
+            XCTAssertNotNil(live.nativeOutputs[other]); XCTAssertEqual(live.projector.projectorViewData, next.data)
+            live.publishRow(next, from: tab)
+            XCTAssertNotNil(live.nativeOutputs[id], "A fresh explicit projection authorizes the restored assignment")
         }
     }
     func testRemoteFailureCannotCancelPendingNativeProjection() async throws {

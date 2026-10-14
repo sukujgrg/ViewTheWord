@@ -62,6 +62,8 @@ Migration reads former projector styling keys, the UUID assignment (or a uniquel
 
 Manage Outputs tracks an explicit empty detail state when the last destination is removed. Destination name drafts retain their originating ID, and selection changes finish the native field editor before reusing its control; late editing notifications cannot rename a different destination. Invalid profile names show a validation message and restore the saved name instead of appearing to save an invalid value.
 
+Native opening permissions are revoked synchronously on each saved disable, removal or monitor reassignment, before deferred preference updates can coalesce edits. Restoring the previous assignment cannot revive an older intent; another eligible destination can still publish that prepared verse. Cancellation reconciles empty windows retained for pending preparation, closing outputs whose clock setting is now off and releasing their monitor locks and sleep protection. Profile menus preserve UUID identity even when duplicate profiles share a name. Both native and AltView destination names show validation and explicitly restore the saved value during AppKit's end-edit notification; errors clear when selection changes.
+
 ## Bible data and persistence
 
 The injectable `BibleReading` interface separates navigation from SQLite. [Database readers](../ViewTheWord/Db.swift) open lazily and keep all SQLite access on their private queues. Queries select named columns and identify verses by coordinates, independently of an imported `id` or column order.

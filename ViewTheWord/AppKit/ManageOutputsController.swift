@@ -14,6 +14,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     let enabledButton = NSButton(checkboxWithTitle: "Enabled", target: nil, action: nil)
     let standbyClockButton = NSButton(checkboxWithTitle: "Show clock when empty or blanked", target: nil, action: nil)
     let statusLabel = NSTextField(wrappingLabelWithString: "")
+    let validationLabel = NSTextField(wrappingLabelWithString: "")
     private let detailHost = NSView()
     private let addNative = NSButton(title: "Add Native", target: nil, action: nil)
     private let addRemote = NSButton(title: "Add AltView", target: nil, action: nil)
@@ -89,6 +90,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         monitorPicker.setAccessibilityLabel("Monitor assignment"); monitorPicker.autoenablesItems = false
         profilePicker.target = self; profilePicker.action = #selector(profileChanged(_:)); profilePicker.setAccessibilityLabel("Appearance profile")
         statusLabel.font = .systemFont(ofSize: 12); statusLabel.textColor = .secondaryLabelColor
+        validationLabel.font = .systemFont(ofSize: 12); validationLabel.textColor = .systemOrange
         reload()
     }
     override func viewWillAppear() { super.viewWillAppear(); displays.refresh(); reload() }
@@ -104,7 +106,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     }
     func reload() {
         guard isViewLoaded else { return }
-        if selectedID == nil || !identifiers.contains(selectedID!) { selectedID = identifiers.first }
+        if selectedID == nil || !identifiers.contains(selectedID!) { formIssue = nil; selectedID = identifiers.first }
         isReloadingTable = true
         table.reloadData()
         if let id = selectedID, let index = identifiers.firstIndex(of: id) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) }
@@ -164,7 +166,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         }
         guard let output = live.outputs.destination(id) else { return }
         let heading = nativeLabel(output.native == nil ? "AltView output" : "Native output", weight: .semibold)
-        let stack = NSStackView(views: [heading, outputRow("Name", nameField), enabledButton])
+        let stack = NSStackView(views: [heading, outputRow("Name", nameField), validationLabel, enabledButton])
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 12
         if output.native != nil {
             stack.addArrangedSubview(outputRow("Monitor", monitorPicker)); stack.addArrangedSubview(outputRow("Profile", profilePicker))
@@ -205,6 +207,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     private func renderDestination() {
         guard !profilesMode, let id = selectedID, let output = live.outputs.destination(id) else { return }
         if nameField.currentEditor() == nil { nameField.stringValue = output.name }
+        validationLabel.stringValue = formIssue ?? ""; validationLabel.isHidden = formIssue == nil
         enabledButton.state = output.enabled ? .on : .off
         guard let assignment = output.native else { return }
         var entries = [MonitorEntry(title: "None", target: nil, enabled: true)]
@@ -229,7 +232,12 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         let profileEntries = live.outputs.profiles.map { $0.id.uuidString + ":" + $0.name }
         if profileEntries != self.profileEntries {
             self.profileEntries = profileEntries; profilePicker.removeAllItems()
-            for profile in live.outputs.profiles { profilePicker.addItem(withTitle: profile.name); profilePicker.lastItem?.representedObject = profile.id }
+            // addItem(withTitle:) replaces an existing title. Profile identity,
+            // including copies with the same name, must remain selectable.
+            for profile in live.outputs.profiles {
+                let item = NSMenuItem(title: profile.name, action: nil, keyEquivalent: "")
+                item.representedObject = profile.id; profilePicker.menu?.addItem(item)
+            }
         }
         profilePicker.select(profilePicker.itemArray.first { $0.representedObject as? UUID == assignment.profileID })
         let showsClock = live.outputs.profile(assignment.profileID)?.standby == .clock
@@ -238,7 +246,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         closeButton.isEnabled = live.nativeOutputs[id] != nil
         identifyButton.isEnabled = assignment.monitor.map(displays.canIdentify) ?? false
         monitorNameButton.isEnabled = assignment.monitor.map(displays.canRename) ?? false
-        statusLabel.stringValue = formIssue ?? live.outputs.conflict(for: output) ?? assignment.monitor.flatMap { displays.problem(for: $0) }
+        statusLabel.stringValue = live.outputs.conflict(for: output) ?? assignment.monitor.flatMap { displays.problem(for: $0) }
             ?? (assignment.monitor == nil ? "Choose a monitor, or keep None to leave this output unassigned."
                 : !output.enabled ? "Enable this output to use its assigned monitor."
                 : live.nativeOutputs[id] != nil ? (showsClock && (live.projector.projection == nil || live.projector.isBlanked)
@@ -264,10 +272,15 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         let text = selectedID == edit.destinationID && !profilesMode ? nameField.stringValue : edit.text
         output.name = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let issue = live.outputs.update(output)
-        if selectedID == edit.destinationID { formIssue = issue }
+        if selectedID == edit.destinationID && !profilesMode {
+            formIssue = issue
+            // AppKit can retain currentEditor during the end notification, so
+            // renderDestination's active-draft guard cannot restore this value.
+            nameField.stringValue = live.outputs.destination(edit.destinationID)?.name ?? output.name
+        }
         reload()
     }
-    @objc private func changeSection(_ sender: Any?) { endNameEditing(); selectedID = nil; detailKey = nil; reload() }
+    @objc private func changeSection(_ sender: Any?) { endNameEditing(); formIssue = nil; selectedID = nil; detailKey = nil; reload() }
     @objc private func addNativeOutput(_ sender: Any?) { selectDestination(live.outputs.addNative()) }
     @objc private func addAltViewOutput(_ sender: Any?) { selectDestination(live.outputs.addAltView()) }
     @objc private func removeOutput(_ sender: Any?) { if let id = selectedID { endNameEditing(); live.outputs.remove(id); live.refreshPreferences(); selectedID = nil; detailKey = nil; reload() } }

@@ -875,7 +875,18 @@ struct NativeWorkspaceReview {
             try await checkAltViewPairing(settings.settings.outputs.remoteEditor!, window: window, service: altView, sender: sender, sources: sources)
             if pairingOnly { return }
             let outputs = settings.settings.outputs
+            let remoteName = live.outputs.destination(remoteID)!.name
+            precondition(window.makeFirstResponder(outputs.nameField))
+            let remoteNameEditor = outputs.nameField.currentEditor() as! NSTextView
+            remoteNameEditor.selectAll(nil)
+            remoteNameEditor.insertText("   ", replacementRange: remoteNameEditor.selectedRange())
+            precondition(window.makeFirstResponder(outputs.enabledButton))
+            guard live.outputs.destination(remoteID)?.name == remoteName && outputs.nameField.stringValue == remoteName &&
+                  !outputs.validationLabel.isHidden && outputs.validationLabel.stringValue.contains("Use a name") else {
+                throw ReviewFailure(description: "Invalid AltView output name did not restore its saved value and visible validation: saved=\(live.outputs.destination(remoteID)?.name ?? "missing"), field=\(outputs.nameField.stringValue), validation=\(outputs.validationLabel.stringValue), hidden=\(outputs.validationLabel.isHidden)")
+            }
             outputs.selectDestination(confidenceID)
+            precondition(outputs.validationLabel.isHidden, "A previous destination's validation must not follow selection")
             try await waitUntil { outputs.enabledButton.window === window }
             window.contentView?.layoutSubtreeIfNeeded()
             // Checkbox views stretch with the form, but only their glyph/title
@@ -909,6 +920,7 @@ struct NativeWorkspaceReview {
             outputs.selectDestination(confidenceID)
             reviewLog("PASS Confidence clock: native checkbox starts before scripture, turns off its standalone window, and reopens without live ownership")
             reviewLog("PASS output name editing: field-editor draft remains with its original destination across selection changes")
+            reviewLog("PASS AltView output name validation: invalid edits restore the saved name, show an error, and clear on selection change")
         }
         for (name, dark) in [("light", false), ("dark", true)] {
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)

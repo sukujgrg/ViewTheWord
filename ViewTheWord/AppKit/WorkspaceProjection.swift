@@ -85,6 +85,16 @@ final class LiveProjectionController: ObservableObject {
             self.dismissMessage()
         }.store(in: &subscriptions)
         self.outputs.objectWillChange.sink { [weak self] _ in self?.schedulePreferences() }.store(in: &subscriptions)
+        self.outputs.$configuration.sink { [weak self] configuration in
+            guard let self else { return }
+            // Revoke against every saved edit, before deferred preference work
+            // coalesces changes. Restoring an assignment cannot revive an old intent.
+            self.nativeOpeningIntents = self.nativeOpeningIntents.filter { id, opening in
+                guard let destination = configuration.destinations.first(where: { $0.id == id }),
+                      destination.enabled, let assignment = destination.native else { return false }
+                return assignment.monitor?.identity == opening.monitorIdentity
+            }
+        }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for: NSWindow.willCloseNotification).sink { [weak self] note in
             guard let self, let window = note.object as? NSWindow,
                   let output = self.nativeOutputs.values.first(where: { $0.window === window }) else { return }
@@ -244,6 +254,9 @@ final class LiveProjectionController: ObservableObject {
         isProjecting = false
         // Invalidate ownership before invoking the model's cancellation callback.
         canceledModel?.cancelProjection()
+        // A hidden standalone output may have been retained only for this work.
+        // Reconcile it after cancellation without tearing down a newer intent.
+        schedulePreferences()
         return intent
     }
 
@@ -509,7 +522,7 @@ final class LiveProjectionController: ObservableObject {
         for service in altViewServices.values { service.setBlanked(projector.isBlanked) }
     }
     func shutdown() {
-        preferenceTask?.cancel(); repositionTask?.cancel(); cancelPreparation()
+        cancelPreparation(); preferenceTask?.cancel(); repositionTask?.cancel()
         for service in altViewServices.values { service.stop(); service.disconnect() }
         for output in Array(nativeOutputs.values) { closeNativeOutput(output.id) }
         deferClearCommittedProjection()
