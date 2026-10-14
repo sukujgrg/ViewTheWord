@@ -19,6 +19,8 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     private let addNative = NSButton(title: "Add Native", target: nil, action: nil)
     private let addRemote = NSButton(title: "Add AltView", target: nil, action: nil)
     private let remove = NSButton(title: "Remove", target: nil, action: nil)
+    let addProfileButton = NSButton(image: NSImage(named: NSImage.addTemplateName)!, target: nil, action: nil)
+    private let profileActions = NSStackView()
     private var isReloadingTable = false
     private var formIssue: String?
     private struct MonitorEntry: Equatable {
@@ -70,20 +72,33 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         for (button, action) in [(addNative, #selector(addNativeOutput(_:))), (addRemote, #selector(addAltViewOutput(_:))), (remove, #selector(removeOutput(_:)))] {
             button.target = self; button.action = action; button.bezelStyle = .rounded; button.controlSize = .small
         }
-        let sidebar = NSStackView(views: [section, list, addNative, addRemote, remove])
+        addProfileButton.target = self; addProfileButton.action = #selector(addProfile(_:))
+        addProfileButton.bezelStyle = .smallSquare; addProfileButton.controlSize = .small
+        addProfileButton.toolTip = "Create a profile from the selected profile."
+        addProfileButton.setAccessibilityLabel("Add profile")
+        NSLayoutConstraint.activate([addProfileButton.widthAnchor.constraint(equalToConstant: 28),
+                                     addProfileButton.heightAnchor.constraint(equalToConstant: 24)])
+        profileActions.addArrangedSubview(addProfileButton); profileActions.addArrangedSubview(NSView())
+        profileActions.orientation = .horizontal; profileActions.alignment = .centerY; profileActions.spacing = 0
+        // This row detaches in Outputs mode. Keep its own dimensions so its
+        // hit area survives reattachment instead of losing parent constraints.
+        let sidebarWidth: CGFloat = 180
+        NSLayoutConstraint.activate([profileActions.widthAnchor.constraint(equalToConstant: sidebarWidth),
+                                     profileActions.heightAnchor.constraint(equalToConstant: 24)])
+        let sidebar = NSStackView(views: [section, list, profileActions, addNative, addRemote, remove])
         sidebar.orientation = .vertical; sidebar.alignment = .leading; sidebar.spacing = 8
         sidebar.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(sidebar); detailHost.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(detailHost)
         NSLayoutConstraint.activate([
             sidebar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             sidebar.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
-            sidebar.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16), sidebar.widthAnchor.constraint(equalToConstant: 180),
+            sidebar.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16), sidebar.widthAnchor.constraint(equalToConstant: sidebarWidth),
             detailHost.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 16),
             detailHost.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             detailHost.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
             detailHost.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16)
         ])
-        for item in sidebar.arrangedSubviews { item.widthAnchor.constraint(equalTo: sidebar.widthAnchor).isActive = true }
+        for item in sidebar.arrangedSubviews where item !== profileActions { item.widthAnchor.constraint(equalTo: sidebar.widthAnchor).isActive = true }
         nameField.delegate = self; nameField.setAccessibilityLabel("Output name")
         enabledButton.target = self; enabledButton.action = #selector(enabledChanged(_:))
         monitorPicker.target = self; monitorPicker.action = #selector(monitorChanged(_:))
@@ -112,6 +127,8 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         if let id = selectedID, let index = identifiers.firstIndex(of: id) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) }
         isReloadingTable = false
         addNative.isHidden = profilesMode; addRemote.isHidden = profilesMode; remove.isHidden = profilesMode
+        profileActions.isHidden = !profilesMode
+        addProfileButton.isEnabled = profilesMode && selectedID != nil && live.outputs.canEdit
         addNative.isEnabled = live.outputs.canEdit; addRemote.isEnabled = live.outputs.canEdit
         remove.isEnabled = selectedID != nil && live.outputs.canEdit
         if detailKey != selectedDetailKey { buildDetail() }
@@ -141,7 +158,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     func selectProfile(_ id: UUID) { section.selectedSegment = 1; select(id) }
     private func select(_ id: UUID) { endNameEditing(); formIssue = nil; selectedID = id; detailKey = nil; reload() }
     private func endNameEditing() {
-        if nameField.currentEditor() != nil { view.window?.makeFirstResponder(nil) }
+        if nameField.currentEditor() != nil || profileEditor?.nameField.currentEditor() != nil { view.window?.makeFirstResponder(nil) }
     }
     private func buildDetail() {
         detailKey = selectedDetailKey
@@ -157,7 +174,6 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         guard let id = selectedID else { pin(nativeLabel("Add an output to get started."), to: detailHost); return }
         if profilesMode {
             let editor = OutputProfileEditor(store: live.outputs, profileID: id)
-            editor.onDuplicate = { [weak self] id in self?.selectProfile(id) }
             editor.onStandbyChanged = { [weak live] enabled in
                 live?.refreshPreferences()
                 if enabled { live?.showStandbyOutputs(using: id) }
@@ -283,6 +299,11 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     @objc private func changeSection(_ sender: Any?) { endNameEditing(); formIssue = nil; selectedID = nil; detailKey = nil; reload() }
     @objc private func addNativeOutput(_ sender: Any?) { selectDestination(live.outputs.addNative()) }
     @objc private func addAltViewOutput(_ sender: Any?) { selectDestination(live.outputs.addAltView()) }
+    @objc private func addProfile(_ sender: Any?) {
+        guard profilesMode, let selectedID else { return }
+        endNameEditing()
+        if let id = live.outputs.duplicateProfile(selectedID) { selectProfile(id) }
+    }
     @objc private func removeOutput(_ sender: Any?) { if let id = selectedID { endNameEditing(); live.outputs.remove(id); live.refreshPreferences(); selectedID = nil; detailKey = nil; reload() } }
     @objc private func enabledChanged(_ sender: Any?) {
         guard var output = selectedID.flatMap(live.outputs.destination) else { return }

@@ -8,7 +8,6 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
     let validationLabel = NSTextField(wrappingLabelWithString: "")
     let standbyClockButton = NSButton(checkboxWithTitle: "Show clock when empty or blanked", target: nil, action: nil)
     private(set) var rows: [ProfileSettingRow] = []
-    var onDuplicate: (UUID) -> Void = { _ in }
     var onStandbyChanged: (Bool) -> Void = { _ in }
     private var choices: [NSPopUpButton: (inout NativeOutputProfile, Int) -> Void] = [:]
     private var toggles: [NSButton: (inout NativeOutputProfile, Bool) -> Void] = [:]
@@ -22,11 +21,11 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
         view = NSView()
         guard let profile = store.profile(profileID) else { return }
         nameField.stringValue = profile.name; nameField.delegate = self; nameField.setAccessibilityLabel("Profile name")
-        let duplicate = NSButton(title: "Duplicate Profile", target: self, action: #selector(duplicateProfile(_:)))
         let explanation = NSTextField(wrappingLabelWithString: "Changes apply to every native output using this profile. Font sizes are maximums; scripture shrinks to fit. Bible translations come from the committed passage.")
         explanation.font = .systemFont(ofSize: 12); explanation.textColor = .secondaryLabelColor
         validationLabel.font = .systemFont(ofSize: 12); validationLabel.textColor = .systemOrange
-        let stack = NSStackView(views: [nativeLabel("Appearance profile", weight: .semibold), outputRow("Name", nameField), validationLabel, duplicate, explanation])
+        validationLabel.isHidden = true
+        let stack = NSStackView(views: [nativeLabel("Appearance profile", weight: .semibold), outputRow("Name", nameField), validationLabel, explanation])
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 12
         stack.addArrangedSubview(nativeLabel("Visible components", weight: .semibold))
         for (title, key) in [("Primary verse", \NativeOutputProfile.showPrimary), ("Secondary verse", \.showSecondary), ("Reference", \.showReference), ("Translation names", \.showTranslationNames)] {
@@ -82,12 +81,12 @@ final class OutputProfileEditor: NSViewController, NSTextFieldDelegate {
     private func edit(_ body: (inout NativeOutputProfile) -> Void) {
         guard var profile = store.profile(profileID) else { return }
         body(&profile); validationLabel.stringValue = store.updateProfile(profile) ?? ""
+        validationLabel.isHidden = validationLabel.stringValue.isEmpty
     }
     func controlTextDidEndEditing(_ notification: Notification) {
         edit { $0.name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) }
         if let saved = store.profile(profileID) { nameField.stringValue = saved.name }
     }
-    @objc private func duplicateProfile(_ sender: Any?) { if let id = store.duplicateProfile(profileID) { onDuplicate(id) } }
     @objc private func choiceChanged(_ sender: NSPopUpButton) { if let apply = choices[sender] { edit { apply(&$0, sender.indexOfSelectedItem) } } }
     @objc private func toggleChanged(_ sender: NSButton) {
         guard let apply = toggles[sender] else { return }

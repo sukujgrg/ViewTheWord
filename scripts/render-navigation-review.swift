@@ -826,6 +826,38 @@ struct NativeWorkspaceReview {
         reviewLog("PASS AltView pairing: field-editor Return/keypad Enter, validation, disabled setup/connected action, Connect Only never publishes")
     }
 
+    @MainActor private static func checkProfileCreation(_ outputs: ManageOutputsController, window: NSWindow) async throws {
+        let live = outputs.live
+        outputs.selectProfile(NativeOutputProfile.audienceID)
+        await Task.yield()
+        NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+        try await waitUntil { NSApp.isActive && window.isKeyWindow }
+        let focus = ReviewFocusGuard(window: window)
+        defer { focus.stop() }
+        let profileNameField = outputs.profileEditor!.nameField
+        precondition(window.makeFirstResponder(profileNameField))
+        let profileNameEditor = profileNameField.currentEditor() as! NSTextView
+        profileNameEditor.selectAll(nil)
+        profileNameEditor.insertText("Audience edited", replacementRange: profileNameEditor.selectedRange())
+        window.contentView?.layoutSubtreeIfNeeded()
+        let assignments = live.outputs.destinations
+        try focus.check()
+        // Exercise AppKit activation with the real name editor still active.
+        // Pointer input for this small-square image button is checked in inspection.
+        outputs.addProfileButton.performClick(nil)
+        let copyID = outputs.profileEditor!.profileID
+        guard copyID != NativeOutputProfile.audienceID,
+              live.outputs.profile(NativeOutputProfile.audienceID)?.name == "Audience edited",
+              live.outputs.profile(copyID)?.name == "Audience edited Copy",
+              live.outputs.destinations == assignments else {
+            throw ReviewFailure(description: "The Profiles list + action must finish the name draft, add/select its copy, and retain assignments: selected=\(copyID), source=\(live.outputs.profile(NativeOutputProfile.audienceID)?.name ?? "missing"), copy=\(live.outputs.profile(copyID)?.name ?? "missing"), assignmentsRetained=\(live.outputs.destinations == assignments)")
+        }
+        var original = live.outputs.profile(NativeOutputProfile.audienceID)!, copy = live.outputs.profile(copyID)!
+        original.name = "Audience"; copy.name = "Audience Copy"
+        precondition(live.outputs.updateProfile(original) == nil && live.outputs.updateProfile(copy) == nil)
+        reviewLog("PASS Profiles list +: native activation commits the name draft, selects an independent copy, and retains output assignments")
+    }
+
     @MainActor static func checkNativeSettings(output: URL, sources: BibleSources, inspecting: Bool = false, pairingOnly: Bool = false) async throws {
         let suite = "ViewTheWord.NativeSettingsReview"
         let defaults = UserDefaults(suiteName: suite)!
@@ -870,11 +902,12 @@ struct NativeWorkspaceReview {
         func descendants(_ controller: NSViewController) -> [NSViewController] { [controller] + controller.children.flatMap(descendants) }
         precondition(!descendants(settings.settings).contains { String(describing: type(of: $0)).contains("NSHostingController") })
         if !inspecting {
+            let outputs = settings.settings.outputs
+            if !pairingOnly { try await checkProfileCreation(outputs, window: window) }
             settings.settings.outputs.selectDestination(remoteID)
             try await waitUntil { settings.settings.outputs.remoteEditor?.codeField.window === window }
             try await checkAltViewPairing(settings.settings.outputs.remoteEditor!, window: window, service: altView, sender: sender, sources: sources)
             if pairingOnly { return }
-            let outputs = settings.settings.outputs
             let remoteName = live.outputs.destination(remoteID)!.name
             precondition(window.makeFirstResponder(outputs.nameField))
             let remoteNameEditor = outputs.nameField.currentEditor() as! NSTextView

@@ -229,8 +229,15 @@ final class OutputProfilesTests: XCTestCase {
         XCTAssertNil(onlySecondary.components(in: data).reference)
     }
     func testDuplicationEditsIndependentlyAndRoundTrips() throws {
-        let defaults = defaults(), displays = ProjectionDisplayManager(displays: { [] }), store = OutputConfigurationStore(defaults: defaults, displays: displays)
-        let original = store.profiles[0], duplicateID = try XCTUnwrap(store.duplicateProfile(original.id))
+        let defaults = defaults(), displays = ProjectionDisplayManager(displays: { [] })
+        let live = LiveProjectionController(defaults: defaults, projectionDisplays: displays)
+        defer { live.shutdown() }
+        let store = live.outputs, original = store.profiles[0]
+        let manager = ManageOutputsController(live: live); _ = manager.view; manager.selectProfile(original.id)
+        let assignments = store.destinations
+        manager.addProfileButton.performClick(nil)
+        let duplicateID = try XCTUnwrap(manager.profileEditor?.profileID)
+        XCTAssertNotEqual(duplicateID, original.id); XCTAssertEqual(store.destinations, assignments)
         var duplicate = store.profile(duplicateID)!; duplicate.verse.size = 44; duplicate.background = .chromaGreen; store.updateProfile(duplicate)
         XCTAssertEqual(store.profile(original.id), original)
         let encoded = try JSONEncoder().encode(store.configuration); defaults.set(encoded, forKey: AppDefaultsKey.outputConfiguration)
