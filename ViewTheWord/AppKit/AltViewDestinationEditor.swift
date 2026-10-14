@@ -137,6 +137,7 @@ final class AltViewDestinationEditor: NSViewController, NSTextFieldDelegate {
         let detail = usesThisMac && selected == nil && !service.isEnabled
             ? "Open AltView on this Mac. Its receiver will be selected automatically when discovered." : service.detail
         statusLabel.stringValue = detail + (service.discoveryNote.map { "\n\($0)" } ?? "")
+        statusLabel.textColor = AltViewStatusBadge.statusColor(for: service)
         statusLabel.toolTip = statusLabel.stringValue
         if service.status.connected { codeField.stringValue = "" }
     }
@@ -201,7 +202,7 @@ final class AltViewDestinationEditor: NSViewController, NSTextFieldDelegate {
         else if usesThisMac { render(); return }
         else {
             guard let port = UInt16(portField.stringValue), port > 0 else {
-                statusLabel.stringValue = "Enter a port from 1 to 65535."; return
+                statusLabel.stringValue = "Enter a port from 1 to 65535."; statusLabel.textColor = .systemOrange; return
             }
             let host = hostField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             destination = AltViewDestination(name: host, host: host, port: port)

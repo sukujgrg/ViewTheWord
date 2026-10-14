@@ -791,16 +791,19 @@ struct NativeWorkspaceReview {
         try enter("invalid", in: pane.codeField)
         try press("\r", code: 36)
         try await waitUntil { pane.statusLabel.stringValue == "Enter a port from 1 to 65535." }
+        precondition(pane.statusLabel.textColor == .systemOrange)
         precondition(!service.isEnabled && sender.connectionKeys.isEmpty)
         try enter("49721", in: pane.portField)
         try press("\r", code: 36)
         try await waitUntil { pane.statusLabel.stringValue.contains("eight-character pairing code") }
+        precondition(pane.statusLabel.textColor == .systemOrange)
         precondition(!service.isEnabled && sender.connectionKeys.isEmpty)
 
         for (index, key) in [("\r", UInt16(36)), ("\u{3}", UInt16(76))].enumerated() {
             try enter("ABCD2345", in: pane.codeField)
             try press(key.0, code: key.1)
             try await waitUntil { service.isEnabled }
+            try await waitUntil { pane.statusLabel.textColor == .secondaryLabelColor }
             guard service.isEnabled, let connectionID = service.status.connectionID else {
                 throw ReviewFailure(description: "Return/Enter in the pairing editor must connect")
             }
@@ -813,8 +816,20 @@ struct NativeWorkspaceReview {
             try press(key.0, code: key.1)
             precondition(service.status.connectionID == connectionID && sender.connectionKeys.count == index + 1,
                          "Disabled Connect Only must not restart connection setup")
-            sender.onStatus?(.init(connectionID: connectionID, connected: true, receiverID: UUID(), message: "Connected"))
+            var feedback = AltViewDeliveryFeedback()
+            feedback.receive(.init(kind: .feedback, outputReadiness: .closed), lease: nil, now: 0)
+            var connected = AltViewSenderStatus(connectionID: connectionID, connected: true, receiverID: UUID(),
+                ownerName: "Another sender", message: "Connected", feedback: feedback)
+            sender.onStatus?(connected)
             try await waitUntil { pane.disconnectButton.title == "Disconnect" && pane.codeField.stringValue.isEmpty }
+            try await waitUntil { pane.statusLabel.textColor == .systemGreen }
+            precondition(!service.status.ownsOutput && service.status.feedback.output == .closed,
+                         "Connected text stays green independently of ownership and output readiness")
+            connected.outputIssue = "Snapshot exceeds the receiver's text limit."
+            sender.onStatus?(connected)
+            try await waitUntil { pane.statusLabel.textColor == .systemOrange }
+            connected.outputIssue = nil; sender.onStatus?(connected)
+            try await waitUntil { pane.statusLabel.textColor == .systemGreen }
             try press(key.0, code: key.1)
             precondition(service.status.connectionID == connectionID && sender.connectionKeys.count == index + 1,
                          "Enter while connected must leave the connection intact")
@@ -822,8 +837,9 @@ struct NativeWorkspaceReview {
             precondition(service.currentContent?.body == "Existing local projection")
             service.disconnect()
             try await waitUntil { pane.connectButton.isEnabled }
+            try await waitUntil { pane.statusLabel.textColor == .secondaryLabelColor }
         }
-        reviewLog("PASS AltView pairing: field-editor Return/keypad Enter, validation, disabled setup/connected action, Connect Only never publishes")
+        reviewLog("PASS AltView pairing: field-editor Return/keypad Enter, validation, Connect Only, connection-state text colours with warning precedence")
     }
 
     @MainActor private static func checkProfileCreation(_ outputs: ManageOutputsController, window: NSWindow) async throws {
@@ -858,6 +874,39 @@ struct NativeWorkspaceReview {
         reviewLog("PASS Profiles list +: native activation commits the name draft, selects an independent copy, and retains output assignments")
     }
 
+    @MainActor private static func checkNativeOutputActions(_ outputs: ManageOutputsController, window: NSWindow) async throws {
+        let live = outputs.live, destination = live.outputs.destinations.first { $0.native != nil }!
+        let original = live.outputs.profile(destination.native!.profileID)!
+        let assignments = live.outputs.destinations
+        outputs.selectDestination(destination.id)
+        window.contentView?.layoutSubtreeIfNeeded()
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        let buttons = descendants(outputs.view).compactMap { $0 as? NSButton }
+        func button(_ title: String) -> NSButton { buttons.first { $0.title == title }! }
+        for (picker, titles) in [(outputs.monitorPicker, ["Identify", "Name Monitor…"]),
+                                 (outputs.profilePicker, ["Edit Profile…", "Clear Background"])] {
+            let first = button(titles[0]), second = button(titles[1])
+            let pickerFrame = picker.convert(picker.bounds, to: outputs.view)
+            let firstFrame = first.convert(first.bounds, to: outputs.view)
+            let secondFrame = second.convert(second.bounds, to: outputs.view)
+            precondition(abs(firstFrame.minX - pickerFrame.minX) < 1 && firstFrame.maxY < pickerFrame.minY,
+                         "Supporting actions must sit directly below their own picker at its leading edge")
+            precondition(abs(firstFrame.width - secondFrame.width) < 1 && abs(firstFrame.height - secondFrame.height) < 1)
+            precondition(abs(secondFrame.minX - firstFrame.maxX - 8) < 1)
+            for action in [first, second] {
+                precondition(action.controlSize == .small && action.font == .systemFont(ofSize: NSFont.systemFontSize(for: .small)))
+            }
+        }
+        let clear = button("Clear Background")
+        clear.performClick(nil)
+        try await waitUntil { live.outputs.profile(original.id)?.transparent == true && !clear.isEnabled }
+        precondition(live.outputs.destinations == assignments && live.projector.projection == nil)
+        precondition(live.outputs.updateProfile(original) == nil); live.refreshPreferences(); outputs.reload()
+        button("Edit Profile…").performClick(nil)
+        precondition(outputs.profileEditor?.profileID == original.id)
+        reviewLog("PASS native output actions: aligned picker groups, equal intrinsic Small buttons, shared-profile transparency and Edit Profile")
+    }
+
     @MainActor static func checkNativeSettings(output: URL, sources: BibleSources, inspecting: Bool = false, pairingOnly: Bool = false) async throws {
         let suite = "ViewTheWord.NativeSettingsReview"
         let defaults = UserDefaults(suiteName: suite)!
@@ -885,13 +934,11 @@ struct NativeWorkspaceReview {
                 }
             })
         live.nativeWindowFactory = { _, _, _ in nil }
-        let remoteID = live.outputs.addAltView(); live.refreshPreferences()
         let confidenceID = live.outputs.addNative()
         var confidence = live.outputs.destination(confidenceID)!
         confidence.name = "Confidence"
         confidence.assignment = .native(.init(monitor: monitorFixtures[0].target, profileID: NativeOutputProfile.confidenceID))
         precondition(live.outputs.update(confidence) == nil)
-        let altView = live.altViewServices[remoteID]!
         let settings = SettingsWindowController(library: library, liveProjection: live)
         settings.settings.outputs.discoveryEnabled = false // Appearance fixtures never browse the live network.
         let window = settings.window!
@@ -899,11 +946,26 @@ struct NativeWorkspaceReview {
         settings.showWindow(nil)
         defer { settings.close(); live.shutdown(); defaults.removePersistentDomain(forName: suite) }
         try await waitUntil { window.isKeyWindow }
+        func views(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(views) }
+        let outputsView = settings.settings.outputs.view
+        let addRemote = views(outputsView).compactMap { $0 as? NSButton }.first { $0.title == "Add AltView" }!
+        addRemote.performClick(nil)
+        guard let remoteID = live.outputs.destinations.last?.id,
+              let altView = live.altViewServices[remoteID],
+              let editor = settings.settings.outputs.remoteEditor,
+              editor.codeField.isDescendant(of: outputsView), editor.receiverPicker.isDescendant(of: outputsView) else {
+            throw ReviewFailure(description: "Add AltView must immediately select a complete connection editor without revisiting its row")
+        }
+        precondition(!altView.isEnabled && !altView.status.connected && !live.windowOpened)
+        reviewLog("PASS Add AltView: complete connection controls appear during native activation, without reselection or connecting")
         func descendants(_ controller: NSViewController) -> [NSViewController] { [controller] + controller.children.flatMap(descendants) }
         precondition(!descendants(settings.settings).contains { String(describing: type(of: $0)).contains("NSHostingController") })
         if !inspecting {
             let outputs = settings.settings.outputs
-            if !pairingOnly { try await checkProfileCreation(outputs, window: window) }
+            if !pairingOnly {
+                try await checkProfileCreation(outputs, window: window)
+                try await checkNativeOutputActions(outputs, window: window)
+            }
             settings.settings.outputs.selectDestination(remoteID)
             try await waitUntil { settings.settings.outputs.remoteEditor?.codeField.window === window }
             try await checkAltViewPairing(settings.settings.outputs.remoteEditor!, window: window, service: altView, sender: sender, sources: sources)

@@ -31,6 +31,8 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     private var monitorEntries: [MonitorEntry] = []
     private var profileEntries: [String] = []
     private let closeButton = NSButton(title: "Close This Output", target: nil, action: nil)
+    private let editProfileButton = NSButton(title: "Edit Profile…", target: nil, action: nil)
+    private let clearBackgroundButton = NSButton(title: "Clear Background", target: nil, action: nil)
     private let identifyButton = NSButton(title: "Identify", target: nil, action: nil)
     private let monitorNameButton = NSButton(title: "Name Monitor…", target: nil, action: nil)
     private var selectedID: UUID?
@@ -185,11 +187,13 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         let stack = NSStackView(views: [heading, outputRow("Name", nameField), validationLabel, enabledButton])
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 12
         if output.native != nil {
-            stack.addArrangedSubview(outputRow("Monitor", monitorPicker)); stack.addArrangedSubview(outputRow("Profile", profilePicker))
-            let edit = NSButton(title: "Edit Profile…", target: self, action: #selector(editProfile(_:)))
+            editProfileButton.target = self; editProfileButton.action = #selector(editProfile(_:))
+            clearBackgroundButton.target = self; clearBackgroundButton.action = #selector(clearBackground(_:))
+            clearBackgroundButton.toolTip = "Make the background transparent for every native output using this profile."
             identifyButton.target = self; identifyButton.action = #selector(identifyMonitor(_:))
             monitorNameButton.target = self; monitorNameButton.action = #selector(nameMonitor(_:))
-            stack.addArrangedSubview(horizontalStack([edit, identifyButton, monitorNameButton]))
+            stack.addArrangedSubview(pickerRow("Monitor", monitorPicker, actions: [identifyButton, monitorNameButton]))
+            stack.addArrangedSubview(pickerRow("Profile", profilePicker, actions: [editProfileButton, clearBackgroundButton]))
             stack.addArrangedSubview(statusLabel)
             standbyClockButton.target = self; standbyClockButton.action = #selector(standbyClockChanged(_:))
             standbyClockButton.toolTip = "Applies to every native output using the selected profile."
@@ -219,6 +223,24 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
             stack.topAnchor.constraint(equalTo: document.topAnchor, constant: 8), stack.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -16)
         ])
         for item in stack.arrangedSubviews { item.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+    }
+    private func pickerRow(_ title: String, _ picker: NSPopUpButton, actions: [NSButton]) -> NSView {
+        for button in actions {
+            button.bezelStyle = .rounded; button.controlSize = .small
+            button.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
+            button.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+            button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
+        // Equal widths derive from the larger intrinsic button size. The
+        // compact action group shares the picker's leading edge.
+        let actionRow = horizontalStack(actions, spacing: 8)
+        actions[0].widthAnchor.constraint(equalTo: actions[1].widthAnchor).isActive = true
+        let group = NSStackView(views: [picker, actionRow])
+        group.orientation = .vertical; group.alignment = .leading; group.spacing = 6
+        picker.widthAnchor.constraint(equalTo: group.widthAnchor).isActive = true
+        let row = outputRow(title, group)
+        row.alignment = .top
+        return row
     }
     private func renderDestination() {
         guard !profilesMode, let id = selectedID, let output = live.outputs.destination(id) else { return }
@@ -256,6 +278,8 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
             }
         }
         profilePicker.select(profilePicker.itemArray.first { $0.representedObject as? UUID == assignment.profileID })
+        editProfileButton.isEnabled = live.outputs.canEdit
+        clearBackgroundButton.isEnabled = live.outputs.canEdit && live.outputs.profile(assignment.profileID)?.transparent == false
         let showsClock = live.outputs.profile(assignment.profileID)?.standby == .clock
         standbyClockButton.state = showsClock ? .on : .off
         standbyClockButton.isEnabled = live.outputs.canEdit
@@ -298,7 +322,13 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     }
     @objc private func changeSection(_ sender: Any?) { endNameEditing(); formIssue = nil; selectedID = nil; detailKey = nil; reload() }
     @objc private func addNativeOutput(_ sender: Any?) { selectDestination(live.outputs.addNative()) }
-    @objc private func addAltViewOutput(_ sender: Any?) { selectDestination(live.outputs.addAltView()) }
+    @objc private func addAltViewOutput(_ sender: Any?) {
+        let id = live.outputs.addAltView()
+        // The editor needs its service during this selection's first render.
+        // Deferred preference refresh would leave an incomplete cached detail.
+        live.refreshPreferences()
+        selectDestination(id)
+    }
     @objc private func addProfile(_ sender: Any?) {
         guard profilesMode, let selectedID else { return }
         endNameEditing()
@@ -336,6 +366,13 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         reload()
     }
     @objc private func editProfile(_ sender: Any?) { if let id = selectedID.flatMap(live.outputs.destination)?.native?.profileID { selectProfile(id) } }
+    @objc private func clearBackground(_ sender: Any?) {
+        guard let id = selectedID.flatMap(live.outputs.destination)?.native?.profileID,
+              var profile = live.outputs.profile(id) else { return }
+        profile.transparent = true
+        formIssue = live.outputs.updateProfile(profile)
+        live.refreshPreferences(); reload()
+    }
     @objc private func identifyMonitor(_ sender: Any?) { if let target = selectedID.flatMap(live.outputs.destination)?.native?.monitor { displays.identify(target) } }
     @objc private func nameMonitor(_ sender: Any?) {
         guard let target = selectedID.flatMap(live.outputs.destination)?.native?.monitor, let parent = view.window, parent.attachedSheet == nil else { return }
@@ -351,7 +388,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
 final class OutputEditorDocumentView: NSView { override var isFlipped: Bool { true } }
 
 @MainActor
-func outputRow(_ title: String, _ control: NSView) -> NSView {
+func outputRow(_ title: String, _ control: NSView) -> NSStackView {
     let label = nativeLabel(title); label.widthAnchor.constraint(equalToConstant: 112).isActive = true
     return horizontalStack([label, control], spacing: 12)
 }

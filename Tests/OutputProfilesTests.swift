@@ -60,6 +60,30 @@ final class OutputProfilesTests: XCTestCase {
         destination.assignment = .native(.init(monitor: monitor?.target, profileID: profile)); XCTAssertNil(store.update(destination))
     }
     private func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+    func testAddingAltViewShowsConnectionControlsImmediatelyWithoutReselection() async throws {
+        _ = NSApplication.shared
+        let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [] }))
+        defer { live.shutdown() }
+        let manager = ManageOutputsController(live: live); manager.discoveryEnabled = false; _ = manager.view
+        let add = try XCTUnwrap(descendants(manager.view).compactMap { $0 as? NSButton }.first { $0.title == "Add AltView" })
+        let originalDestinations = live.outputs.destinations
+        for _ in 0..<2 {
+            add.performClick(nil)
+            let output = try XCTUnwrap(live.outputs.destinations.last)
+            let service = try XCTUnwrap(live.altViewServices[output.id], "Adding an AltView output must prepare its service before rendering its editor")
+            let editor = try XCTUnwrap(manager.remoteEditor, "Connection controls must appear in the same Add action without switching selection")
+            XCTAssertEqual(manager.nameField.stringValue, output.name)
+            XCTAssertTrue(editor.receiverPicker.isDescendant(of: manager.view))
+            XCTAssertTrue(editor.codeField.isDescendant(of: manager.view))
+            XCTAssertTrue(editor.connectButton.isDescendant(of: manager.view))
+            XCTAssertFalse(output.enabled); XCTAssertFalse(service.isEnabled); XCTAssertFalse(service.status.connected)
+            await settle()
+            XCTAssertTrue(manager.remoteEditor === editor, "Deferred preference updates must retain the complete editor")
+        }
+        XCTAssertEqual(Array(live.outputs.destinations.prefix(originalDestinations.count)), originalDestinations)
+        XCTAssertEqual(live.altViewServices.count, 2)
+        XCTAssertNil(live.projector.projection); XCTAssertNil(live.source)
+    }
     func testRemovingLastDestinationAndReopeningManagerShowsEmptyState() throws {
         let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [] }))
         defer { live.shutdown() }
