@@ -12,6 +12,25 @@ struct NativeOutputView: View {
     var body: some View { ProjectorView(profile: appearance.profile) }
 }
 
+/// Matches eucaly's native Confidence clock, independent of scripture styling.
+struct OutputStandbyClock: View {
+    let size: CGSize
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let calendar = Calendar.autoupdatingCurrent
+            let clock = String(format: "%02d:%02d", calendar.component(.hour, from: context.date), calendar.component(.minute, from: context.date))
+            Text(clock)
+                .font(.system(size: max(1, min(size.width * 0.23, size.height * 0.45)), weight: .heavy, design: .rounded))
+                .monospacedDigit().foregroundStyle(Color(red: 1, green: 0.82, blue: 0.24))
+                .lineLimit(1).minimumScaleFactor(0.1)
+                .padding(min(32, max(0, size.height * 0.04)))
+                .background(.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 16))
+                .accessibilityLabel("Clock").accessibilityValue(clock)
+                .frame(width: size.width, height: size.height, alignment: .center)
+        }
+    }
+}
+
 struct ProjectorView: View {
     @EnvironmentObject var projectorViewModel: ProjectorViewModel
     var profile: NativeOutputProfile = .audience
@@ -72,14 +91,7 @@ struct ProjectorView: View {
             ZStack {
                 if !profile.transparent { Color(nsColor: profile.background.nsColor) }
                 if isStandby, profile.standby == .clock {
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Text(context.date, style: .time)
-                            .font(.system(size: min(geometry.size.width * 0.18, geometry.size.height * 0.3), weight: .medium, design: .rounded))
-                            .monospacedDigit().foregroundStyle(Color(nsColor: profile.primaryColor.nsColor))
-                            .lineLimit(1).minimumScaleFactor(0.3)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                            .padding(padding)
-                    }.environment(\.layoutDirection, .leftToRight)
+                    OutputStandbyClock(size: geometry.size).environment(\.layoutDirection, .leftToRight)
                 } else if !isStandby {
                     VStack(spacing: 16) {
                         if components.reference != nil || !names.isEmpty {

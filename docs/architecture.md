@@ -64,6 +64,8 @@ Manage Outputs tracks an explicit empty detail state when the last destination i
 
 The compact native + beneath the Profiles list creates and selects an independent copy of the selected profile without changing output assignments. Its tooltip explains the copy behavior, and its accessibility label is Add profile. Profile-name editing finishes before creation or selection changes. The appearance editor contains only profile settings; empty validation labels are hidden to avoid unused vertical space.
 
+`OutputStandbyClock` uses eucaly's native Confidence styling: centered local 24-hour HH:mm, large heavy rounded monospaced digits in gold, and a translucent black rounded backdrop. Clock styling is independent of scripture typography and colour; the selected profile supplies the surrounding canvas background/transparency. The same clock renderer serves every native profile with clock standby enabled.
+
 Native opening permissions are revoked synchronously on each saved disable, removal or monitor reassignment, before deferred preference updates can coalesce edits. Restoring the previous assignment cannot revive an older intent; another eligible destination can still publish that prepared verse. Cancellation reconciles empty windows retained for pending preparation, closing outputs whose clock setting is now off and releasing their monitor locks and sleep protection. Profile menus preserve UUID identity even when duplicate profiles share a name. Both native and AltView destination names show validation and explicitly restore the saved value during AppKit's end-edit notification; errors clear when selection changes.
 
 ## Bible data and persistence
