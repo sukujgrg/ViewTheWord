@@ -6,7 +6,7 @@ xcrun swiftc -parse-as-library -D VTW_REVIEW -strict-concurrency=complete -modul
   ViewTheWord/AppConstants.swift ViewTheWord/RxVerse.swift ViewTheWord/Db.swift ViewTheWord/Core/*.swift ViewTheWord/AltView/*.swift \
   ViewTheWord/NativeReferenceTable.swift ViewTheWord/NativeSearchField.swift ViewTheWord/AppKit/*.swift \
   ViewTheWord/HelpView.swift ViewTheWord/Extensions.swift ViewTheWord/ProjectorView.swift \
-  scripts/render-navigation-review.swift -o build/review/navigation/check-navigation
+  scripts/render-navigation-review.swift scripts/benchmark-settings.swift -o build/review/navigation/check-navigation
 # LaunchServices activation is reliable for an application bundle; a raw command-
 # line executable can be refused activation by macOS, leaving no real key window.
 REVIEW_OUTPUT="$PWD/build/review/navigation"

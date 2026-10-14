@@ -17,13 +17,17 @@ private func reviewProjectionDisplays() -> ProjectionDisplayManager {
 private final class ReviewAltViewSender: AltViewSending, @unchecked Sendable {
     var connectionID: UUID?
     var connectionKeys: [Data] = []
+    var emptySubmissions = 0
     var onStatus: (@Sendable (AltViewSenderStatus) -> Void)?
     func connect(to endpoint: NWEndpoint, key: Data, expectedReceiverID: UUID?, connectionID: UUID) {
         self.connectionID = connectionID
         connectionKeys.append(key)
     }
     func disconnect() { connectionID = nil }
-    func submit(_ submission: AltViewSubmission) { preconditionFailure("Settings must not publish") }
+    func submit(_ submission: AltViewSubmission) {
+        precondition(submission.content == nil && submission.intent == nil, "Settings must not publish")
+        emptySubmissions += 1 // normal live-controller teardown is allowed
+    }
 }
 
 private func reviewLog(_ text: String) { FileHandle.standardOutput.write(Data((text + "\n").utf8)) }
@@ -77,6 +81,10 @@ struct NativeWorkspaceReview {
         let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? FileManager.default.currentDirectoryPath)
         let output = root.appendingPathComponent("build/review/navigation", isDirectory: true)
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--benchmark-settings") {
+            try await benchmarkSettings(output: output)
+            return
+        }
         let defaults = UserDefaults(suiteName: "ViewTheWord.NativeWorkspaceReview")!
         defaults.removePersistentDomain(forName: "ViewTheWord.NativeWorkspaceReview")
         defaults.set(17.0, forKey: AppDefaultsKey.verseRowFontSize)
@@ -797,6 +805,7 @@ struct NativeWorkspaceReview {
         try press("\r", code: 36)
         try await waitUntil { pane.statusLabel.stringValue.contains("eight-character pairing code") }
         precondition(pane.statusLabel.textColor == .systemOrange)
+        precondition(pane.codeField.stringValue == "invalid", "Saving the receiver must not discard an unsuccessful pairing draft")
         precondition(!service.isEnabled && sender.connectionKeys.isEmpty)
 
         for (index, key) in [("\r", UInt16(36)), ("\u{3}", UInt16(76))].enumerated() {
@@ -907,6 +916,28 @@ struct NativeWorkspaceReview {
         reviewLog("PASS native output actions: aligned picker groups, equal intrinsic Small buttons, shared-profile transparency and Edit Profile")
     }
 
+    @MainActor private static func checkReusedProfileEditing(_ outputs: ManageOutputsController, window: NSWindow) async throws {
+        let live = outputs.live
+        let audience = live.outputs.profile(NativeOutputProfile.audienceID)!, confidence = live.outputs.profile(NativeOutputProfile.confidenceID)!
+        let revision = live.projector.revision, assignments = live.outputs.destinations
+        outputs.selectProfile(audience.id)
+        let form = outputs.profileEditor!, slider = form.rows[0].slider
+        precondition(window.makeFirstResponder(form.nameField))
+        let editor = form.nameField.currentEditor() as! NSTextView
+        editor.selectAll(nil); editor.insertText("Audience draft", replacementRange: editor.selectedRange())
+        outputs.table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        precondition(outputs.profileEditor === form && form.profileID == confidence.id && form.rows[0].slider === slider)
+        precondition(live.outputs.profile(audience.id)?.name == "Audience draft" && live.outputs.profile(confidence.id)?.name == confidence.name)
+        slider.doubleValue = 91; slider.sendAction(slider.action, to: slider.target)
+        precondition(live.outputs.profile(confidence.id)?.verse.size == 91 && live.outputs.profile(audience.id)?.verse.size == audience.verse.size)
+        precondition(live.outputs.updateProfile(audience) == nil && live.outputs.updateProfile(confidence) == nil)
+        outputs.selectDestination(assignments[0].id)
+        outputs.selectProfile(audience.id)
+        precondition(outputs.profileEditor === form && form.nameField.stringValue == audience.name && slider.doubleValue == audience.verse.size)
+        precondition(live.outputs.destinations == assignments && live.projector.revision == revision && live.source == nil)
+        reviewLog("PASS reused profile form: real field-editor draft commits to its original UUID; rebound slider edits only the selected profile; navigation preserves output")
+    }
+
     @MainActor static func checkNativeSettings(output: URL, sources: BibleSources, inspecting: Bool = false, pairingOnly: Bool = false) async throws {
         let suite = "ViewTheWord.NativeSettingsReview"
         let defaults = UserDefaults(suiteName: suite)!
@@ -965,6 +996,7 @@ struct NativeWorkspaceReview {
             if !pairingOnly {
                 try await checkProfileCreation(outputs, window: window)
                 try await checkNativeOutputActions(outputs, window: window)
+                try await checkReusedProfileEditing(outputs, window: window)
             }
             settings.settings.outputs.selectDestination(remoteID)
             try await waitUntil { settings.settings.outputs.remoteEditor?.codeField.window === window }
@@ -1064,6 +1096,26 @@ struct NativeWorkspaceReview {
                 try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("settings-altview-\(name)-\(appearance).png"))
             }
         }
+        let connectedEditor = settings.settings.outputs.remoteEditor!
+        let beforeHidden = connectedEditor.statusLabel.stringValue
+        let connectionID = sender.connectionID, connectionCount = sender.connectionKeys.count, emptySubmissions = sender.emptySubmissions
+        settings.settings.selectedTabViewItemIndex = 1
+        sender.onStatus?(.init(connectionID: connectionID, connected: true, receiverID: UUID(), message: "Hidden connection status"))
+        try await waitUntil { altView.status.message == "Hidden connection status" }
+        for _ in 0..<20 { await Task.yield() }
+        precondition(connectedEditor.statusLabel.stringValue == beforeHidden, "Hidden editors must not process connection UI updates")
+        settings.settings.selectedTabViewItemIndex = 0
+        try await waitUntil { connectedEditor.statusLabel.stringValue.contains("Hidden connection status") }
+        settings.close()
+        let beforeClosed = connectedEditor.statusLabel.stringValue
+        sender.onStatus?(.init(connectionID: connectionID, connected: true, receiverID: UUID(), message: "Closed connection status"))
+        try await waitUntil { altView.status.message == "Closed connection status" }
+        for _ in 0..<20 { await Task.yield() }
+        precondition(connectedEditor.statusLabel.stringValue == beforeClosed && altView.status.connected)
+        settings.showWindow(nil)
+        try await waitUntil { connectedEditor.statusLabel.stringValue.contains("Closed connection status") }
+        precondition(sender.connectionID == connectionID && sender.connectionKeys.count == connectionCount && sender.emptySubmissions == emptySubmissions)
+        reviewLog("PASS hidden Settings editors: Library/closed windows pause UI work, reopening catches up, connection stays intact")
         altView.disconnect()
         settings.settings.selectedTabViewItemIndex = 0
         settings.settings.outputs.selectProfile(NativeOutputProfile.audienceID)

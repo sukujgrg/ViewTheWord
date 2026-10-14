@@ -60,6 +60,129 @@ final class OutputProfilesTests: XCTestCase {
         destination.assignment = .native(.init(monitor: monitor?.target, profileID: profile)); XCTAssertNil(store.update(destination))
     }
     private func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+    func testSettingsNavigationReusesFormsWithoutChangingCommittedOutputOrConnections() async throws {
+        _ = NSApplication.shared
+        let sender = OutputSender()
+        let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [self.monitor(1)] }),
+            altViewServiceFactory: { saved, discovery in
+                AltViewProjectionService(destination: saved.receiver, store: OutputPairings(), discovery: discovery) { sender.callback = $0; return sender }
+            })
+        defer { live.shutdown() }
+        live.nativeWindowFactory = { _, _, _ in nil }
+        let audience = live.outputs.destinations[0].id, native = live.outputs.addNative(), remote = live.outputs.addAltView()
+        assign(live.outputs, audience, to: monitor(1), profile: NativeOutputProfile.audienceID)
+        XCTAssertNil(live.connectAltView(remote, to: .init(name: "Receiver", host: "receiver.local", port: 54321), code: "ABCD2345"))
+        try await eventually { sender.connectionID != nil }; sender.welcome(); await settle()
+        live.publishRow(projection(), from: UUID())
+        let configuration = live.outputs.configuration, data = live.projector.projectorViewData, revision = live.projector.revision
+        let source = live.source, submissions = sender.submissions.count, connects = sender.connectCount
+        let manager = ManageOutputsController(live: live); manager.discoveryEnabled = false; _ = manager.view
+        let nativeForm = manager.monitorPicker.superview
+        manager.selectProfile(NativeOutputProfile.audienceID)
+        let form = try XCTUnwrap(manager.profileEditor), slider = form.rows[0].slider
+        for _ in 0..<3 {
+            for profile in live.outputs.profiles {
+                manager.selectProfile(profile.id)
+                XCTAssertTrue(manager.profileEditor === form && form.rows[0].slider === slider)
+                XCTAssertEqual(form.profileID, profile.id); XCTAssertEqual(form.rows[0].slider.doubleValue, profile.verse.size)
+            }
+            for id in [audience, native, remote, audience] { manager.selectDestination(id) }
+            XCTAssertTrue(manager.monitorPicker.superview === nativeForm)
+        }
+        await settle()
+        let nativeOutputs = Set(live.nativeOutputs.keys)
+        manager.stopDiscovery()
+        manager.enabledButton.performClick(nil); manager.standbyClockButton.performClick(nil)
+        let close = try XCTUnwrap(descendants(manager.view).compactMap { $0 as? NSButton }.first { $0.title == "Close This Output" })
+        close.performClick(nil)
+        XCTAssertEqual(Set(live.nativeOutputs.keys), nativeOutputs, "Late actions from hidden native controls must not stop output")
+        manager.startDiscovery()
+        XCTAssertEqual(manager.enabledButton.state, .on)
+        XCTAssertEqual(live.outputs.configuration, configuration)
+        XCTAssertEqual(live.projector.projectorViewData, data); XCTAssertEqual(live.projector.revision, revision); XCTAssertEqual(live.source, source)
+        XCTAssertEqual(sender.submissions.count, submissions); XCTAssertEqual(sender.connectCount, connects)
+        XCTAssertTrue(live.altViewServices[remote]!.status.connected)
+    }
+    func testReusedProfileFormCommitsOriginalDraftAndIgnoresLateOrHiddenCallbacks() throws {
+        let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [] }))
+        defer { live.shutdown() }
+        let manager = ManageOutputsController(live: live); _ = manager.view
+        manager.selectProfile(NativeOutputProfile.audienceID)
+        let editor = try XCTUnwrap(manager.profileEditor)
+        editor.controlTextDidBeginEditing(.init(name: NSControl.textDidBeginEditingNotification, object: editor.nameField))
+        editor.nameField.stringValue = "Original draft"
+        editor.controlTextDidChange(.init(name: NSControl.textDidChangeNotification, object: editor.nameField))
+        manager.selectProfile(NativeOutputProfile.confidenceID)
+        XCTAssertTrue(manager.profileEditor === editor)
+        XCTAssertEqual(live.outputs.profile(NativeOutputProfile.audienceID)?.name, "Original draft")
+        editor.controlTextDidEndEditing(.init(name: NSControl.textDidEndEditingNotification, object: editor.nameField))
+        XCTAssertEqual(live.outputs.profile(NativeOutputProfile.confidenceID)?.name, "Confidence")
+        var callbackID: UUID?
+        editor.onStandbyChanged = { id, _ in callbackID = id }
+        editor.standbyClockButton.performClick(nil)
+        XCTAssertEqual(callbackID, NativeOutputProfile.confidenceID)
+        manager.selectDestination(live.outputs.destinations[0].id)
+        let saved = live.outputs.configuration
+        let slider = editor.rows[0].slider; slider.doubleValue = 99
+        slider.sendAction(slider.action, to: slider.target)
+        XCTAssertEqual(live.outputs.configuration, saved, "Detached forms must ignore callbacks")
+        editor.represent(UUID())
+        editor.controlTextDidEndEditing(.init(name: NSControl.textDidEndEditingNotification, object: editor.nameField))
+        slider.sendAction(slider.action, to: slider.target)
+        XCTAssertEqual(live.outputs.configuration, saved, "An unavailable binding cannot save through stale controls")
+    }
+    func testAltViewEditorsPauseHiddenUpdatesRetainDraftsAndDiscardChangedDestinations() async throws {
+        let sender = OutputSender()
+        let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [] }),
+            altViewServiceFactory: { saved, discovery in
+                AltViewProjectionService(destination: saved.receiver, store: OutputPairings(), discovery: discovery) { sender.callback = $0; return sender }
+            })
+        defer { live.shutdown() }
+        let id = live.outputs.addAltView(), other = live.outputs.addAltView(); live.refreshPreferences()
+        let manager = ManageOutputsController(live: live); manager.discoveryEnabled = false; _ = manager.view; manager.selectDestination(id)
+        let editor = try XCTUnwrap(manager.remoteEditor)
+        XCTAssertNil(live.connectAltView(id, to: .init(name: "Receiver", host: "receiver.local", port: 54321), code: "ABCD2345"))
+        try await eventually { sender.connectionID != nil }; sender.welcome(); await settle()
+        let receiverItem = editor.receiverPicker.item(at: 0), templateItem = editor.templatePicker.item(at: 0)
+        func status(_ message: String) { sender.callback?(.init(connectionID: sender.connectionID, connected: true, receiverID: sender.receiverID, message: message)) }
+        status("Visible update"); await settle()
+        XCTAssertTrue(editor.statusLabel.stringValue.contains("Visible update"))
+        manager.selectProfile(NativeOutputProfile.audienceID)
+        status("Hidden update"); await settle()
+        XCTAssertFalse(editor.statusLabel.stringValue.contains("Hidden update"))
+        manager.selectDestination(id)
+        XCTAssertTrue(manager.remoteEditor === editor); XCTAssertTrue(editor.statusLabel.stringValue.contains("Hidden update"))
+        XCTAssertTrue(editor.receiverPicker.item(at: 0) === receiverItem && editor.templatePicker.item(at: 0) === templateItem)
+        manager.selectDestination(other)
+        let draftEditor = try XCTUnwrap(manager.remoteEditor)
+        draftEditor.hostField.stringValue = "unsaved.local"; draftEditor.codeField.stringValue = "ABCD2345"
+        manager.selectDestination(id); manager.selectDestination(other)
+        XCTAssertTrue(manager.remoteEditor === draftEditor); XCTAssertEqual(draftEditor.hostField.stringValue, "unsaved.local")
+        XCTAssertEqual(draftEditor.codeField.stringValue, "ABCD2345")
+        manager.selectDestination(id); manager.stopDiscovery()
+        status("Closed update"); await settle()
+        XCTAssertFalse(editor.statusLabel.stringValue.contains("Closed update")); XCTAssertTrue(live.altViewServices[id]!.status.connected)
+        manager.startDiscovery(); XCTAssertTrue(editor.statusLabel.stringValue.contains("Closed update"))
+        manager.stopDiscovery()
+        var changed = live.outputs.destination(id)!
+        changed.enabled = false; changed.assignment = .native(.init(monitor: nil, profileID: NativeOutputProfile.audienceID))
+        XCTAssertNil(live.outputs.update(changed))
+        XCTAssertNil(manager.remoteEditor, "Deleted or changed-type editors must be discarded even while Settings is hidden")
+        live.refreshPreferences(); manager.startDiscovery()
+        XCTAssertNil(manager.remoteEditor)
+        XCTAssertNotNil(editor.onConnect(.init(name: "Stale", host: "stale.local", port: 54321), "ABCD2345"))
+        XCTAssertEqual(live.outputs.destination(id), changed)
+        manager.selectDestination(other); manager.stopDiscovery()
+        var saved = live.outputs.destination(other)!, assignment = saved.altView!
+        assignment.receiver = .init(name: "Updated", host: "updated.local", port: 54321); saved.assignment = .altView(assignment)
+        XCTAssertNil(live.outputs.update(saved))
+        XCTAssertEqual(draftEditor.hostField.stringValue, "unsaved.local", "Hidden editors should defer saved-assignment UI changes")
+        manager.startDiscovery()
+        XCTAssertTrue(manager.remoteEditor === draftEditor); XCTAssertEqual(draftEditor.hostField.stringValue, "updated.local")
+        manager.stopDiscovery(); live.outputs.remove(other)
+        XCTAssertNil(manager.remoteEditor)
+        XCTAssertNotNil(draftEditor.onSelectReceiver(.init(name: "Deleted", host: "deleted.local", port: 54321)))
+    }
     func testAddingAltViewShowsConnectionControlsImmediatelyWithoutReselection() async throws {
         _ = NSApplication.shared
         let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [] }))
@@ -121,12 +244,14 @@ final class OutputProfilesTests: XCTestCase {
         _ = editor.view
         let data = preferences.data(forKey: AppDefaultsKey.outputConfiguration)
         for invalid in ["   ", String(repeating: "x", count: 81)] {
+            editor.controlTextDidBeginEditing(.init(name: NSControl.textDidBeginEditingNotification, object: editor.nameField))
             editor.nameField.stringValue = invalid
             editor.controlTextDidEndEditing(.init(name: NSControl.textDidEndEditingNotification, object: editor.nameField))
             XCTAssertEqual(store.profile(original.id), original); XCTAssertEqual(preferences.data(forKey: AppDefaultsKey.outputConfiguration), data)
             XCTAssertEqual(editor.nameField.stringValue, original.name)
             XCTAssertEqual(editor.validationLabel.stringValue, "Use a profile name with 1 to 80 characters.")
         }
+        editor.controlTextDidBeginEditing(.init(name: NSControl.textDidBeginEditingNotification, object: editor.nameField))
         editor.nameField.stringValue = " Renamed profile "
         editor.controlTextDidEndEditing(.init(name: NSControl.textDidEndEditingNotification, object: editor.nameField))
         XCTAssertEqual(store.profile(original.id)?.name, "Renamed profile"); XCTAssertTrue(editor.validationLabel.stringValue.isEmpty)

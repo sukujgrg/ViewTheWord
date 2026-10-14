@@ -36,21 +36,53 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     private let identifyButton = NSButton(title: "Identify", target: nil, action: nil)
     private let monitorNameButton = NSButton(title: "Name Monitor…", target: nil, action: nil)
     private var selectedID: UUID?
-    private enum DetailKey: Equatable { case output(UUID), profile(UUID), empty }
+    private enum DetailKey: Equatable { case native(UUID), remote(UUID, ObjectIdentifier?), profile(UUID), empty, recovery(String) }
     private var detailKey: DetailKey?
     private var selectedDetailKey: DetailKey {
+        if let notice = live.outputs.recoveryNotice { return .recovery(notice) }
         guard let selectedID else { return .empty }
-        return profilesMode ? .profile(selectedID) : .output(selectedID)
+        if profilesMode { return .profile(selectedID) }
+        return live.outputs.destination(selectedID)?.native != nil ? .native(selectedID)
+            : .remote(selectedID, live.altViewServices[selectedID].map(ObjectIdentifier.init))
     }
     private struct NameEdit { let destinationID: UUID; var text: String }
     private var nameEdit: NameEdit?
     private var child: NSViewController?
+    private var reusableProfileEditor: OutputProfileEditor?
+    private struct RemoteEditor {
+        let service: AltViewProjectionService
+        let editor: AltViewDestinationEditor
+    }
+    private var remoteEditors: [UUID: RemoteEditor] = [:]
+    private var destinationForm: NSView?
+    private let destinationHeading = nativeLabel(weight: .semibold)
+    private let nativeBody = NSStackView()
+    private let remoteHost = NSView()
+    private var nativeBodyBuilt = false
+    private struct ListRow: Equatable { let id: UUID; let title: String; let subtitle: String }
+    private var listRows: [ListRow] = []
+    private var listSection = -1
+    private var updatesEnabled = true
+    private struct NativeInput: Equatable {
+        let output: OutputDestination
+        let configuration: OutputConfiguration
+        let displayRevision: Int
+        let openOutputs: Set<UUID>
+        let hasScripture: Bool
+        let blanked: Bool
+        let issue: String?
+    }
+    private var nativeInput: NativeInput?
     private var subscriptions = Set<AnyCancellable>()
     private var reloadTask: Task<Void, Never>?
     var discoveryEnabled = true
     var remoteEditor: AltViewDestinationEditor? { child as? AltViewDestinationEditor }
     var profileEditor: OutputProfileEditor? { child as? OutputProfileEditor }
     private var profilesMode: Bool { section.selectedSegment == 1 }
+    private var editedDestination: OutputDestination? {
+        guard updatesEnabled, !profilesMode else { return nil }
+        return selectedID.flatMap(live.outputs.destination)
+    }
     private var identifiers: [UUID] { profilesMode ? live.outputs.profiles.map(\.id) : live.outputs.destinations.map(\.id) }
 
     init(live: LiveProjectionController) {
@@ -59,6 +91,11 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         for publisher in [live.outputs.objectWillChange, live.objectWillChange, displays.objectWillChange] {
             publisher.sink { [weak self] _ in self?.scheduleReload() }.store(in: &subscriptions)
         }
+        // Deletions invalidate cached UUID-bound callbacks even with Settings
+        // hidden. Status-only notifications never enter this path.
+        live.outputs.$configuration.sink { [weak self] configuration in
+            self?.discardRemoteEditors(except: configuration)
+        }.store(in: &subscriptions)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit { reloadTask?.cancel() }
@@ -110,118 +147,202 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         validationLabel.font = .systemFont(ofSize: 12); validationLabel.textColor = .systemOrange
         reload()
     }
-    override func viewWillAppear() { super.viewWillAppear(); displays.refresh(); reload() }
-    override func viewWillDisappear() { super.viewWillDisappear(); remoteEditor?.stopDiscovery() }
-    func startDiscovery() { remoteEditor?.startDiscovery() }
-    func stopDiscovery() { remoteEditor?.stopDiscovery() }
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        if view.window?.isVisible == true && !view.isHiddenOrHasHiddenAncestor { displays.refresh(); startDiscovery() }
+    }
+    override func viewWillDisappear() { super.viewWillDisappear(); stopDiscovery() }
+    func startDiscovery() {
+        updatesEnabled = true
+        if let profileEditor { profileEditor.represent(profileEditor.profileID) }
+        reload()
+        remoteEditor?.setUIUpdatesEnabled(true)
+        remoteEditor?.startDiscovery()
+    }
+    func stopDiscovery() {
+        endNameEditing()
+        updatesEnabled = false; reloadTask?.cancel(); reloadTask = nil; nativeInput = nil
+        profileEditor?.deactivate()
+        remoteEditor?.setUIUpdatesEnabled(false)
+        remoteEditor?.stopDiscovery()
+    }
     private func scheduleReload() {
-        guard reloadTask == nil else { return }
+        guard updatesEnabled, isViewLoaded, reloadTask == nil else { return }
         reloadTask = Task { @MainActor [weak self] in
             await Task.yield(); guard let self, !Task.isCancelled else { return }
             self.reloadTask = nil; self.reload()
         }
     }
     func reload() {
-        guard isViewLoaded else { return }
-        if selectedID == nil || !identifiers.contains(selectedID!) { formIssue = nil; selectedID = identifiers.first }
+        guard isViewLoaded, updatesEnabled else { return }
+        pruneRemoteEditors()
+        if selectedID == nil || !identifiers.contains(selectedID!) { endNameEditing(); formIssue = nil; selectedID = identifiers.first }
+        let rows = profilesMode ? live.outputs.profiles.map { ListRow(id: $0.id, title: $0.name, subtitle: "Reusable appearance") }
+            : live.outputs.destinations.map { ListRow(id: $0.id, title: $0.name, subtitle: ($0.native != nil ? "Native" : "AltView") + ($0.enabled ? " · Enabled" : " · Disabled")) }
         isReloadingTable = true
-        table.reloadData()
-        if let id = selectedID, let index = identifiers.firstIndex(of: id) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) }
+        if rows != listRows || listSection != section.selectedSegment {
+            listRows = rows; listSection = section.selectedSegment; table.reloadData()
+        }
+        if let id = selectedID, let index = listRows.firstIndex(where: { $0.id == id }), table.selectedRow != index {
+            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        }
         isReloadingTable = false
-        addNative.isHidden = profilesMode; addRemote.isHidden = profilesMode; remove.isHidden = profilesMode
-        profileActions.isHidden = !profilesMode
+        if addNative.isHidden != profilesMode {
+            addNative.isHidden = profilesMode; addRemote.isHidden = profilesMode; remove.isHidden = profilesMode
+            profileActions.isHidden = !profilesMode
+        }
         addProfileButton.isEnabled = profilesMode && selectedID != nil && live.outputs.canEdit
         addNative.isEnabled = live.outputs.canEdit; addRemote.isEnabled = live.outputs.canEdit
         remove.isEnabled = selectedID != nil && live.outputs.canEdit
         if detailKey != selectedDetailKey { buildDetail() }
         renderDestination()
+        profileEditor?.refresh()
+        if !profilesMode, let id = selectedID { remoteEditor?.updateAssignment(live.outputs.destination(id)?.altView) }
     }
-    func numberOfRows(in tableView: NSTableView) -> Int { identifiers.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { listRows.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let id = identifiers[row]
-        let title: String; let subtitle: String
-        if profilesMode { title = live.outputs.profile(id)?.name ?? ""; subtitle = "Reusable appearance" }
-        else {
-            let output = live.outputs.destination(id)!
-            title = output.name
-            subtitle = (output.native != nil ? "Native" : "AltView") + (output.enabled ? " · Enabled" : " · Disabled")
-        }
-        let label = nativeLabel(title, weight: .medium); let detail = nativeLabel(subtitle, size: 11); detail.textColor = .secondaryLabelColor
-        let stack = NSStackView(views: [label, detail]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 3
-        let cell = NSTableCellView(); cell.textField = label; pin(stack, to: cell, inset: 6)
+        guard listRows.indices.contains(row) else { return nil }
+        let identifier = NSUserInterfaceItemIdentifier("outputRow")
+        let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? OutputListCell ?? OutputListCell()
+        cell.identifier = identifier
+        cell.textField?.stringValue = listRows[row].title; cell.detail.stringValue = listRows[row].subtitle
         return cell
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
-        guard !isReloadingTable, identifiers.indices.contains(table.selectedRow) else { return }
-        let id = identifiers[table.selectedRow]
+        guard !isReloadingTable, listRows.indices.contains(table.selectedRow) else { return }
+        let id = listRows[table.selectedRow].id
         if selectedID != id { endNameEditing(); formIssue = nil; selectedID = id; reload() }
     }
     func selectDestination(_ id: UUID) { section.selectedSegment = 0; select(id) }
     func selectProfile(_ id: UUID) { section.selectedSegment = 1; select(id) }
-    private func select(_ id: UUID) { endNameEditing(); formIssue = nil; selectedID = id; detailKey = nil; reload() }
+    private func select(_ id: UUID) { endNameEditing(); formIssue = nil; selectedID = id; reload() }
     private func endNameEditing() {
-        if nameField.currentEditor() != nil || profileEditor?.nameField.currentEditor() != nil { view.window?.makeFirstResponder(nil) }
+        let remoteFields = remoteEditor.map { [$0.hostField, $0.portField, $0.codeField] } ?? []
+        if nameField.currentEditor() != nil || profileEditor?.nameField.currentEditor() != nil || remoteFields.contains(where: { $0.currentEditor() != nil }) {
+            view.window?.makeFirstResponder(nil)
+        }
+        profileEditor?.finishNameEditing()
+        if nameEdit != nil { controlTextDidEndEditing(.init(name: NSControl.textDidEndEditingNotification, object: nameField)) }
+    }
+    private func pruneRemoteEditors() {
+        for (id, cached) in remoteEditors where live.outputs.destination(id)?.altView == nil || live.altViewServices[id] !== cached.service {
+            cached.editor.invalidate(); remoteEditors.removeValue(forKey: id)
+        }
+    }
+    private func discardRemoteEditors(except configuration: OutputConfiguration) {
+        for (id, cached) in remoteEditors where !configuration.destinations.contains(where: { $0.id == id && $0.altView != nil }) {
+            cached.editor.invalidate()
+            if child === cached.editor { child?.removeFromParent(); child = nil; detailKey = nil }
+            if cached.editor.isViewLoaded, remoteHost.subviews.first === cached.editor.view { cached.editor.view.removeFromSuperview() }
+            remoteEditors.removeValue(forKey: id)
+        }
+    }
+    private func showDetail(_ content: NSView, controller: NSViewController? = nil) {
+        if child !== controller {
+            remoteEditor?.setUIUpdatesEnabled(false); remoteEditor?.stopDiscovery()
+            profileEditor?.deactivate()
+            child?.removeFromParent(); child = controller
+            if let controller { addChild(controller) }
+        }
+        if content.superview !== detailHost {
+            pin(content, to: detailHost)
+        }
+        // Keep the two reusable forms attached, preserving AppKit's solved
+        // constraints and text sizes across section changes. Hidden forms have
+        // no UI subscriptions or active editing callbacks.
+        let retainForms = selectedID != nil && live.outputs.recoveryNotice == nil
+        for subview in detailHost.subviews {
+            if subview !== content && (!retainForms || (subview !== destinationForm && subview !== reusableProfileEditor?.view)) {
+                subview.removeFromSuperview()
+            } else if subview.isHidden != (subview !== content) { subview.isHidden = subview !== content }
+        }
     }
     private func buildDetail() {
         detailKey = selectedDetailKey
-        remoteEditor?.stopDiscovery()
-        child?.removeFromParent(); child = nil
-        for subview in detailHost.subviews { subview.removeFromSuperview() }
         if let notice = live.outputs.recoveryNotice {
             let label = NSTextField(wrappingLabelWithString: notice)
             let restore = NSButton(title: "Restore Defaults", target: self, action: #selector(restoreDefaults(_:)))
             let stack = NSStackView(views: [label, restore]); stack.orientation = .vertical; stack.alignment = .leading
-            pin(stack, to: detailHost, inset: 12); return
+            showDetail(stack); return
         }
-        guard let id = selectedID else { pin(nativeLabel("Add an output to get started."), to: detailHost); return }
+        guard let id = selectedID else { showDetail(nativeLabel("Add an output to get started.")); return }
         if profilesMode {
-            let editor = OutputProfileEditor(store: live.outputs, profileID: id)
-            editor.onStandbyChanged = { [weak live] enabled in
+            let editor = reusableProfileEditor ?? OutputProfileEditor(store: live.outputs, profileID: id)
+            reusableProfileEditor = editor
+            editor.onStandbyChanged = { [weak live] profileID, enabled in
                 live?.refreshPreferences()
-                if enabled { live?.showStandbyOutputs(using: id) }
+                if enabled { live?.showStandbyOutputs(using: profileID) }
             }
-            child = editor; addChild(editor); pin(editor.view, to: detailHost); return
+            editor.represent(id)
+            showDetail(editor.view, controller: editor); return
         }
         guard let output = live.outputs.destination(id) else { return }
-        let heading = nativeLabel(output.native == nil ? "AltView output" : "Native output", weight: .semibold)
-        let stack = NSStackView(views: [heading, outputRow("Name", nameField), validationLabel, enabledButton])
-        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 12
+        if destinationForm == nil { destinationForm = makeDestinationForm() }
+        let heading = output.native == nil ? "AltView output" : "Native output"
+        if destinationHeading.stringValue != heading { destinationHeading.stringValue = heading }
+        if nativeBody.isHidden != (output.native == nil) { nativeBody.isHidden = output.native == nil }
+        if remoteHost.isHidden != (output.native != nil) { remoteHost.isHidden = output.native != nil }
         if output.native != nil {
-            editProfileButton.target = self; editProfileButton.action = #selector(editProfile(_:))
-            clearBackgroundButton.target = self; clearBackgroundButton.action = #selector(clearBackground(_:))
-            clearBackgroundButton.toolTip = "Make the background transparent for every native output using this profile."
-            identifyButton.target = self; identifyButton.action = #selector(identifyMonitor(_:))
-            monitorNameButton.target = self; monitorNameButton.action = #selector(nameMonitor(_:))
-            stack.addArrangedSubview(pickerRow("Monitor", monitorPicker, actions: [identifyButton, monitorNameButton]))
-            stack.addArrangedSubview(pickerRow("Profile", profilePicker, actions: [editProfileButton, clearBackgroundButton]))
-            stack.addArrangedSubview(statusLabel)
-            standbyClockButton.target = self; standbyClockButton.action = #selector(standbyClockChanged(_:))
-            standbyClockButton.toolTip = "Applies to every native output using the selected profile."
-            stack.addArrangedSubview(standbyClockButton)
-            closeButton.target = self; closeButton.action = #selector(closeOutput(_:)); stack.addArrangedSubview(closeButton)
-            let hint = NSTextField(wrappingLabelWithString: "All outputs follow the committed passage. The clock setting belongs to the selected profile. Close this output before changing its monitor. Missing monitors retain their assignments and require explicit reopening.")
-            hint.font = .systemFont(ofSize: 12); hint.textColor = .secondaryLabelColor; stack.addArrangedSubview(hint)
+            if !nativeBodyBuilt { buildNativeBody(); nativeBodyBuilt = true }
+            showDetail(destinationForm!)
         } else if let service = live.altViewServices[id] {
-            let editor = AltViewDestinationEditor(service: service, assignment: output.altView); editor.discoveryEnabled = discoveryEnabled
-            editor.onConnect = { [weak live] receiver, code in live?.connectAltView(id, to: receiver, code: code) }
-            editor.onSelectReceiver = { [weak live] receiver in
-                guard let live, var saved = live.outputs.destination(id), var assignment = saved.altView else { return "Output no longer exists." }
-                assignment.receiver = receiver; assignment.receiverID = receiver?.receiverIdentity
-                saved.assignment = .altView(assignment); return live.outputs.update(saved)
+            let editor: AltViewDestinationEditor
+            if let cached = remoteEditors[id], cached.service === service { editor = cached.editor }
+            else {
+                editor = AltViewDestinationEditor(service: service, assignment: output.altView); editor.discoveryEnabled = discoveryEnabled
+                editor.onConnect = { [weak live, weak service] receiver, code in
+                    guard let live, let service, live.altViewServices[id] === service else { return "Output no longer exists." }
+                    return live.connectAltView(id, to: receiver, code: code)
+                }
+                editor.onSelectReceiver = { [weak live, weak service] receiver in
+                    guard let live, let service, live.altViewServices[id] === service,
+                          var saved = live.outputs.destination(id), var assignment = saved.altView else { return "Output no longer exists." }
+                    assignment.receiver = receiver; assignment.receiverID = receiver?.receiverIdentity
+                    saved.assignment = .altView(assignment); return live.outputs.update(saved)
+                }
+                editor.view.heightAnchor.constraint(greaterThanOrEqualToConstant: 420).isActive = true
+                remoteEditors[id] = RemoteEditor(service: service, editor: editor)
             }
-            child = editor; addChild(editor); stack.addArrangedSubview(editor.view)
-            editor.view.heightAnchor.constraint(greaterThanOrEqualToConstant: 420).isActive = true
+            showDetail(destinationForm!, controller: editor)
+            editor.updateAssignment(output.altView)
+            if remoteHost.subviews.first !== editor.view {
+                for subview in remoteHost.subviews { subview.removeFromSuperview() }
+                pin(editor.view, to: remoteHost)
+            }
+            editor.setUIUpdatesEnabled(updatesEnabled)
             if view.window?.isVisible == true { editor.startDiscovery() }
-        }
+        } else { showDetail(destinationForm!) }
+    }
+    private func makeDestinationForm() -> NSView {
+        let stack = WorkspaceColumnStack(content: [destinationHeading, outputRow("Name", nameField), validationLabel, enabledButton, nativeBody, remoteHost])
+        stack.spacing = 12
+        nativeBody.orientation = .vertical; nativeBody.alignment = .leading; nativeBody.spacing = 12
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         let document = OutputEditorDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; scroll.documentView = document
-        pin(scroll, to: detailHost)
         stack.translatesAutoresizingMaskIntoConstraints = false; document.addSubview(stack)
         NSLayoutConstraint.activate([
             document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
             stack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 8), stack.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -8),
             stack.topAnchor.constraint(equalTo: document.topAnchor, constant: 8), stack.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -16)
         ])
+        return scroll
+    }
+    private func buildNativeBody() {
+        let stack = nativeBody
+        editProfileButton.target = self; editProfileButton.action = #selector(editProfile(_:))
+        clearBackgroundButton.target = self; clearBackgroundButton.action = #selector(clearBackground(_:))
+        clearBackgroundButton.toolTip = "Make the background transparent for every native output using this profile."
+        identifyButton.target = self; identifyButton.action = #selector(identifyMonitor(_:))
+        monitorNameButton.target = self; monitorNameButton.action = #selector(nameMonitor(_:))
+        stack.addArrangedSubview(pickerRow("Monitor", monitorPicker, actions: [identifyButton, monitorNameButton]))
+        stack.addArrangedSubview(pickerRow("Profile", profilePicker, actions: [editProfileButton, clearBackgroundButton]))
+        stack.addArrangedSubview(statusLabel)
+        standbyClockButton.target = self; standbyClockButton.action = #selector(standbyClockChanged(_:))
+        standbyClockButton.toolTip = "Applies to every native output using the selected profile."
+        stack.addArrangedSubview(standbyClockButton)
+        closeButton.target = self; closeButton.action = #selector(closeOutput(_:)); stack.addArrangedSubview(closeButton)
+        let hint = NSTextField(wrappingLabelWithString: "All outputs follow the committed passage. The clock setting belongs to the selected profile. Close this output before changing its monitor. Missing monitors retain their assignments and require explicit reopening.")
+        hint.font = .systemFont(ofSize: 12); hint.textColor = .secondaryLabelColor; stack.addArrangedSubview(hint)
         for item in stack.arrangedSubviews { item.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
     }
     private func pickerRow(_ title: String, _ picker: NSPopUpButton, actions: [NSButton]) -> NSView {
@@ -244,10 +365,16 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     }
     private func renderDestination() {
         guard !profilesMode, let id = selectedID, let output = live.outputs.destination(id) else { return }
-        if nameField.currentEditor() == nil { nameField.stringValue = output.name }
-        validationLabel.stringValue = formIssue ?? ""; validationLabel.isHidden = formIssue == nil
-        enabledButton.state = output.enabled ? .on : .off
+        if nameField.currentEditor() == nil, nameField.stringValue != output.name { nameField.stringValue = output.name }
+        if validationLabel.stringValue != (formIssue ?? "") { validationLabel.stringValue = formIssue ?? "" }
+        if validationLabel.isHidden != (formIssue == nil) { validationLabel.isHidden = formIssue == nil }
+        if enabledButton.state != (output.enabled ? .on : .off) { enabledButton.state = output.enabled ? .on : .off }
         guard let assignment = output.native else { return }
+        let input = NativeInput(output: output, configuration: live.outputs.configuration, displayRevision: displays.revision,
+                                openOutputs: Set(live.nativeOutputs.keys), hasScripture: live.projector.projection != nil,
+                                blanked: live.projector.isBlanked, issue: formIssue)
+        guard input != nativeInput else { return }
+        nativeInput = input
         var entries = [MonitorEntry(title: "None", target: nil, enabled: true)]
         let connected = displays.displays.map(\.target)
         var targets = connected + displays.knownTargets.filter { target in !connected.contains { $0.identity == target.identity } }
@@ -321,8 +448,9 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         reload()
     }
     @objc private func changeSection(_ sender: Any?) { endNameEditing(); formIssue = nil; selectedID = nil; detailKey = nil; reload() }
-    @objc private func addNativeOutput(_ sender: Any?) { selectDestination(live.outputs.addNative()) }
+    @objc private func addNativeOutput(_ sender: Any?) { guard updatesEnabled, !profilesMode else { return }; selectDestination(live.outputs.addNative()) }
     @objc private func addAltViewOutput(_ sender: Any?) {
+        guard updatesEnabled, !profilesMode else { return }
         let id = live.outputs.addAltView()
         // The editor needs its service during this selection's first render.
         // Deferred preference refresh would leave an incomplete cached detail.
@@ -330,19 +458,19 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         selectDestination(id)
     }
     @objc private func addProfile(_ sender: Any?) {
-        guard profilesMode, let selectedID else { return }
+        guard updatesEnabled, profilesMode, let selectedID else { return }
         endNameEditing()
         if let id = live.outputs.duplicateProfile(selectedID) { selectProfile(id) }
     }
-    @objc private func removeOutput(_ sender: Any?) { if let id = selectedID { endNameEditing(); live.outputs.remove(id); live.refreshPreferences(); selectedID = nil; detailKey = nil; reload() } }
+    @objc private func removeOutput(_ sender: Any?) { if let id = editedDestination?.id { endNameEditing(); live.outputs.remove(id); live.refreshPreferences(); selectedID = nil; detailKey = nil; reload() } }
     @objc private func enabledChanged(_ sender: Any?) {
-        guard var output = selectedID.flatMap(live.outputs.destination) else { return }
+        guard var output = editedDestination else { return }
         output.enabled = enabledButton.state == .on
         formIssue = live.outputs.update(output); live.refreshPreferences(); reload()
         if formIssue == nil, output.enabled { live.showStandby(output.id); reload() }
     }
     @objc private func monitorChanged(_ sender: Any?) {
-        guard var output = selectedID.flatMap(live.outputs.destination), var assignment = output.native else { return }
+        guard var output = editedDestination, var assignment = output.native else { return }
         assignment.monitor = monitorPicker.selectedItem?.representedObject as? ProjectionMonitorTarget
         output.assignment = .native(assignment)
         formIssue = live.outputs.update(output); live.refreshPreferences()
@@ -350,7 +478,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         reload()
     }
     @objc private func profileChanged(_ sender: Any?) {
-        guard var output = selectedID.flatMap(live.outputs.destination), var assignment = output.native,
+        guard var output = editedDestination, var assignment = output.native,
               let id = profilePicker.selectedItem?.representedObject as? UUID else { return }
         assignment.profileID = id; output.assignment = .native(assignment); formIssue = live.outputs.update(output)
         live.refreshPreferences()
@@ -358,34 +486,47 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         detailKey = nil; reload()
     }
     @objc private func standbyClockChanged(_ sender: NSButton) {
-        guard let id = selectedID.flatMap(live.outputs.destination)?.native?.profileID,
+        guard let id = editedDestination?.native?.profileID,
               var profile = live.outputs.profile(id) else { return }
         profile.standby = sender.state == .on ? .clock : .hidden
         live.outputs.updateProfile(profile); live.refreshPreferences()
         if profile.standby == .clock { live.showStandbyOutputs(using: id) }
         reload()
     }
-    @objc private func editProfile(_ sender: Any?) { if let id = selectedID.flatMap(live.outputs.destination)?.native?.profileID { selectProfile(id) } }
+    @objc private func editProfile(_ sender: Any?) { if let id = editedDestination?.native?.profileID { selectProfile(id) } }
     @objc private func clearBackground(_ sender: Any?) {
-        guard let id = selectedID.flatMap(live.outputs.destination)?.native?.profileID,
+        guard let id = editedDestination?.native?.profileID,
               var profile = live.outputs.profile(id) else { return }
         profile.transparent = true
         formIssue = live.outputs.updateProfile(profile)
         live.refreshPreferences(); reload()
     }
-    @objc private func identifyMonitor(_ sender: Any?) { if let target = selectedID.flatMap(live.outputs.destination)?.native?.monitor { displays.identify(target) } }
+    @objc private func identifyMonitor(_ sender: Any?) { if let target = editedDestination?.native?.monitor { displays.identify(target) } }
     @objc private func nameMonitor(_ sender: Any?) {
-        guard let target = selectedID.flatMap(live.outputs.destination)?.native?.monitor, let parent = view.window, parent.attachedSheet == nil else { return }
+        guard let target = editedDestination?.native?.monitor, let parent = view.window, parent.attachedSheet == nil else { return }
         let sheet = NSWindow(contentRect: .init(x: 0, y: 0, width: 440, height: 310), styleMask: [.titled], backing: .buffered, defer: false)
         sheet.isReleasedWhenClosed = false; sheet.contentViewController = ProjectionMonitorNameController(displays: displays, target: target)
         parent.beginSheet(sheet) { _ in sheet.orderOut(nil) }
     }
-    @objc private func closeOutput(_ sender: Any?) { if let id = selectedID { live.closeNativeOutput(id); reload() } }
-    @objc private func restoreDefaults(_ sender: Any?) { live.outputs.restoreDefaults(); selectedID = nil; detailKey = nil; reload() }
+    @objc private func closeOutput(_ sender: Any?) { if let id = editedDestination?.id { live.closeNativeOutput(id); reload() } }
+    @objc private func restoreDefaults(_ sender: Any?) { guard updatesEnabled else { return }; live.outputs.restoreDefaults(); selectedID = nil; detailKey = nil; reload() }
 }
 
 @MainActor
 final class OutputEditorDocumentView: NSView { override var isFlipped: Bool { true } }
+
+@MainActor
+private final class OutputListCell: NSTableCellView {
+    let detail = nativeLabel(size: 11)
+    init() {
+        super.init(frame: .zero)
+        let label = nativeLabel(weight: .medium)
+        detail.textColor = .secondaryLabelColor
+        let stack = NSStackView(views: [label, detail]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 3
+        textField = label; pin(stack, to: self, inset: 6)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
 
 @MainActor
 func outputRow(_ title: String, _ control: NSView) -> NSStackView {

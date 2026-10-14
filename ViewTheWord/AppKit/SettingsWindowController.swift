@@ -30,6 +30,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         settings.bibleLibrary.onImport = { [weak self] in self?.importBible() }
         settings.bibleLibrary.onRemove = { [weak self] url in self?.removeBible(url) }
         alertSubscription = library.$alerts.sink { [weak self] _ in self?.scheduleAlertPresentation() }
+        settings.outputs.stopDiscovery()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit { presentationTask?.cancel() }
