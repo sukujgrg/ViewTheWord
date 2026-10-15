@@ -14,6 +14,8 @@ Use **Command-T** to keep another passage ready in a native tab, or **Command-N*
 
 Tab headings show the passage and translation abbreviations. A green **● Live** marker identifies the tab supplying output; **● Blanked** keeps that identity while output is hidden. Selecting another tab leaves output unchanged. Only projecting from another tab transfers the marker and control of live translations. After the source tab closes, output keeps its last content until another projection or Stop.
 
+The top-right **Output** menu provides quick monitor, text-size, padding, alignment, reading-direction, translation-layout, names and transparency controls. Choose its **Default output**, or select a destination in Manage Outputs and click **Make Default** beneath the list. The list marks the current default. Use the **+** menu to add a Native Output or AltView Output, and **−** to remove the selected output. Quick appearance edits give that destination its own customized profile and leave other outputs and reusable profiles unchanged. A disabled default stays selected with greyed controls and a visible explanation; Manage Outputs remains available. AltView defaults offer the receiver's advertised layouts, with appearance controlled in AltView. **Project, Blank and Stop** continue to apply to all enabled outputs, regardless of the default.
+
 The verse and chapter highlights show your current selection, including after projection stops. **Live** shows which reference is being projected when you browse elsewhere.
 
 Use **View The Word → Check for Updates…** to download and install new releases.

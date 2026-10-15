@@ -30,6 +30,15 @@ private final class ReviewAltViewSender: AltViewSending, @unchecked Sendable {
     }
 }
 
+@MainActor
+private final class ReviewUpdateDriver: AppUpdateDriving {
+    var state = AppUpdateState(canCheckForUpdates: true) { didSet { onStateChange?(state) } }
+    var onStateChange: ((AppUpdateState) -> Void)?
+    func start() {}
+    func checkForUpdates() {}
+    func setAutomaticChecks(_ enabled: Bool) { state.automaticallyChecksForUpdates = enabled }
+}
+
 private func reviewLog(_ text: String) { FileHandle.standardOutput.write(Data((text + "\n").utf8)) }
 
 private struct ReviewFailure: Error, CustomStringConvertible {
@@ -102,9 +111,11 @@ struct NativeWorkspaceReview {
         // Exercise logical output lifetime without sending fixture content to a display.
         var outputCreations = 0
         if !inspectingProjection { live.nativeWindowFactory = { _, _, _ in outputCreations += 1; return nil } }
+        let updateDriver = ReviewUpdateDriver()
         let tabs = PassageTabsController(liveProjection: live,
             history: HistoryStore(fileURL: output.appendingPathComponent("history.json")),
-            bookmarks: BookmarkStore(fileURL: output.appendingPathComponent("bookmarks.json")), savesFrames: false)
+            bookmarks: BookmarkStore(fileURL: output.appendingPathComponent("bookmarks.json")), savesFrames: false,
+            updates: AppUpdateController(driver: updateDriver))
         let controller = tabs.open()
         let workspace = controller.workspace
         workspace.history.clear()
@@ -147,6 +158,10 @@ struct NativeWorkspaceReview {
         }
         if CommandLine.arguments.contains("--inspect-settings") {
             try await checkNativeSettings(output: output, sources: sources, inspecting: true)
+            return
+        }
+        if CommandLine.arguments.contains("--default-output-only") || CommandLine.arguments.contains("--inspect-default-output") {
+            try await checkDefaultOutputControls(workspace, window: window, output: output, updateDriver: updateDriver)
             return
         }
         if CommandLine.arguments.contains("--settings-only") {
@@ -868,7 +883,7 @@ struct NativeWorkspaceReview {
         let assignments = live.outputs.destinations
         try focus.check()
         // Exercise AppKit activation with the real name editor still active.
-        // Pointer input for this small-square image button is checked in inspection.
+        // Pointer input for this compact image button is checked in inspection.
         outputs.addProfileButton.performClick(nil)
         let copyID = outputs.profileEditor!.profileID
         guard copyID != NativeOutputProfile.audienceID,
@@ -881,6 +896,55 @@ struct NativeWorkspaceReview {
         original.name = "Audience"; copy.name = "Audience Copy"
         precondition(live.outputs.updateProfile(original) == nil && live.outputs.updateProfile(copy) == nil)
         reviewLog("PASS Profiles list +: native activation commits the name draft, selects an independent copy, and retains output assignments")
+    }
+
+    @MainActor private static func checkOutputListActions(_ outputs: ManageOutputsController, window: NSWindow) async throws {
+        let live = outputs.live, original = outputs.live.outputs.configuration
+        let menu = outputs.addOutputButton.menu!
+        precondition(menu.items.map(\.title) == ["Native Output", "AltView Output"])
+        precondition(menu.items.allSatisfy { !$0.isHidden } && outputs.addOutputButton.image != nil)
+        let addNative = menu.items[0]
+        NSApp.sendAction(addNative.action!, to: addNative.target, from: addNative)
+        let added = live.outputs.destinations.last!
+        precondition(added.native != nil && !added.enabled && outputs.defaultButton.isEnabled)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let list = outputs.table.enclosingScrollView!
+        let listFrame = list.convert(list.bounds, to: outputs.view)
+        func alignmentFrame(_ button: NSButton) -> NSRect {
+            button.superview!.convert(button.alignmentRect(forFrame: button.frame), to: outputs.view)
+        }
+        let addFrame = alignmentFrame(outputs.addOutputButton)
+        let defaultFrame = alignmentFrame(outputs.defaultButton)
+        precondition(abs(addFrame.minX - listFrame.minX) < 1 && abs(defaultFrame.maxX - listFrame.maxX) < 1)
+        precondition(outputs.table.focusRingType == .none && list.focusRingType == .none)
+        for button in [outputs.addOutputButton, outputs.removeOutputButton, outputs.defaultButton] {
+            let alignment = button.alignmentRect(forFrame: button.frame)
+            guard button.controlSize == .small && button.bezelStyle == .rounded && alignment.height > 0,
+                  button.frame.width >= button.intrinsicContentSize.width - 1 else {
+                throw ReviewFailure(description: "Footer control has inconsistent native alignment: \(button.accessibilityLabel() ?? button.title), size=\(button.controlSize.rawValue), frame=\(button.frame), alignment=\(alignment), intrinsic=\(button.intrinsicContentSize)")
+            }
+        }
+        precondition(window.makeFirstResponder(outputs.nameField))
+        let editor = outputs.nameField.currentEditor() as! NSTextView
+        editor.selectAll(nil); editor.insertText("Default draft", replacementRange: editor.selectedRange())
+        click(outputs.defaultButton, rect: outputs.defaultButton.bounds, window: window)
+        try await waitUntil { live.outputs.defaultDestination?.id == added.id }
+        precondition(live.outputs.defaultDestination?.name == "Default draft" && live.outputs.defaultDestination?.enabled == false)
+        precondition(outputs.defaultButton.title == "Default" && !outputs.defaultButton.isEnabled)
+        precondition(live.nativeOutputs.isEmpty && live.projector.projection == nil && live.source == nil)
+        click(outputs.removeOutputButton, rect: outputs.removeOutputButton.bounds, window: window)
+        try await waitUntil { live.outputs.destination(added.id) == nil }
+        precondition(live.outputs.defaultDestination == nil)
+        live.outputs.setDefaultDestination(original.defaultDestinationID); outputs.reload()
+        precondition(live.outputs.configuration == original)
+        outputs.selectProfile(NativeOutputProfile.audienceID)
+        precondition(outputs.addOutputButton.isHiddenOrHasHiddenAncestor && !outputs.addProfileButton.isHiddenOrHasHiddenAncestor)
+        outputs.selectDestination(original.destinations[0].id)
+        window.contentView?.layoutSubtreeIfNeeded()
+        precondition(!outputs.addOutputButton.isHiddenOrHasHiddenAncestor && outputs.addProfileButton.isHiddenOrHasHiddenAncestor)
+        precondition(alignmentFrame(outputs.addOutputButton).height > 0)
+        precondition(abs(alignmentFrame(outputs.defaultButton).maxX - listFrame.maxX) < 1)
+        reviewLog("PASS output footer: aligned native + menu / minus / Make Default, real name-editor commit, disabled default, removal to None, and retained mode-specific footers without an outer focus ring")
     }
 
     @MainActor private static func checkNativeOutputActions(_ outputs: ManageOutputsController, window: NSWindow) async throws {
@@ -979,8 +1043,8 @@ struct NativeWorkspaceReview {
         try await waitUntil { window.isKeyWindow }
         func views(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(views) }
         let outputsView = settings.settings.outputs.view
-        let addRemote = views(outputsView).compactMap { $0 as? NSButton }.first { $0.title == "Add AltView" }!
-        addRemote.performClick(nil)
+        let addRemote = settings.settings.outputs.addOutputButton.menu!.items.first { $0.title == "AltView Output" }!
+        NSApp.sendAction(addRemote.action!, to: addRemote.target, from: addRemote)
         guard let remoteID = live.outputs.destinations.last?.id,
               let altView = live.altViewServices[remoteID],
               let editor = settings.settings.outputs.remoteEditor,
@@ -994,6 +1058,7 @@ struct NativeWorkspaceReview {
         if !inspecting {
             let outputs = settings.settings.outputs
             if !pairingOnly {
+                try await checkOutputListActions(outputs, window: window)
                 try await checkProfileCreation(outputs, window: window)
                 try await checkNativeOutputActions(outputs, window: window)
                 try await checkReusedProfileEditing(outputs, window: window)
@@ -1422,6 +1487,107 @@ struct NativeWorkspaceReview {
         reviewLog("PASS \(outline.accessibilityLabel()!): full-width scrolling rows, text x=\(textOrigin)")
         return textOrigin
     }
+    @MainActor private static func checkDefaultOutputControls(_ workspace: MainWorkspaceController, window: NSWindow,
+                                                            output: URL, updateDriver: ReviewUpdateDriver) async throws {
+        let live = workspace.liveProjection, store = workspace.liveProjection.outputs
+        let audience = store.destinations[0].id, other = store.addNative()
+        var second = store.destination(other)!
+        second.name = "Confidence"; precondition(store.update(second) == nil)
+        let settings = SettingsWindowController(library: live.library, liveProjection: live)
+        settings.settings.outputs.discoveryEnabled = false
+        defer { settings.close() }
+        let reference = VerseReference(book: "John", chapter: 3, verse: 16)!
+        workspace.navigate(to: reference, project: false)
+        try await settle(workspace)
+        func command(_ title: String) -> NSMenuItem { workspace.outputOptions.menu!.items.first { $0.title == title }! }
+        let original = store.profile(store.destination(audience)!.native!.profileID)!
+        let quick = command("Transparent background")
+        NSApp.sendAction(quick.action!, to: quick.target, from: quick)
+        precondition(store.profile(original.id) == original)
+        precondition(store.destination(audience)?.native?.profileID != original.id)
+        precondition(store.destination(other)?.native?.profileID == original.id)
+        precondition(live.projector.projection == nil && live.nativeOutputs.isEmpty)
+        let revision = live.projector.revision
+        let manager = settings.settings.outputs
+        _ = manager.view
+        settings.settings.selectedTabViewItemIndex = 0
+        settings.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true); settings.window!.makeKeyAndOrderFront(nil)
+        manager.selectDestination(other)
+        do { try await waitUntil { NSApp.isActive && settings.window!.isKeyWindow && manager.defaultButton.window === settings.window! } }
+        catch {
+            throw ReviewFailure(description: "Make Default fixture did not attach: active=\(NSApp.isActive), key=\(NSApp.keyWindow?.title ?? "none"), pane=\(settings.settings.selectedTabViewItemIndex), attached=\(manager.defaultButton.window === settings.window!), visible=\(!manager.defaultButton.isHiddenOrHasHiddenAncestor)")
+        }
+        settings.window!.contentView?.layoutSubtreeIfNeeded()
+        click(manager.defaultButton, rect: manager.defaultButton.bounds, window: settings.window!)
+        try await waitUntil { store.defaultDestination?.id == other }
+        precondition(store.defaultDestination?.enabled == false)
+        let restored = OutputConfigurationStore(defaults: workspace.defaults, displays: live.projectionDisplays)
+        precondition(restored.defaultDestination?.id == other)
+        settings.close(); window.makeKeyAndOrderFront(nil)
+        try await waitUntil { window.isKeyWindow }
+        let focusGuard = ReviewFocusGuard(window: window)
+        defer { focusGuard.stop() }
+        for (name, width, dark, disabled) in [("default-output-light", 1200.0, false, false),
+                                             ("default-output-disabled", 1200.0, false, true),
+                                             ("default-output-dark", 1200.0, true, false),
+                                             ("default-output-compact", 950.0, false, false),
+                                             ("default-output-long-name", 950.0, false, false),
+                                             ("default-output-update", 950.0, false, false)] {
+            let fieldEditor = workspace.search.field.currentEditor()
+            let showsUpdate = name == "default-output-update"
+            updateDriver.state.availableVersion = showsUpdate ? "4.2.0" : nil
+            var named = store.destination(audience)!
+            named.name = name == "default-output-long-name" || showsUpdate ? "The main audience output with a deliberately long descriptive name" : "Audience"
+            precondition(store.update(named) == nil)
+            store.setDefaultDestination(disabled ? other : audience)
+            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            window.setContentSize(NSSize(width: width, height: 760))
+            workspace.render()
+            if fieldEditor == nil { workspace.focusSearch(nil) }
+            try await waitUntil { workspace.search.field.currentEditor() != nil }
+            try await Task.sleep(nanoseconds: 300_000_000)
+            window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            try focusGuard.check()
+            guard workspace.outputOptions.window === window && !workspace.outputOptions.isHiddenOrHasHiddenAncestor,
+                  workspace.projectionOptions.window === window && !workspace.projectionOptions.isHiddenOrHasHiddenAncestor,
+                  workspace.viewOptions.window === window && !workspace.viewOptions.isHiddenOrHasHiddenAncestor,
+                  workspace.search.field.window === window && workspace.search.field.frame.width > 150 else {
+                throw ReviewFailure(description: "Toolbar controls overflowed in \(name): output=\(workspace.outputOptions.window === window), projection=\(workspace.projectionOptions.window === window), searchWidth=\(workspace.search.field.frame.width)")
+            }
+            if let fieldEditor, workspace.search.field.currentEditor() !== fieldEditor || window.firstResponder !== fieldEditor {
+                throw ReviewFailure(description: "Changing the default output or toolbar width interrupted search editing in \(name)")
+            }
+            if showsUpdate {
+                let button = window.toolbar!.items.first { $0.itemIdentifier == .workspaceUpdate }?.view
+                precondition(button?.window === window && button?.isHiddenOrHasHiddenAncestor == false,
+                             "The update reminder must remain available beside quick controls")
+            }
+            for title in ["Text alignment", "Verse size", "Projection monitor", "Transparent background"] {
+                precondition(command(title).isEnabled != disabled)
+            }
+            precondition(command("Manage Outputs…").isEnabled)
+            if disabled { precondition(command("Default output is disabled.").action != nil) }
+            let frame = window.contentView!.superview!
+            let bitmap = frame.bitmapImageRepForCachingDisplay(in: frame.bounds)!
+            frame.cacheDisplay(in: frame.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(name + ".png"))
+        }
+        precondition(live.projector.revision == revision && live.source == nil && live.nativeOutputs.isEmpty)
+        let editor = workspace.search.field.currentEditor()
+        updateDriver.state.availableVersion = nil
+        workspace.render()
+        try await waitUntil { !window.toolbar!.items.contains { $0.itemIdentifier == .workspaceUpdate } }
+        try focusGuard.check()
+        precondition(workspace.search.field.currentEditor() === editor && window.firstResponder === editor)
+        reviewLog("PASS default output: native Make Default selection, saved disabled target, isolated quick appearance, greyed menu actions, shared Projection menu, light/dark/compact toolbar and update reminder without interrupting search")
+        if CommandLine.arguments.contains("--inspect-default-output") {
+            store.setDefaultDestination(other); workspace.render()
+            reviewLog("INSPECT default-output toolbar and disabled controls. Close the passage window to finish.")
+            while window.isVisible { try await Task.sleep(nanoseconds: 100_000_000) }
+        }
+    }
+
     @MainActor static func click(_ view: NSView, rect: NSRect, window: NSWindow) {
         let location = view.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
         let time = ProcessInfo.processInfo.systemUptime

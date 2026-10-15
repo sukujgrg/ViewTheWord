@@ -115,6 +115,8 @@ struct OutputScriptureComponents: Equatable {
 struct NativeOutputAssignment: Codable, Equatable, Sendable {
     var monitor: ProjectionMonitorTarget?
     var profileID: UUID
+    // Quick edits reuse this copy while it belongs exclusively to this output.
+    var quickEditProfileID: UUID?
 }
 struct AltViewOutputAssignment: Codable, Equatable, Sendable {
     var receiver: AltViewDestination?
@@ -138,8 +140,34 @@ struct OutputConfiguration: Codable, Equatable {
     var version = 1
     var profiles: [NativeOutputProfile]
     var destinations: [OutputDestination]
+    var defaultDestinationID: UUID?
+
+    private enum CodingKeys: String, CodingKey { case version, profiles, destinations, defaultDestinationID }
+    init(version: Int = 1, profiles: [NativeOutputProfile], destinations: [OutputDestination], defaultDestinationID: UUID? = nil) {
+        self.version = version; self.profiles = profiles; self.destinations = destinations
+        self.defaultDestinationID = defaultDestinationID
+    }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decode(Int.self, forKey: .version)
+        profiles = try values.decode([NativeOutputProfile].self, forKey: .profiles)
+        destinations = try values.decode([OutputDestination].self, forKey: .destinations)
+        // Older documents select their first native output, or their first remote
+        // output. An explicit null preserves a deliberately cleared default.
+        defaultDestinationID = values.contains(.defaultDestinationID)
+            ? try values.decodeIfPresent(UUID.self, forKey: .defaultDestinationID)
+            : destinations.first(where: { $0.native != nil })?.id ?? destinations.first?.id
+    }
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(version, forKey: .version)
+        try values.encode(profiles, forKey: .profiles)
+        try values.encode(destinations, forKey: .destinations)
+        try values.encode(defaultDestinationID, forKey: .defaultDestinationID)
+    }
     var isValid: Bool {
         version == 1 && !profiles.isEmpty && profiles.allSatisfy(\.isValid) &&
+        (defaultDestinationID == nil || destinations.contains { $0.id == defaultDestinationID }) &&
         Set(profiles.map(\.id)).count == profiles.count && Set(destinations.map(\.id)).count == destinations.count &&
         destinations.allSatisfy { destination in
             guard !destination.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, destination.name.count <= 80 else { return false }
@@ -164,6 +192,7 @@ final class OutputConfigurationStore: ObservableObject {
     var canEdit: Bool { recoveryNotice == nil }
     var profiles: [NativeOutputProfile] { configuration.profiles }
     var destinations: [OutputDestination] { configuration.destinations }
+    var defaultDestination: OutputDestination? { configuration.defaultDestinationID.flatMap(destination) }
 
     init(defaults: UserDefaults, displays: ProjectionDisplayManager) {
         self.defaults = defaults; self.displays = displays
@@ -215,7 +244,8 @@ final class OutputConfigurationStore: ObservableObject {
         if let receiver {
             destinations.append(OutputDestination(name: "AltView", enabled: true, assignment: .altView(.init(receiver: receiver, receiverID: receiver.receiverIdentity))))
         }
-        return OutputConfiguration(profiles: [audience, .confidence, .lowerThird], destinations: destinations)
+        return OutputConfiguration(profiles: [audience, .confidence, .lowerThird], destinations: destinations,
+                                   defaultDestinationID: destinations[0].id)
     }
     func profile(_ id: UUID) -> NativeOutputProfile? { profiles.first { $0.id == id } }
     func destination(_ id: UUID) -> OutputDestination? { destinations.first { $0.id == id } }
@@ -266,7 +296,41 @@ final class OutputConfigurationStore: ObservableObject {
         if canEdit { configuration.destinations.append(output); save() }
         return output.id
     }
-    func remove(_ id: UUID) { guard canEdit else { return }; configuration.destinations.removeAll { $0.id == id }; save() }
+    func remove(_ id: UUID) {
+        guard canEdit else { return }
+        var next = configuration
+        next.destinations.removeAll { $0.id == id }
+        if next.defaultDestinationID == id { next.defaultDestinationID = nil }
+        configuration = next; save()
+    }
+    func setDefaultDestination(_ id: UUID?) {
+        guard canEdit, configuration.defaultDestinationID != id else { return }
+        if let id, destination(id) == nil { return }
+        configuration.defaultDestinationID = id; save()
+    }
+    /// Commit appearance and its assignment together; reusable/shared profiles
+    /// never change as a side effect of a toolbar action.
+    @discardableResult func editDefaultProfile(destinationID: UUID, _ edit: (inout NativeOutputProfile) -> Void) -> String? {
+        guard canEdit else { return recoveryNotice }
+        guard let output = defaultDestination, output.id == destinationID, output.enabled,
+              var assignment = output.native, let original = profile(assignment.profileID) else { return "Default output is unavailable." }
+        var edited = original
+        edit(&edited)
+        guard edited != original else { return nil }
+        guard edited.isValid, edited.id == original.id else { return "Use valid appearance settings." }
+        var next = configuration
+        guard let index = next.destinations.firstIndex(where: { $0.id == output.id }) else { return "Output no longer exists." }
+        let shared = destinations.contains { $0.id != output.id && $0.native?.profileID == original.id }
+        if assignment.quickEditProfileID != original.id || shared {
+            edited.id = UUID(); edited.name = String(output.name.prefix(70)) + " Custom"
+            next.profiles.append(edited)
+            assignment.profileID = edited.id; assignment.quickEditProfileID = edited.id
+        } else if let index = next.profiles.firstIndex(where: { $0.id == original.id }) {
+            next.profiles[index] = edited
+        }
+        next.destinations[index].assignment = .native(assignment)
+        configuration = next; save(); return nil
+    }
     @discardableResult func updateProfile(_ profile: NativeOutputProfile) -> String? {
         guard canEdit else { return recoveryNotice }
         guard !profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, profile.name.count <= 80 else {

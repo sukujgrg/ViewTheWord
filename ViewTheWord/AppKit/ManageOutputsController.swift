@@ -12,13 +12,14 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     let profilePicker = NSPopUpButton()
     let nameField = NSTextField()
     let enabledButton = NSButton(checkboxWithTitle: "Enabled", target: nil, action: nil)
+    let defaultButton = NSButton(title: "Make Default", target: nil, action: nil)
     let standbyClockButton = NSButton(checkboxWithTitle: "Show clock when empty or blanked", target: nil, action: nil)
     let statusLabel = NSTextField(wrappingLabelWithString: "")
     let validationLabel = NSTextField(wrappingLabelWithString: "")
     private let detailHost = NSView()
-    private let addNative = NSButton(title: "Add Native", target: nil, action: nil)
-    private let addRemote = NSButton(title: "Add AltView", target: nil, action: nil)
-    private let remove = NSButton(title: "Remove", target: nil, action: nil)
+    let addOutputButton: NSPopUpButton
+    let removeOutputButton = NSButton(image: NSImage(named: NSImage.removeTemplateName)!, target: nil, action: nil)
+    private let outputActions = NSStackView()
     let addProfileButton = NSButton(image: NSImage(named: NSImage.addTemplateName)!, target: nil, action: nil)
     private let profileActions = NSStackView()
     private var isReloadingTable = false
@@ -59,7 +60,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     private let nativeBody = NSStackView()
     private let remoteHost = NSView()
     private var nativeBodyBuilt = false
-    private struct ListRow: Equatable { let id: UUID; let title: String; let subtitle: String }
+    private struct ListRow: Equatable { let id: UUID; let title: String; let subtitle: String; var isDefault = false }
     private var listRows: [ListRow] = []
     private var listSection = -1
     private var updatesEnabled = true
@@ -87,7 +88,12 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
 
     init(live: LiveProjectionController) {
         self.live = live
+        let addMenu = NSMenu(title: "Add output"); addMenu.autoenablesItems = false
+        addMenu.addItem(withTitle: "Native Output", action: #selector(addNativeOutput(_:)), keyEquivalent: "")
+        addMenu.addItem(withTitle: "AltView Output", action: #selector(addAltViewOutput(_:)), keyEquivalent: "")
+        addOutputButton = NSPopUpButton(image: NSImage(named: NSImage.addTemplateName)!, pullDownMenu: addMenu)
         super.init(nibName: nil, bundle: nil)
+        for item in addMenu.items { item.target = self }
         for publisher in [live.outputs.objectWillChange, live.objectWillChange, displays.objectWillChange] {
             publisher.sink { [weak self] _ in self?.scheduleReload() }.store(in: &subscriptions)
         }
@@ -104,27 +110,40 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         section.selectedSegment = 0; section.target = self; section.action = #selector(changeSection(_:))
         table.addTableColumn(NSTableColumn(identifier: .init("outputs")))
         table.headerView = nil; table.style = .sourceList; table.rowHeight = 48
+        table.focusRingType = .none
         table.delegate = self; table.dataSource = self; table.allowsEmptySelection = false
         table.setAccessibilityLabel("Outputs and profiles")
         let list = NSScrollView(); list.hasVerticalScroller = true; list.documentView = table
-        list.borderType = .bezelBorder
-        for (button, action) in [(addNative, #selector(addNativeOutput(_:))), (addRemote, #selector(addAltViewOutput(_:))), (remove, #selector(removeOutput(_:)))] {
-            button.target = self; button.action = action; button.bezelStyle = .rounded; button.controlSize = .small
+        list.borderType = .bezelBorder; list.focusRingType = .none
+        addOutputButton.autoenablesItems = false
+        addOutputButton.setAccessibilityLabel("Add output"); addOutputButton.toolTip = "Add a native monitor output or an AltView output."
+        removeOutputButton.target = self; removeOutputButton.action = #selector(removeOutput(_:))
+        removeOutputButton.setAccessibilityLabel("Remove output"); removeOutputButton.toolTip = "Remove the selected output."
+        defaultButton.target = self; defaultButton.action = #selector(makeDefault(_:))
+        for button in [addOutputButton, removeOutputButton, defaultButton, addProfileButton] {
+            button.bezelStyle = .rounded; button.controlSize = .small
+            button.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
+            button.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
+        let creationActions = horizontalStack([addOutputButton, removeOutputButton], spacing: 4)
+        for item in [creationActions, NSView(), defaultButton] { outputActions.addArrangedSubview(item) }
+        outputActions.orientation = .horizontal; outputActions.alignment = .centerY; outputActions.spacing = 8
         addProfileButton.target = self; addProfileButton.action = #selector(addProfile(_:))
-        addProfileButton.bezelStyle = .smallSquare; addProfileButton.controlSize = .small
         addProfileButton.toolTip = "Create a profile from the selected profile."
         addProfileButton.setAccessibilityLabel("Add profile")
-        NSLayoutConstraint.activate([addProfileButton.widthAnchor.constraint(equalToConstant: 28),
-                                     addProfileButton.heightAnchor.constraint(equalToConstant: 24)])
         profileActions.addArrangedSubview(addProfileButton); profileActions.addArrangedSubview(NSView())
         profileActions.orientation = .horizontal; profileActions.alignment = .centerY; profileActions.spacing = 0
         // This row detaches in Outputs mode. Keep its own dimensions so its
         // hit area survives reattachment instead of losing parent constraints.
-        let sidebarWidth: CGFloat = 180
-        NSLayoutConstraint.activate([profileActions.widthAnchor.constraint(equalToConstant: sidebarWidth),
-                                     profileActions.heightAnchor.constraint(equalToConstant: 24)])
-        let sidebar = NSStackView(views: [section, list, profileActions, addNative, addRemote, remove])
+        let sidebarWidth: CGFloat = 200
+        for actions in [outputActions, profileActions] {
+            NSLayoutConstraint.activate([actions.widthAnchor.constraint(equalToConstant: sidebarWidth),
+                                         actions.heightAnchor.constraint(equalToConstant: 24)])
+        }
+        let listGroup = NSStackView(views: [list, outputActions, profileActions])
+        listGroup.orientation = .vertical; listGroup.alignment = .leading; listGroup.spacing = 4
+        for item in [list, outputActions, profileActions] { item.widthAnchor.constraint(equalTo: listGroup.widthAnchor).isActive = true }
+        let sidebar = NSStackView(views: [section, listGroup])
         sidebar.orientation = .vertical; sidebar.alignment = .leading; sidebar.spacing = 8
         sidebar.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(sidebar); detailHost.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(detailHost)
@@ -137,7 +156,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
             detailHost.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
             detailHost.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16)
         ])
-        for item in sidebar.arrangedSubviews where item !== profileActions { item.widthAnchor.constraint(equalTo: sidebar.widthAnchor).isActive = true }
+        for item in sidebar.arrangedSubviews { item.widthAnchor.constraint(equalTo: sidebar.widthAnchor).isActive = true }
         nameField.delegate = self; nameField.setAccessibilityLabel("Output name")
         enabledButton.target = self; enabledButton.action = #selector(enabledChanged(_:))
         monitorPicker.target = self; monitorPicker.action = #selector(monitorChanged(_:))
@@ -178,7 +197,7 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         pruneRemoteEditors()
         if selectedID == nil || !identifiers.contains(selectedID!) { endNameEditing(); formIssue = nil; selectedID = identifiers.first }
         let rows = profilesMode ? live.outputs.profiles.map { ListRow(id: $0.id, title: $0.name, subtitle: "Reusable appearance") }
-            : live.outputs.destinations.map { ListRow(id: $0.id, title: $0.name, subtitle: ($0.native != nil ? "Native" : "AltView") + ($0.enabled ? " · Enabled" : " · Disabled")) }
+            : live.outputs.destinations.map { ListRow(id: $0.id, title: $0.name, subtitle: ($0.native != nil ? "Native" : "AltView") + ($0.enabled ? " · Enabled" : " · Disabled"), isDefault: $0.id == live.outputs.configuration.defaultDestinationID) }
         isReloadingTable = true
         if rows != listRows || listSection != section.selectedSegment {
             listRows = rows; listSection = section.selectedSegment; table.reloadData()
@@ -187,13 +206,21 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
             table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
         }
         isReloadingTable = false
-        if addNative.isHidden != profilesMode {
-            addNative.isHidden = profilesMode; addRemote.isHidden = profilesMode; remove.isHidden = profilesMode
-            profileActions.isHidden = !profilesMode
+        if outputActions.isHidden != profilesMode {
+            outputActions.isHidden = profilesMode
         }
+        if profileActions.isHidden != !profilesMode { profileActions.isHidden = !profilesMode }
         addProfileButton.isEnabled = profilesMode && selectedID != nil && live.outputs.canEdit
-        addNative.isEnabled = live.outputs.canEdit; addRemote.isEnabled = live.outputs.canEdit
-        remove.isEnabled = selectedID != nil && live.outputs.canEdit
+        addOutputButton.isEnabled = !profilesMode && live.outputs.canEdit
+        for item in addOutputButton.itemArray { item.isEnabled = addOutputButton.isEnabled }
+        removeOutputButton.isEnabled = editedDestination != nil && live.outputs.canEdit
+        let isDefault = editedDestination?.id == live.outputs.configuration.defaultDestinationID && editedDestination != nil
+        let defaultTitle = isDefault ? "Default" : "Make Default"
+        if defaultButton.title != defaultTitle { defaultButton.title = defaultTitle }
+        defaultButton.isEnabled = editedDestination != nil && !isDefault && live.outputs.canEdit
+        defaultButton.toolTip = isDefault ? "This output is the default for the top-right controls."
+            : "Make the selected output the default for the top-right controls without enabling it."
+        defaultButton.setAccessibilityLabel(isDefault ? "Default output" : "Make selected output default")
         if detailKey != selectedDetailKey { buildDetail() }
         renderDestination()
         profileEditor?.refresh()
@@ -206,6 +233,8 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? OutputListCell ?? OutputListCell()
         cell.identifier = identifier
         cell.textField?.stringValue = listRows[row].title; cell.detail.stringValue = listRows[row].subtitle
+        cell.defaultLabel.isHidden = !listRows[row].isDefault
+        cell.setAccessibilityLabel(listRows[row].title + ", " + listRows[row].subtitle + (listRows[row].isDefault ? ", Default" : ""))
         return cell
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -448,9 +477,13 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         reload()
     }
     @objc private func changeSection(_ sender: Any?) { endNameEditing(); formIssue = nil; selectedID = nil; detailKey = nil; reload() }
-    @objc private func addNativeOutput(_ sender: Any?) { guard updatesEnabled, !profilesMode else { return }; selectDestination(live.outputs.addNative()) }
+    @objc private func addNativeOutput(_ sender: Any?) {
+        guard updatesEnabled, !profilesMode, live.outputs.canEdit else { return }
+        endNameEditing(); selectDestination(live.outputs.addNative())
+    }
     @objc private func addAltViewOutput(_ sender: Any?) {
-        guard updatesEnabled, !profilesMode else { return }
+        guard updatesEnabled, !profilesMode, live.outputs.canEdit else { return }
+        endNameEditing()
         let id = live.outputs.addAltView()
         // The editor needs its service during this selection's first render.
         // Deferred preference refresh would leave an incomplete cached detail.
@@ -469,6 +502,12 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
         formIssue = live.outputs.update(output); live.refreshPreferences(); reload()
         if formIssue == nil, output.enabled { live.showStandby(output.id); reload() }
     }
+    @objc private func makeDefault(_ sender: Any?) {
+        guard let output = editedDestination else { return }
+        endNameEditing()
+        live.outputs.setDefaultDestination(output.id)
+        reload()
+    }
     @objc private func monitorChanged(_ sender: Any?) {
         guard var output = editedDestination, var assignment = output.native else { return }
         assignment.monitor = monitorPicker.selectedItem?.representedObject as? ProjectionMonitorTarget
@@ -480,7 +519,8 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
     @objc private func profileChanged(_ sender: Any?) {
         guard var output = editedDestination, var assignment = output.native,
               let id = profilePicker.selectedItem?.representedObject as? UUID else { return }
-        assignment.profileID = id; output.assignment = .native(assignment); formIssue = live.outputs.update(output)
+        assignment.profileID = id; assignment.quickEditProfileID = nil
+        output.assignment = .native(assignment); formIssue = live.outputs.update(output)
         live.refreshPreferences()
         if formIssue == nil { live.showStandby(output.id) }
         detailKey = nil; reload()
@@ -518,11 +558,17 @@ final class OutputEditorDocumentView: NSView { override var isFlipped: Bool { tr
 @MainActor
 private final class OutputListCell: NSTableCellView {
     let detail = nativeLabel(size: 11)
+    let defaultLabel = nativeLabel("Default", size: 10, weight: .medium)
     init() {
         super.init(frame: .zero)
         let label = nativeLabel(weight: .medium)
+        label.setContentHuggingPriority(.defaultLow, for: .horizontal)
         detail.textColor = .secondaryLabelColor
-        let stack = NSStackView(views: [label, detail]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 3
+        defaultLabel.textColor = .secondaryLabelColor
+        defaultLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let heading = horizontalStack([label, defaultLabel], spacing: 6)
+        let stack = NSStackView(views: [heading, detail]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 3
+        heading.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         textField = label; pin(stack, to: self, inset: 6)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

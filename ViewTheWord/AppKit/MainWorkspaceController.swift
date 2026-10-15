@@ -48,6 +48,8 @@ final class MainWorkspaceController: NSViewController {
     let clearHistoryButton = NSButton(title: "Clear", target: nil, action: nil)
     let viewOptions = NSPopUpButton(frame: .zero, pullsDown: true)
     let projectionOptions = NSPopUpButton(frame: .zero, pullsDown: true)
+    let outputOptions = NSPopUpButton(frame: .zero, pullsDown: true)
+    var defaultOutputMenuInput: DefaultOutputMenuInput?
     let resultsHeader = NSStackView()
     let footer = NSStackView()
     let preview = NSPopover()

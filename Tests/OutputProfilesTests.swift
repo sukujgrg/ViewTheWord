@@ -188,10 +188,10 @@ final class OutputProfilesTests: XCTestCase {
         let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [] }))
         defer { live.shutdown() }
         let manager = ManageOutputsController(live: live); manager.discoveryEnabled = false; _ = manager.view
-        let add = try XCTUnwrap(descendants(manager.view).compactMap { $0 as? NSButton }.first { $0.title == "Add AltView" })
+        let add = try XCTUnwrap(manager.addOutputButton.menu?.items.first { $0.title == "AltView Output" })
         let originalDestinations = live.outputs.destinations
         for _ in 0..<2 {
-            add.performClick(nil)
+            NSApp.sendAction(add.action!, to: add.target, from: add)
             let output = try XCTUnwrap(live.outputs.destinations.last)
             let service = try XCTUnwrap(live.altViewServices[output.id], "Adding an AltView output must prepare its service before rendering its editor")
             let editor = try XCTUnwrap(manager.remoteEditor, "Connection controls must appear in the same Add action without switching selection")
@@ -211,8 +211,7 @@ final class OutputProfilesTests: XCTestCase {
         let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [] }))
         defer { live.shutdown() }
         let manager = ManageOutputsController(live: live); _ = manager.view
-        let remove = try XCTUnwrap(descendants(manager.view).compactMap { $0 as? NSButton }.first { $0.title == "Remove" })
-        remove.performClick(nil)
+        manager.removeOutputButton.performClick(nil)
         XCTAssertTrue(live.outputs.destinations.isEmpty)
         XCTAssertFalse(manager.nameField.isDescendant(of: manager.view), "Removed destinations must not leave their editable form behind")
         func hasEmptyHint(_ manager: ManageOutputsController) -> Bool {
@@ -221,6 +220,76 @@ final class OutputProfilesTests: XCTestCase {
         XCTAssertTrue(hasEmptyHint(manager))
         let reopened = ManageOutputsController(live: live); _ = reopened.view
         XCTAssertTrue(hasEmptyHint(reopened), "An already-empty saved configuration also needs a usable empty state")
+    }
+    func testOutputFooterMenuCommitsDraftsMarksDefaultsAndKeepsHiddenActionsInactive() throws {
+        _ = NSApplication.shared
+        let sender = OutputSender()
+        let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [] }),
+            altViewServiceFactory: { saved, discovery in
+                AltViewProjectionService(destination: saved.receiver, store: OutputPairings(), discovery: discovery) { sender.callback = $0; return sender }
+            })
+        defer { live.shutdown() }
+        let manager = ManageOutputsController(live: live); manager.discoveryEnabled = false; _ = manager.view
+        let audience = live.outputs.destinations[0].id
+        let menu = try XCTUnwrap(manager.addOutputButton.menu)
+        XCTAssertEqual(menu.items.map(\.title), ["Native Output", "AltView Output"])
+        XCTAssertTrue(menu.items.allSatisfy { !$0.isHidden }, "Pull-down attachment must not consume the first creation command as its title")
+        XCTAssertFalse(manager.addOutputButton.usesItemFromMenu)
+        XCTAssertNotNil(manager.addOutputButton.image, "The static + icon must be independent of the menu's textual items")
+        XCTAssertEqual(manager.addOutputButton.accessibilityLabel(), "Add output")
+        XCTAssertEqual(manager.removeOutputButton.accessibilityLabel(), "Remove output")
+        XCTAssertEqual(manager.table.focusRingType, .none)
+        XCTAssertEqual(manager.defaultButton.title, "Default"); XCTAssertFalse(manager.defaultButton.isEnabled)
+        XCTAssertTrue(manager.addProfileButton.isHiddenOrHasHiddenAncestor)
+        manager.controlTextDidBeginEditing(.init(name: NSControl.textDidBeginEditingNotification, object: manager.nameField))
+        manager.nameField.stringValue = "Audience renamed"
+        manager.controlTextDidChange(.init(name: NSControl.textDidChangeNotification, object: manager.nameField))
+        for item in menu.items {
+            NSApp.sendAction(item.action!, to: item.target, from: item)
+            let added = try XCTUnwrap(live.outputs.destinations.last)
+            XCTAssertEqual(live.outputs.destination(audience)?.name, "Audience renamed", "Add must finish the original name draft before changing selection")
+            XCTAssertEqual(added.native != nil, item.title == "Native Output")
+            XCTAssertFalse(added.enabled)
+            XCTAssertEqual(manager.defaultButton.title, "Make Default"); XCTAssertTrue(manager.defaultButton.isEnabled)
+            manager.defaultButton.performClick(nil)
+            XCTAssertEqual(live.outputs.defaultDestination?.id, added.id)
+            XCTAssertFalse(live.outputs.defaultDestination!.enabled, "Choosing a disabled default must not enable it")
+            XCTAssertEqual(manager.defaultButton.title, "Default"); XCTAssertFalse(manager.defaultButton.isEnabled)
+            let saved = live.outputs.configuration
+            manager.defaultButton.performClick(nil)
+            XCTAssertEqual(live.outputs.configuration, saved, "Default is a one-way action, not an on/off toggle")
+            let row = try XCTUnwrap(live.outputs.destinations.firstIndex { $0.id == added.id })
+            let cell = try XCTUnwrap(manager.tableView(manager.table, viewFor: manager.table.tableColumns[0], row: row))
+            XCTAssertTrue(cell.accessibilityLabel()?.hasSuffix(", Default") == true)
+            let marker = descendants(cell).compactMap { $0 as? NSTextField }.first { $0.stringValue == "Default" }
+            XCTAssertEqual(marker?.isHidden, false)
+        }
+        let selected = live.outputs.defaultDestination!.id
+        let saved = live.outputs.configuration
+        manager.selectProfile(NativeOutputProfile.audienceID)
+        XCTAssertTrue(manager.addOutputButton.isHiddenOrHasHiddenAncestor)
+        XCTAssertTrue(manager.defaultButton.isHiddenOrHasHiddenAncestor)
+        XCTAssertFalse(manager.addProfileButton.isHiddenOrHasHiddenAncestor)
+        for item in menu.items { NSApp.sendAction(item.action!, to: item.target, from: item) }
+        NSApp.sendAction(manager.removeOutputButton.action!, to: manager.removeOutputButton.target, from: manager.removeOutputButton)
+        NSApp.sendAction(manager.defaultButton.action!, to: manager.defaultButton.target, from: manager.defaultButton)
+        XCTAssertEqual(live.outputs.configuration, saved)
+        manager.selectDestination(selected)
+        XCTAssertFalse(manager.addOutputButton.isHiddenOrHasHiddenAncestor)
+        XCTAssertNotNil(manager.addOutputButton.image, "The add icon must survive menu selection and section reattachment")
+        XCTAssertTrue(menu.items.allSatisfy { !$0.isHidden })
+        XCTAssertFalse(manager.removeOutputButton.isHiddenOrHasHiddenAncestor)
+        manager.removeOutputButton.performClick(nil)
+        XCTAssertNil(live.outputs.defaultDestination, "Removing the default must leave None, without choosing the next row")
+        XCTAssertNil(live.altViewServices[selected])
+        manager.stopDiscovery()
+        let stopped = live.outputs.configuration
+        for item in menu.items { NSApp.sendAction(item.action!, to: item.target, from: item) }
+        NSApp.sendAction(manager.defaultButton.action!, to: manager.defaultButton.target, from: manager.defaultButton)
+        NSApp.sendAction(manager.removeOutputButton.action!, to: manager.removeOutputButton.target, from: manager.removeOutputButton)
+        XCTAssertEqual(live.outputs.configuration, stopped)
+        XCTAssertEqual(sender.connectCount, 0); XCTAssertTrue(sender.submissions.isEmpty)
+        XCTAssertTrue(live.nativeOutputs.isEmpty); XCTAssertNil(live.source); XCTAssertNil(live.projector.projectionOwner)
     }
     func testNameDraftRemainsBoundToItsDestinationWhenSelectionChanges() {
         let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [] }))
@@ -816,15 +885,234 @@ final class OutputProfilesTests: XCTestCase {
         XCTAssertEqual(manager.remoteEditor?.hostField.stringValue, "preferred.local", "Reopening the editor uses the saved assignment")
         withExtendedLifetime(observation) {}
     }
-    func testRemovedToolbarEditorsAndSettingsOnlyExposeProfilesAndDestinations() {
+    func testQuickControlsStaySeparateFromSharedProjectionCommandsAndSettings() {
         let live = LiveProjectionController(defaults: defaults(), projectionDisplays: selectedTestProjectionDisplays())
         defer { live.shutdown() }
         let workspace = MainWorkspaceController(liveProjection: live); _ = workspace.view; workspace.rebuildOptionMenus()
         let titles = workspace.projectionOptions.menu!.items.filter { !$0.isHidden && !$0.isSeparatorItem }.map(\.title)
         XCTAssertEqual(titles, ["Project selected passage", "Blank", "Stop", "Manage Outputs…"])
         XCTAssertTrue(workspace.projectionOptions.menu!.items.allSatisfy { $0.submenu == nil })
+        XCTAssertEqual(workspace.outputOptions.title, "Output")
+        XCTAssertNotNil(workspace.outputOptions.menu?.items.first { $0.title == "Text alignment" }?.submenu)
+        let outputMenu = workspace.outputOptions.menu
+        workspace.rebuildOptionMenus()
+        XCTAssertTrue(workspace.outputOptions.menu === outputMenu, "Routine refreshes must preserve the attached quick-control menu")
         let settings = NativeSettingsController(library: live.library, liveProjection: live)
         XCTAssertEqual(settings.tabViewItems.map(\.label), ["Manage Outputs", "Bible Library"])
         workspace.shutdown()
+    }
+
+    func testDefaultOutputMigrationSelectionDisableRemovalAndRecoveryRoundTrip() throws {
+        let saved = defaults(), displays = ProjectionDisplayManager(displays: { [] })
+        let store = OutputConfigurationStore(defaults: saved, displays: displays)
+        let audience = store.destinations[0].id, other = store.addNative()
+        XCTAssertEqual(store.defaultDestination?.id, audience)
+        // A pre-default-output versioned document selects its first native output.
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: saved.data(forKey: AppDefaultsKey.outputConfiguration)!) as? [String: Any])
+        legacy.removeValue(forKey: "defaultDestinationID")
+        saved.set(try JSONSerialization.data(withJSONObject: legacy), forKey: AppDefaultsKey.outputConfiguration)
+        let migrated = OutputConfigurationStore(defaults: saved, displays: displays)
+        XCTAssertEqual(migrated.defaultDestination?.id, audience)
+        migrated.setDefaultDestination(other)
+        XCTAssertEqual(migrated.defaultDestination?.enabled, false, "Choosing a default cannot enable it")
+        let restored = OutputConfigurationStore(defaults: saved, displays: displays)
+        XCTAssertEqual(restored.defaultDestination?.id, other)
+        restored.remove(other)
+        XCTAssertNil(OutputConfigurationStore(defaults: saved, displays: displays).defaultDestination, "Removal must not silently retarget controls")
+        restored.setDefaultDestination(audience); restored.setDefaultDestination(nil)
+        XCTAssertNil(OutputConfigurationStore(defaults: saved, displays: displays).defaultDestination)
+        restored.setDefaultDestination(UUID()); XCTAssertNil(restored.defaultDestination)
+        saved.set(Data("{}".utf8), forKey: AppDefaultsKey.outputConfiguration)
+        let recovery = OutputConfigurationStore(defaults: saved, displays: displays)
+        let configuration = recovery.configuration
+        recovery.setDefaultDestination(configuration.destinations[0].id)
+        XCTAssertEqual(recovery.configuration, configuration)
+        XCTAssertNotNil(recovery.editDefaultProfile(destinationID: configuration.destinations[0].id) { $0.transparent.toggle() })
+        XCTAssertEqual(saved.data(forKey: AppDefaultsKey.outputConfiguration), Data("{}".utf8))
+    }
+
+    func testQuickAppearanceEditsDetachAndReuseOnlyTheDefaultOutputsProfile() throws {
+        let saved = defaults(), displays = ProjectionDisplayManager(displays: { [] })
+        let store = OutputConfigurationStore(defaults: saved, displays: displays)
+        let audience = store.destinations[0].id, other = store.addNative()
+        let original = try XCTUnwrap(store.profile(NativeOutputProfile.audienceID)), before = store.configuration
+        XCTAssertNil(store.editDefaultProfile(destinationID: audience) { $0.verse.size = original.verse.size })
+        XCTAssertEqual(store.configuration, before, "A no-op must not create a private copy")
+        XCTAssertNil(store.editDefaultProfile(destinationID: audience) { $0.verse.size = 48; $0.transparent = true })
+        let copyID = try XCTUnwrap(store.destination(audience)?.native?.profileID)
+        XCTAssertNotEqual(copyID, original.id)
+        XCTAssertEqual(store.profile(original.id), original, "Quick edits preserve the reusable profile")
+        XCTAssertEqual(store.destination(other)?.native?.profileID, original.id, "Even disabled outputs keep their appearance")
+        XCTAssertEqual(store.profile(copyID)?.verse.size, 48)
+        XCTAssertNil(store.editDefaultProfile(destinationID: audience) { $0.padding = 16 })
+        XCTAssertEqual(store.destination(audience)?.native?.profileID, copyID)
+        XCTAssertEqual(store.profiles.count, before.profiles.count + 1)
+        let restored = OutputConfigurationStore(defaults: saved, displays: displays)
+        XCTAssertNil(restored.editDefaultProfile(destinationID: audience) { $0.alignment = .left })
+        XCTAssertEqual(restored.destination(audience)?.native?.profileID, copyID, "Private copy survives relaunch")
+        assign(restored, other, to: nil, profile: copyID, enabled: false)
+        let shared = restored.profile(copyID)
+        XCTAssertNil(restored.editDefaultProfile(destinationID: audience) { $0.padding = 24 })
+        XCTAssertNotEqual(restored.destination(audience)?.native?.profileID, copyID)
+        XCTAssertEqual(restored.profile(copyID), shared, "Reusing a customized profile elsewhere makes the next quick edit independent again")
+        let unchanged = restored.configuration
+        XCTAssertNotNil(restored.editDefaultProfile(destinationID: audience) { $0.verse.size = .nan })
+        XCTAssertEqual(restored.configuration, unchanged, "Invalid edits must be atomic")
+    }
+
+    func testDefaultOutputMenusIgnoreDisabledRemovedAndRetargetedActions() throws {
+        _ = NSApplication.shared
+        let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [self.monitor(1)] }))
+        defer { live.shutdown() }
+        live.nativeWindowFactory = { _, _, _ in nil }
+        let workspace = MainWorkspaceController(liveProjection: live); _ = workspace.view
+        defer { workspace.shutdown() }
+        let audience = live.outputs.destinations[0].id, other = live.outputs.addNative()
+        let menu = try XCTUnwrap(workspace.outputOptions.menu)
+        let stale = try XCTUnwrap(menu.items.first { $0.title == "Transparent background" })
+        let manager = ManageOutputsController(live: live); _ = manager.view; manager.selectDestination(other)
+        manager.defaultButton.performClick(nil)
+        XCTAssertEqual(live.outputs.defaultDestination?.id, other)
+        XCTAssertEqual(live.outputs.defaultDestination?.enabled, false)
+        workspace.rebuildOptionMenus()
+        let disabled = try XCTUnwrap(workspace.outputOptions.menu)
+        XCTAssertTrue(disabled.items.contains { $0.title == "Default output is disabled." })
+        for title in ["Text alignment", "Projection monitor", "Reading direction", "Transparent background", "Verse size"] {
+            XCTAssertEqual(disabled.items.first { $0.title == title }?.isEnabled, false)
+        }
+        XCTAssertEqual(disabled.items.first { $0.title == "Manage Outputs…" }?.isEnabled, true)
+        let unchanged = live.outputs.configuration
+        NSApp.sendAction(stale.action!, to: stale.target, from: stale)
+        XCTAssertEqual(live.outputs.configuration, unchanged, "An old menu cannot edit its former default or the new selection")
+        XCTAssertNotNil(live.outputs.editDefaultProfile(destinationID: other) { $0.transparent.toggle() })
+        manager.selectDestination(audience); live.outputs.setDefaultDestination(audience); manager.reload()
+        XCTAssertEqual(manager.defaultButton.title, "Default"); XCTAssertFalse(manager.defaultButton.isEnabled)
+        manager.defaultButton.performClick(nil)
+        XCTAssertEqual(live.outputs.defaultDestination?.id, audience, "The Default action must never toggle the current default off")
+        live.outputs.setDefaultDestination(other)
+        manager.selectDestination(audience); manager.defaultButton.performClick(nil)
+        workspace.rebuildOptionMenus()
+        let active = try XCTUnwrap(workspace.outputOptions.menu?.items.first { $0.title == "Transparent background" })
+        NSApp.sendAction(active.action!, to: active.target, from: active)
+        XCTAssertEqual(live.outputs.destination(audience)?.native.flatMap { live.outputs.profile($0.profileID)?.transparent }, true)
+        XCTAssertEqual(live.outputs.destination(other)?.native.flatMap { live.outputs.profile($0.profileID)?.transparent }, false)
+        live.outputs.remove(audience)
+        let afterRemoval = live.outputs.configuration
+        NSApp.sendAction(active.action!, to: active.target, from: active)
+        XCTAssertEqual(live.outputs.configuration, afterRemoval)
+        workspace.rebuildOptionMenus()
+        XCTAssertEqual(workspace.outputOptions.title, "Output")
+        XCTAssertNotNil(workspace.outputOptions.menu?.items.first { $0.title == "Default output: None" })
+        XCTAssertTrue(live.nativeOutputs.isEmpty); XCTAssertNil(live.projector.projectionOwner)
+    }
+
+    func testDisabledDefaultDoesNotRestrictProjectBlankStopOrPublishDuringQuickEdits() async throws {
+        _ = NSApplication.shared
+        let sender = OutputSender()
+        let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [self.monitor(1), self.monitor(2)] }),
+            altViewServiceFactory: { saved, discovery in
+                AltViewProjectionService(destination: saved.receiver, store: OutputPairings(), discovery: discovery) { sender.callback = $0; return sender }
+            })
+        defer { live.shutdown() }
+        live.nativeWindowFactory = { _, _, _ in nil }
+        let audience = live.outputs.destinations[0].id, other = live.outputs.addNative(), disabled = live.outputs.addNative(), remote = live.outputs.addAltView()
+        assign(live.outputs, audience, to: monitor(1), profile: NativeOutputProfile.audienceID)
+        assign(live.outputs, other, to: monitor(2), profile: NativeOutputProfile.audienceID)
+        live.outputs.setDefaultDestination(disabled)
+        XCTAssertNil(live.connectAltView(remote, to: .init(name: "Receiver", host: "receiver.local", port: 54321), code: "ABCD2345"))
+        try await eventually { sender.connectionID != nil }; sender.welcome(); await settle()
+        let workspace = MainWorkspaceController(liveProjection: live); _ = workspace.view
+        defer { workspace.shutdown() }
+        live.publishRow(projection(), from: workspace.tabID)
+        XCTAssertEqual(Set(live.nativeOutputs.keys), Set([audience, other]))
+        XCTAssertNotNil(sender.submissions.last?.content)
+        workspace.rebuildOptionMenus()
+        let blank = try XCTUnwrap(workspace.projectionOptions.menu?.items.first { $0.title == "Blank" })
+        let outputMenu = workspace.outputOptions.menu
+        XCTAssertTrue(blank.isEnabled); NSApp.sendAction(blank.action!, to: blank.target, from: blank)
+        workspace.rebuildOptionMenus()
+        XCTAssertTrue(workspace.outputOptions.menu === outputMenu, "Blanking and routine feedback must not replace quick controls")
+        XCTAssertTrue(live.projector.isBlanked); XCTAssertEqual(sender.submissions.last?.content?.visible, false)
+        let revision = live.projector.revision, source = live.source, submissions = sender.submissions.count
+        live.outputs.setDefaultDestination(audience); workspace.rebuildOptionMenus()
+        let align = try XCTUnwrap(workspace.outputOptions.menu?.items.first { $0.title == "Text alignment" }?.submenu?.items.first { $0.title == "Left" })
+        NSApp.sendAction(align.action!, to: align.target, from: align)
+        XCTAssertEqual(live.nativeOutputs[audience]?.appearance.profile.alignment, .left)
+        XCTAssertEqual(live.nativeOutputs[other]?.appearance.profile.alignment, .center)
+        XCTAssertTrue(live.projector.isBlanked); XCTAssertEqual(live.projector.revision, revision); XCTAssertEqual(live.source, source)
+        XCTAssertEqual(sender.submissions.count, submissions, "Appearance/default selection cannot publish or take remote output")
+        live.outputs.setDefaultDestination(disabled); workspace.rebuildOptionMenus()
+        let stop = try XCTUnwrap(workspace.projectionOptions.menu?.items.first { $0.title == "Stop" })
+        XCTAssertTrue(stop.isEnabled); NSApp.sendAction(stop.action!, to: stop.target, from: stop)
+        await settle()
+        XCTAssertTrue(live.nativeOutputs.isEmpty); XCTAssertNil(sender.submissions.last?.content); XCTAssertNil(live.projector.projectionOwner)
+    }
+
+    func testQuickMonitorSelectionKeepsConflictAndActiveWindowGuards() throws {
+        _ = NSApplication.shared
+        let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [self.monitor(1), self.monitor(2), self.monitor(3)] }))
+        defer { live.shutdown() }
+        live.nativeWindowFactory = { _, _, _ in nil }
+        let audience = live.outputs.destinations[0].id, other = live.outputs.addNative()
+        assign(live.outputs, audience, to: monitor(1), profile: NativeOutputProfile.audienceID)
+        assign(live.outputs, other, to: monitor(2), profile: NativeOutputProfile.audienceID)
+        let workspace = MainWorkspaceController(liveProjection: live); _ = workspace.view
+        defer { workspace.shutdown() }
+        let menu = try XCTUnwrap(workspace.outputOptions.menu?.items.first { $0.title == "Projection monitor" }?.submenu)
+        let occupied = live.projectionDisplays.label(for: monitor(2).target), available = live.projectionDisplays.label(for: monitor(3).target)
+        XCTAssertEqual(menu.items.first { $0.title == occupied }?.isEnabled, false)
+        let stale = try XCTUnwrap(menu.items.first { $0.title == available })
+        XCTAssertTrue(stale.isEnabled)
+        live.publishRow(projection(), from: UUID())
+        workspace.rebuildOptionMenus()
+        XCTAssertEqual(workspace.outputOptions.menu?.items.first { $0.title == "Projection monitor" }?.isEnabled, false)
+        NSApp.sendAction(stale.action!, to: stale.target, from: stale)
+        XCTAssertEqual(live.outputs.destination(audience)?.native?.monitor, monitor(1).target)
+        live.closeProjector()
+        NSApp.sendAction(stale.action!, to: stale.target, from: stale)
+        XCTAssertEqual(live.outputs.destination(audience)?.native?.monitor, monitor(3).target)
+        XCTAssertEqual(live.outputs.destination(other)?.native?.monitor, monitor(2).target)
+        XCTAssertTrue(live.nativeOutputs.isEmpty, "Changing a non-clock monitor assignment cannot open output")
+    }
+
+    func testAltViewDefaultQuickLayoutEditsOnlyItsSavedChoiceUntilExplicitProjection() async throws {
+        _ = NSApplication.shared
+        let first = OutputSender(), second = OutputSender()
+        var clients = [first, second]
+        let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [] }),
+            altViewServiceFactory: { saved, discovery in
+                let sender = clients.removeFirst()
+                return AltViewProjectionService(destination: saved.receiver, template: saved.template, store: OutputPairings(), discovery: discovery) { sender.callback = $0; return sender }
+            })
+        defer { live.shutdown() }
+        let one = live.outputs.addAltView(), two = live.outputs.addAltView()
+        for (id, host) in [(one, "one.local"), (two, "two.local")] {
+            XCTAssertNil(live.connectAltView(id, to: .init(name: host, host: host, port: 54321), code: "ABCD2345"))
+        }
+        try await eventually { first.connectionID != nil && second.connectionID != nil }
+        for sender in [first, second] {
+            sender.callback?(.init(connectionID: sender.connectionID, connected: true, receiverID: sender.receiverID,
+                templateCapabilities: .init(templates: [.init(id: .scripture, name: "Scripture"), .init(id: .lyrics, name: "Lyrics")], policy: .sender)))
+        }
+        await settle()
+        live.outputs.setDefaultDestination(one)
+        let workspace = MainWorkspaceController(liveProjection: live); _ = workspace.view
+        defer { workspace.shutdown() }
+        let layouts = try XCTUnwrap(workspace.outputOptions.menu?.items.first { $0.title == "Layout" })
+        XCTAssertTrue(layouts.isEnabled)
+        let lyrics = try XCTUnwrap(layouts.submenu?.items.first { $0.title == "Lyrics" })
+        NSApp.sendAction(lyrics.action!, to: lyrics.target, from: lyrics)
+        XCTAssertEqual(live.outputs.destination(one)?.altView?.template, .lyrics)
+        XCTAssertEqual(live.outputs.destination(two)?.altView?.template, .scripture)
+        XCTAssertTrue(first.submissions.isEmpty && second.submissions.isEmpty)
+        live.publishRow(projection(), from: UUID())
+        XCTAssertEqual(first.submissions.last?.content?.template, .lyrics)
+        XCTAssertEqual(second.submissions.last?.content?.template, .scripture)
+        var disabled = live.outputs.destination(one)!; disabled.enabled = false
+        XCTAssertNil(live.outputs.update(disabled)); live.refreshPreferences(); workspace.rebuildOptionMenus()
+        XCTAssertEqual(workspace.outputOptions.menu?.items.first { $0.title == "Layout" }?.isEnabled, false)
+        XCTAssertTrue(workspace.outputOptions.menu!.items.contains { $0.title == "Default output is disabled." })
+        NSApp.sendAction(lyrics.action!, to: lyrics.target, from: lyrics)
+        XCTAssertEqual(live.outputs.destination(one)?.altView?.template, .lyrics)
     }
 }
