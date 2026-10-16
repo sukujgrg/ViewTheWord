@@ -70,6 +70,17 @@ private struct ReviewFailure: Error, CustomStringConvertible {
     }
 }
 
+@MainActor private final class ReviewSearchEditingAudit: NSObject {
+    private(set) var endings = 0
+    init(field: NSSearchField) {
+        super.init()
+        NotificationCenter.default.addObserver(self, selector: #selector(didEndEditing),
+                                               name: NSControl.textDidEndEditingNotification, object: field)
+    }
+    @objc private func didEndEditing(_ notification: Notification) { endings += 1 }
+    func stop() { NotificationCenter.default.removeObserver(self) }
+}
+
 @main
 struct NativeWorkspaceReview {
     @MainActor static func main() {
@@ -185,9 +196,20 @@ struct NativeWorkspaceReview {
             }
             return
         }
+        if CommandLine.arguments.contains("--inspect-search-modes") {
+            window.appearance = NSAppearance(named: .darkAqua)
+            reviewLog("INSPECT fresh search modes, with no automated mode clicks. Close the passage window to finish.")
+            while window.isVisible { try await Task.sleep(nanoseconds: 100_000_000) }
+            return
+        }
+        if CommandLine.arguments.contains("--search-modes-only") {
+            try await checkSearchModeControls(workspace, window: window, output: output)
+            return
+        }
         try await checkHistoryVerseReveal(workspace, window: window, output: output)
         if CommandLine.arguments.contains("--history-reveal-only") { return }
         try checkReviewFocusGuard(window: window)
+        try await checkSearchModeControls(workspace, window: window, output: output)
         try await checkDelayedSearchFocus(output: output)
         try await checkQueuedLibraryAlerts(output: output)
         try await checkNativeSettings(output: output, sources: sources)
@@ -591,6 +613,120 @@ struct NativeWorkspaceReview {
         }
         throw ReviewFailure(description: "\(file):\(line): \(diagnostic())")
     }
+    @MainActor static func checkSearchModeControls(_ workspace: MainWorkspaceController, window: NSWindow, output: URL) async throws {
+        let focusGuard = ReviewFocusGuard(window: window)
+        defer { focusGuard.stop() }
+        guard let group = workspace.searchModeToolbarItem,
+              window.toolbar?.items.contains(where: { $0 === group }) == true else {
+            throw ReviewFailure(description: "Search modes must use the native toolbar group")
+        }
+        let editingAudit = ReviewSearchEditingAudit(field: workspace.search.field)
+        defer { editingAudit.stop() }
+        let searchHelp = workspace.search.field.accessibilityHelp()
+        precondition(searchHelp != nil && workspace.search.field.toolTip == searchHelp)
+        func modeButton(in node: Any, title: String, visited: inout Set<ObjectIdentifier>) -> NSAccessibilityProtocol? {
+            guard let object = node as? NSObject, visited.insert(ObjectIdentifier(object)).inserted else { return nil }
+            let element = object as? NSAccessibilityProtocol
+            if let element, element.accessibilityRole() == .radioButton,
+               element.accessibilityLabel() == title || element.accessibilityTitle() == title { return element }
+            let children: [Any]
+            if let window = object as? NSWindow { children = window.accessibilityChildren() ?? [] }
+            else if let view = object as? NSView { children = view.accessibilityChildren() ?? [] }
+            else if let cell = object as? NSCell { children = cell.accessibilityChildren() ?? [] }
+            else { children = element?.accessibilityChildren() ?? [] }
+            for child in children {
+                if let match = modeButton(in: child, title: title, visited: &visited) { return match }
+            }
+            return nil
+        }
+        func clickMode(_ mode: SearchMode) throws {
+            let index = SearchMode.allCases.firstIndex(of: mode)!
+            var visited = Set<ObjectIdentifier>()
+            guard let button = modeButton(in: window, title: group.subitems[index].title, visited: &visited) else {
+                throw ReviewFailure(description: "Search-mode segment has no accessible click target")
+            }
+            let rect = workspace.view.convert(window.convertFromScreen(button.accessibilityFrame()), from: nil)
+            click(workspace.view, rect: rect, window: window)
+        }
+        var repeatedSelections = 0
+        let observation = group.observe(\.selectedIndex, options: [.old, .new]) { _, change in
+            MainActor.assumeIsolated {
+                if change.oldValue == change.newValue { repeatedSelections += 1 }
+            }
+        }
+        defer { observation.invalidate() }
+        let revision = workspace.projector.revision
+        for (name, appearance, width) in [("light", NSAppearance.Name.aqua, CGFloat(1440)),
+                                           ("dark-compact", .darkAqua, CGFloat(1000))] {
+            window.appearance = NSAppearance(named: appearance)
+            window.setContentSize(NSSize(width: width, height: 760))
+            workspace.focusSearch(nil)
+            try await settle(workspace)
+            try focusGuard.check()
+            let endings = editingAudit.endings
+            let interaction = workspace.search.interactionRevision
+            let activeEditor = workspace.search.field.currentEditor()
+            workspace.focusSearch(nil)
+            try focusGuard.check()
+            precondition(editingAudit.endings == endings && workspace.search.field.currentEditor() === activeEditor,
+                         "Focusing an active search must leave its native editing session alone")
+            precondition(workspace.search.interactionRevision > interaction,
+                         "An explicit focus request must supersede pending submission focus without relying on editing teardown")
+            for mode in [SearchMode.wordSearch, .phraseSearch, .verseReference] {
+                try focusGuard.check()
+                let editor = workspace.search.field.currentEditor()
+                if mode == .phraseSearch, let editor = editor as? NSTextView {
+                    editor.insertText("unfinished words", replacementRange: editor.selectedRange())
+                    precondition(!workspace.draft.isEmpty)
+                }
+                let segment = SearchMode.allCases.firstIndex(of: mode)!
+                let modeEndings = editingAudit.endings
+                try clickMode(mode)
+                try await settle(workspace)
+                try focusGuard.check()
+                precondition(workspace.searchMode == mode && group.selectedIndex == segment,
+                             "One native click must select the search mode")
+                precondition(workspace.draft.isEmpty && workspace.search.field.stringValue.isEmpty)
+                precondition(workspace.search.field.recentsAutosaveName == AppDefaultsKey.searchRecents + "." + mode.rawValue)
+                guard let activeEditor = workspace.search.field.currentEditor(), window.firstResponder === activeEditor else {
+                    throw ReviewFailure(description: "A search-mode click must keep keyboard focus in Search")
+                }
+                // A changed native placeholder may restart editing. Preserve
+                // keyboard focus and require unchanged snapshots to stay silent.
+                reviewLog("Search mode \(mode): \(editingAudit.endings - modeEndings) native editing endings during placeholder change")
+                let example = mode == .verseReference ? "John 3:16" : mode == .wordSearch ? "faith AND hope" : "in the beginning"
+                precondition(workspace.search.field.placeholderString == example)
+                precondition(workspace.search.field.accessibilityHelp() == searchHelp && workspace.search.field.toolTip == searchHelp,
+                             "Mode selection must leave the search control's static help unchanged")
+                precondition(group.subitems[segment].toolTip?.contains(example) == true)
+                let snapshotEndings = editingAudit.endings
+                for _ in 0..<3 { workspace.render() }
+                precondition(editingAudit.endings == snapshotEndings, "Unchanged snapshots must not validate or restart search editing")
+                precondition(workspace.search.field.currentEditor() === activeEditor && window.firstResponder === activeEditor)
+                window.displayIfNeeded()
+            }
+            workspace.focus(.books)
+            precondition(workspace.search.field.currentEditor() == nil)
+            try clickMode(.wordSearch)
+            try await settle(workspace)
+            try focusGuard.check()
+            guard let editor = workspace.search.field.currentEditor(), window.firstResponder === editor,
+                  workspace.searchMode == .wordSearch else {
+                throw ReviewFailure(description: "A mode click from the books outline must begin native search editing")
+            }
+            let frame = window.contentView!.superview!
+            let bitmap = frame.bitmapImageRepForCachingDisplay(in: frame.bounds)!
+            frame.cacheDisplay(in: frame.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("search-modes-" + name + ".png"))
+        }
+        reviewLog("Search-mode diagnostic: \(repeatedSelections) unchanged selection writes")
+        guard repeatedSelections == 0 else {
+            throw ReviewFailure(description: "Snapshots rewrote the unchanged search-mode selection \(repeatedSelections) times")
+        }
+        precondition(workspace.projector.revision == revision, "Changing search mode must not publish")
+        reviewLog("PASS native search modes: system toolbar group, window-dispatched Ref/Words/Phrase clicks, empty/populated drafts, mode-specific placeholders, retained Search focus, focus from books, explicit focus revision, per-mode recents, silent snapshots, light/dark compact toolbar")
+    }
+
     @MainActor static func checkDelayedSearchFocus(output: URL) async throws {
         let reader = ReviewBibleGate()
         await reader.suspend(chapters: false, lookups: false, searches: true)
@@ -607,7 +743,19 @@ struct NativeWorkspaceReview {
         let subject = controller.workspace
         let window = controller.window!
         positionFixtureWindow(window)
-        try await waitUntil { NSApp.isActive && window.isKeyWindow }
+        // A second fixture window can be presented while LaunchServices is
+        // still settling the first. Use the same activation handshake as startup.
+        for attempt in 0..<1000 {
+            if NSApp.isActive && window.isKeyWindow { break }
+            if attempt % 10 == 0 {
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        guard NSApp.isActive && window.isKeyWindow else {
+            throw ReviewFailure(description: "Delayed-search fixture failed to activate: active=\(NSApp.isActive), key=\(NSApp.keyWindow?.title ?? "none"), visible=\(window.isVisible)")
+        }
         let focusGuard = ReviewFocusGuard(window: window)
         var focusScenario = "initial"
         func searchEditor() async throws -> NSTextView {
@@ -1552,8 +1700,9 @@ struct NativeWorkspaceReview {
             guard workspace.outputOptions.window === window && !workspace.outputOptions.isHiddenOrHasHiddenAncestor,
                   workspace.projectionOptions.window === window && !workspace.projectionOptions.isHiddenOrHasHiddenAncestor,
                   workspace.viewOptions.window === window && !workspace.viewOptions.isHiddenOrHasHiddenAncestor,
+                  workspace.searchModeToolbarItem?.isVisible == true,
                   workspace.search.field.window === window && workspace.search.field.frame.width > 150 else {
-                throw ReviewFailure(description: "Toolbar controls overflowed in \(name): output=\(workspace.outputOptions.window === window), projection=\(workspace.projectionOptions.window === window), searchWidth=\(workspace.search.field.frame.width)")
+                throw ReviewFailure(description: "Toolbar controls overflowed in \(name): mode=\(workspace.searchModeToolbarItem?.isVisible == true), view=\(workspace.viewOptions.window === window && !workspace.viewOptions.isHiddenOrHasHiddenAncestor), output=\(workspace.outputOptions.window === window), projection=\(workspace.projectionOptions.window === window), searchWidth=\(workspace.search.field.frame.width)")
             }
             if let fieldEditor, workspace.search.field.currentEditor() !== fieldEditor || window.firstResponder !== fieldEditor {
                 throw ReviewFailure(description: "Changing the default output or toolbar width interrupted search editing in \(name)")

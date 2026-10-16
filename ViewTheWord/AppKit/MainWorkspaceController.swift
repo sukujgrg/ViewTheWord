@@ -27,7 +27,6 @@ final class MainWorkspaceController: NSViewController {
     let split = NSSplitViewController()
     let chapterSplit = NSSplitViewController()
     let search = NativeSearchFieldController()
-    let searchModeControl = NSSegmentedControl(labels: ["Ref", "Words", "Phrase"], trackingMode: .selectOne, target: nil, action: nil)
     let primaryPicker = NSPopUpButton()
     let secondaryPicker = NSPopUpButton()
     let chapterTitle = nativeLabel("Choose a book", size: 12, weight: .semibold)
@@ -54,6 +53,7 @@ final class MainWorkspaceController: NSViewController {
     let footer = NSStackView()
     let preview = NSPopover()
     var searchToolbarItem: NSSearchToolbarItem?
+    var searchModeToolbarItem: NSToolbarItemGroup?
 
     private(set) var browsedBook: String?
     private(set) var browsedTestament = BibleTestament.oldTestament
@@ -469,9 +469,8 @@ final class MainWorkspaceController: NSViewController {
         focus(columns[(index + direction + columns.count) % columns.count])
     }
     @objc func focusSearch(_ sender: Any?) {
-        guard view.window?.isKeyWindow == true else { return }
-        searchToolbarItem?.beginSearchInteraction()
-        view.window?.makeFirstResponder(search.field)
+        guard view.window?.isKeyWindow == true, let searchToolbarItem else { return }
+        search.focus(using: searchToolbarItem)
     }
     override func cancelOperation(_ sender: Any?) { closeProjector() }
     func shutdown() {

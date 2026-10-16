@@ -86,6 +86,37 @@ final class NativeWorkspaceTests: XCTestCase {
             XCTAssertEqual(button.title, "Projection", "Choosing a menu command must not change the toolbar title")
         }
     }
+    func testSearchModesUseSystemToolbarGroupAndReconcileSelection() throws {
+        let (controller, directory) = try mounted()
+        defer { controller.close(); try? FileManager.default.removeItem(at: directory) }
+        let subject = controller.workspace
+        let group = try XCTUnwrap(subject.searchModeToolbarItem)
+        XCTAssertTrue(controller.window?.toolbar?.items.first(where: { $0.itemIdentifier == .workspaceSearchMode }) === group)
+        XCTAssertEqual(group.selectionMode, .selectOne)
+        XCTAssertEqual(group.controlRepresentation, .automatic)
+        XCTAssertEqual(group.subitems.map(\.title), ["Ref", "Words", "Phrase"])
+        let examples = ["John 3:16", "faith AND hope", "in the beginning"]
+        for (subitem, example) in zip(group.subitems, examples) {
+            XCTAssertTrue(subitem.toolTip?.contains(example) == true)
+        }
+        XCTAssertEqual(group.selectedIndex, 0)
+        let searchHelp = try XCTUnwrap(subject.search.field.accessibilityHelp())
+        for example in examples { XCTAssertTrue(searchHelp.contains(example)) }
+        for (index, mode) in SearchMode.allCases.enumerated() {
+            group.selectedIndex = index
+            XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(group.action), to: group.target, from: group))
+            XCTAssertEqual(subject.searchMode, mode)
+            subject.render()
+            XCTAssertEqual(group.selectedIndex, index)
+            XCTAssertEqual(subject.search.field.placeholderString, examples[index])
+            XCTAssertEqual(subject.search.field.accessibilityHelp(), searchHelp)
+            XCTAssertEqual(subject.search.field.toolTip, searchHelp)
+            XCTAssertEqual(subject.search.field.recentsAutosaveName, AppDefaultsKey.searchRecents + "." + mode.rawValue)
+        }
+        subject.changeSearchMode(.verseReference)
+        XCTAssertEqual(group.selectedIndex, 0, "Programmatic mode changes must update the native toolbar selection")
+    }
+
     func testNativeHierarchyAndSnapshotPreserveToolbarEditor() async throws {
         let (controller, directory) = try mounted()
         defer { controller.close(); try? FileManager.default.removeItem(at: directory) }
