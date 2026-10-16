@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor
 final class NativeSearchFieldController: NSObject, NSSearchFieldDelegate {
-    let field = ReferenceSearchField()
+    let field = NSSearchField()
     private var didClearEmptyDraft = false
     private(set) var interactionRevision = 0
     private(set) var isSendingSubmission = false
@@ -23,6 +23,12 @@ final class NativeSearchFieldController: NSObject, NSSearchFieldDelegate {
         // Keep the text and native search/cancel glyphs on AppKit's control metrics.
         field.font = .systemFont(ofSize: NSFont.systemFontSize(for: field.controlSize))
         field.setAccessibilityLabel("Verse search or text search")
+        // Keep general help stable; the native placeholder supplies the
+        // selected mode's example when the search field is empty.
+        field.placeholderString = "Search"
+        let help = "Ref: John 3:16. Words: faith AND hope (AND, OR, NOT). Phrase: in the beginning. Press Return to search. Command-L focuses Search."
+        field.toolTip = help
+        field.setAccessibilityHelp(help)
         let menu = NSMenu(title: "Recent Searches")
         for (title, tag) in [
             ("Recent Searches", NSSearchField.recentsTitleMenuItemTag),
@@ -35,14 +41,22 @@ final class NativeSearchFieldController: NSObject, NSSearchFieldDelegate {
         field.searchMenuTemplate = menu
     }
 
-    func apply(text: String, placeholder: String, accessibilityHint: String,
-               recentsName: String? = nil) {
+    func apply(text: String, placeholder: String, recentsName: String? = nil) {
         // Assigning stringValue during every snapshot would reset the field editor.
         if field.stringValue != text { field.stringValue = text }
         if !text.isEmpty { didClearEmptyDraft = false }
-        field.placeholderString = placeholder
-        field.setAccessibilityHelp(accessibilityHint)
+        // AppKit owns any editing transition needed for a new placeholder.
+        // Unchanged snapshots must not ask it to perform that transition again.
+        if field.placeholderString != placeholder { field.placeholderString = placeholder }
         if field.recentsAutosaveName != recentsName { field.recentsAutosaveName = recentsName }
+    }
+
+    func focus(using toolbarItem: NSSearchToolbarItem) {
+        // Record the explicit intent even when already editing so an older
+        // submission cannot move focus. Ask AppKit for focus only when needed.
+        interactionRevision += 1
+        if let editor = field.currentEditor(), field.window?.firstResponder === editor { return }
+        toolbarItem.beginSearchInteraction()
     }
 
     func controlTextDidBeginEditing(_ notification: Notification) {
@@ -97,6 +111,3 @@ final class NativeSearchFieldController: NSObject, NSSearchFieldDelegate {
         return true
     }
 }
-
-@MainActor
-final class ReferenceSearchField: NSSearchField {}

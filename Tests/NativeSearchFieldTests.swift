@@ -2,8 +2,37 @@ import AppKit
 import XCTest
 @testable import ViewTheWordCore
 
+@MainActor private final class SearchFocusRequestAudit: NSSearchToolbarItem {
+    var requests = 0
+    override func beginSearchInteraction() { requests += 1 }
+}
+
 @MainActor
 final class NativeSearchFieldTests: XCTestCase {
+    func testExplicitFocusIntentDoesNotRestartAnActiveSearchInteraction() throws {
+        _ = NSApplication.shared
+        let subject = NativeSearchFieldController()
+        let item = SearchFocusRequestAudit(itemIdentifier: .init("search-focus-audit"))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 100),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        subject.field.frame = NSRect(x: 10, y: 50, width: 275, height: 35)
+        let other = NSTextField(frame: NSRect(x: 10, y: 10, width: 200, height: 25))
+        window.contentView!.addSubview(subject.field)
+        window.contentView!.addSubview(other)
+        XCTAssertTrue(window.makeFirstResponder(subject.field))
+        let editor = try XCTUnwrap(subject.field.currentEditor())
+        let revision = subject.interactionRevision
+        subject.focus(using: item)
+        XCTAssertEqual(item.requests, 0, "An active search editor must not need another native focus request")
+        XCTAssertTrue(window.firstResponder === editor)
+        XCTAssertGreaterThan(subject.interactionRevision, revision, "Command-L must still supersede a pending submission's focus intent")
+        XCTAssertTrue(window.makeFirstResponder(other))
+        subject.focus(using: item)
+        XCTAssertEqual(item.requests, 1, "Search must still request focus when another control is editing")
+    }
+
     func testEditingDoesNotSubmitAndRecentSearchActionUpdatesDraftFirst() {
         _ = NSApplication.shared
         let subject = NativeSearchFieldController()
@@ -14,7 +43,7 @@ final class NativeSearchFieldTests: XCTestCase {
             XCTAssertEqual(subject?.isSendingSubmission, true)
             submitted.append(draft)
         }
-        subject.apply(text: "", placeholder: "John 3:16", accessibilityHint: "Search")
+        subject.apply(text: "", placeholder: "John 3:16")
         subject.field.stringValue = "John 3"
         subject.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: subject.field))
         XCTAssertEqual(draft, "John 3")
@@ -42,7 +71,7 @@ final class NativeSearchFieldTests: XCTestCase {
         subject.onCancel = { stops += 1 }
         subject.onSubmit = { submits += 1 }
         subject.onMoveFocus = { moves.append($0) }
-        subject.apply(text: draft, placeholder: "", accessibilityHint: "")
+        subject.apply(text: draft, placeholder: "John 3:16")
         let editor = NSTextView()
         XCTAssertTrue(subject.control(subject.field, textView: editor, doCommandBy: #selector(NSResponder.cancelOperation(_:))))
         XCTAssertEqual(draft, "John 3:16")
@@ -72,18 +101,18 @@ final class NativeSearchFieldTests: XCTestCase {
         window.isReleasedWhenClosed = false
         window.contentView = root
         defer { window.close() }
-        subject.apply(text: "John 3:16", placeholder: "", accessibilityHint: "")
+        subject.apply(text: "John 3:16", placeholder: "John 3:16")
         window.makeFirstResponder(subject.field)
         let editor = try XCTUnwrap(subject.field.currentEditor() as? NSTextView)
         editor.setSelectedRange(NSRange(location: 4, length: 0))
-        subject.apply(text: "John 3:16", placeholder: "New prompt", accessibilityHint: "")
+        subject.apply(text: "John 3:16", placeholder: "John 3:16")
         XCTAssertTrue(subject.field.currentEditor() === editor)
         XCTAssertEqual(editor.selectedRange(), NSRange(location: 4, length: 0))
         XCTAssertTrue(window.makeFirstResponder(other))
-        subject.apply(text: "John 3:16", placeholder: "", accessibilityHint: "")
+        subject.apply(text: "John 3:16", placeholder: "John 3:16")
         XCTAssertNotNil(other.currentEditor())
         XCTAssertNil(subject.field.currentEditor())
-        subject.apply(text: "John 3:16", placeholder: "", accessibilityHint: "")
+        subject.apply(text: "John 3:16", placeholder: "John 3:16")
         window.makeFirstResponder(subject.field)
         XCTAssertNotNil(subject.field.currentEditor())
         XCTAssertNil(other.currentEditor())
@@ -106,7 +135,7 @@ final class NativeSearchFieldTests: XCTestCase {
         root.addSubview(subject.field)
         window.contentView = root
         defer { window.close() }
-        subject.apply(text: draft, placeholder: "", accessibilityHint: "")
+        subject.apply(text: draft, placeholder: "John 3:16")
         window.makeFirstResponder(subject.field)
         func send(_ characters: String, code: UInt16) throws {
             let editor = try XCTUnwrap(subject.field.currentEditor() as? NSTextView)

@@ -65,7 +65,9 @@ final class NativeSidebarController: NSViewController, NSOutlineViewDataSource, 
         outline.delegate = self
         outline.dataSource = self
         outline.style = label == "Bible books" ? .sourceList : .inset
-        outline.backgroundColor = .controlBackgroundColor
+        // The split view supplies the book sidebar's material behind both its
+        // pinned testament control and its scrolling rows.
+        outline.backgroundColor = label == "Bible books" ? .clear : .controlBackgroundColor
         outline.rowSizeStyle = .medium
         outline.rowHeight = 28
         outline.allowsMultipleSelection = false

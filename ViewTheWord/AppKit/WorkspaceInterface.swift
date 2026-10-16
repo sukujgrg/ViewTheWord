@@ -58,12 +58,6 @@ extension MainWorkspaceController: NSToolbarDelegate {
         split.addSplitViewItem(detailItem)
         pin(split.view, to: view)
 
-        searchModeControl.target = self
-        searchModeControl.action = #selector(searchModeChanged(_:))
-        searchModeControl.setAccessibilityLabel("Search mode")
-        searchModeControl.setToolTip("Book, chapter and verse", forSegment: 0)
-        searchModeControl.setToolTip("Words with AND, OR and NOT", forSegment: 1)
-        searchModeControl.setToolTip("Exact phrase", forSegment: 2)
         primaryPicker.target = self
         primaryPicker.action = #selector(translationChanged(_:))
         secondaryPicker.target = self
@@ -199,9 +193,23 @@ extension MainWorkspaceController: NSToolbarDelegate {
             searchToolbarItem = item
             return item
         }
+        if identifier == .workspaceSearchMode {
+            let item = NSToolbarItemGroup(itemIdentifier: identifier, titles: ["Ref", "Words", "Phrase"],
+                                         selectionMode: .selectOne, labels: nil, target: self,
+                                         action: #selector(searchModeChanged(_:)))
+            item.label = "Search mode"
+            item.visibilityPriority = .high
+            item.selectedIndex = SearchMode.allCases.firstIndex(of: searchMode) ?? 0
+            for (subitem, help) in zip(item.subitems, ["Book, chapter and verse, for example John 3:16.",
+                                                     "Words with AND, OR and NOT, for example faith AND hope.",
+                                                     "Exact phrase, for example in the beginning."]) {
+                subitem.toolTip = help
+            }
+            searchModeToolbarItem = item
+            return item
+        }
         let item = NSToolbarItem(itemIdentifier: identifier)
         switch identifier {
-        case .workspaceSearchMode: item.label = "Search mode"; item.view = searchModeControl; item.visibilityPriority = .high
         case .workspaceView: item.label = "View"; item.view = viewOptions
         case .workspaceProjection: item.label = "Projection"; item.view = projectionOptions; item.visibilityPriority = .high
         case .workspaceOutput:
@@ -243,9 +251,12 @@ extension MainWorkspaceController: NSToolbarDelegate {
         case .wordSearch: placeholder = "faith AND hope"
         case .phraseSearch: placeholder = "in the beginning"
         }
-        search.apply(text: draft, placeholder: placeholder, accessibilityHint: "Press Return to search. Command-L focuses search.",
+        search.apply(text: draft, placeholder: placeholder,
                      recentsName: AppDefaultsKey.searchRecents + "." + searchMode.rawValue)
-        searchModeControl.selectedSegment = SearchMode.allCases.firstIndex(of: searchMode) ?? 0
+        let selectedIndex = SearchMode.allCases.firstIndex(of: searchMode) ?? 0
+        if let searchModeToolbarItem, searchModeToolbarItem.selectedIndex != selectedIndex {
+            searchModeToolbarItem.selectedIndex = selectedIndex
+        }
     }
     func renderTranslationPickers(_ sources: BibleSources?) {
         let entries = library.urls.map { (title: BibleTranslation.name(for: $0), value: $0.absoluteString) }
@@ -332,9 +343,9 @@ extension MainWorkspaceController: NSToolbarDelegate {
         let liveDetail = ownsOutput ? "\n\(projector.isBlanked ? "Blanked" : "Live") from this tab: \(projector.projectorViewData.title)" : ""
         window.tab.toolTip = detail + "\n" + urls.map(BibleTranslation.name).joined(separator: " / ") + liveDetail
     }
-    @objc private func searchModeChanged(_ sender: NSSegmentedControl) {
-        guard SearchMode.allCases.indices.contains(sender.selectedSegment) else { return }
-        changeSearchMode(SearchMode.allCases[sender.selectedSegment])
+    @objc private func searchModeChanged(_ sender: NSToolbarItemGroup) {
+        guard SearchMode.allCases.indices.contains(sender.selectedIndex) else { return }
+        changeSearchMode(SearchMode.allCases[sender.selectedIndex])
     }
     @objc private func translationChanged(_ sender: NSPopUpButton) {
         guard let value = sender.selectedItem?.representedObject as? String else { return }
