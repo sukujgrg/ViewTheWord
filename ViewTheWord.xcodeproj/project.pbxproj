@@ -7,13 +7,17 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		D15120261010000000000004 /* ProjectionMonitorSettingsController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D15020261010000000000004 /* ProjectionMonitorSettingsController.swift */; };
+		D17120261014000000000004 /* OutputProfileEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D17020261014000000000004 /* OutputProfileEditor.swift */; };
+		D17120261014000000000003 /* ManageOutputsController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D17020261014000000000003 /* ManageOutputsController.swift */; };
+		D17120261014000000000002 /* DiscoveryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D17020261014000000000002 /* DiscoveryService.swift */; };
+		D17120261014000000000001 /* OutputConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = D17020261014000000000001 /* OutputConfiguration.swift */; };
+		D15120261010000000000004 /* ProjectionMonitorNameController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D15020261010000000000004 /* ProjectionMonitorNameController.swift */; };
 		D15120261010000000000003 /* ProjectionSleepPrevention.swift in Sources */ = {isa = PBXBuildFile; fileRef = D15020261010000000000003 /* ProjectionSleepPrevention.swift */; };
 		D15120261010000000000002 /* ProjectionMonitorIdentifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = D15020261010000000000002 /* ProjectionMonitorIdentifier.swift */; };
 		D15120261010000000000001 /* ProjectionScreenResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = D15020261010000000000001 /* ProjectionScreenResolver.swift */; };
 		D15120261010000000000000 /* ProjectionDisplayManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D15020261010000000000000 /* ProjectionDisplayManager.swift */; };
 		A17A20260000000000000901 /* AltViewStatusBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000902 /* AltViewStatusBadge.swift */; };
-		A17A20260000000000000801 /* AltViewSettingsController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000802 /* AltViewSettingsController.swift */; };
+		A17A20260000000000000801 /* AltViewDestinationEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000802 /* AltViewDestinationEditor.swift */; };
 		A17A20260000000000000701 /* SnapshotMailbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000702 /* SnapshotMailbox.swift */; };
 		A17A20260000000000000601 /* SenderClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000602 /* SenderClient.swift */; };
 		A17A20260000000000000501 /* SecureConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A20260000000000000502 /* SecureConnection.swift */; };
@@ -58,13 +62,17 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		D15020261010000000000004 /* ProjectionMonitorSettingsController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppKit/ProjectionMonitorSettingsController.swift; sourceTree = "<group>"; };
+		D17020261014000000000004 /* OutputProfileEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppKit/OutputProfileEditor.swift; sourceTree = "<group>"; };
+		D17020261014000000000003 /* ManageOutputsController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppKit/ManageOutputsController.swift; sourceTree = "<group>"; };
+		D17020261014000000000002 /* DiscoveryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AltView/DiscoveryService.swift; sourceTree = "<group>"; };
+		D17020261014000000000001 /* OutputConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Core/OutputConfiguration.swift; sourceTree = "<group>"; };
+		D15020261010000000000004 /* ProjectionMonitorNameController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppKit/ProjectionMonitorNameController.swift; sourceTree = "<group>"; };
 		D15020261010000000000003 /* ProjectionSleepPrevention.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Core/ProjectionSleepPrevention.swift; sourceTree = "<group>"; };
 		D15020261010000000000002 /* ProjectionMonitorIdentifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Core/ProjectionMonitorIdentifier.swift; sourceTree = "<group>"; };
 		D15020261010000000000001 /* ProjectionScreenResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Core/ProjectionScreenResolver.swift; sourceTree = "<group>"; };
 		D15020261010000000000000 /* ProjectionDisplayManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Core/ProjectionDisplayManager.swift; sourceTree = "<group>"; };
 		A17A20260000000000000902 /* AltViewStatusBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppKit/AltViewStatusBadge.swift; sourceTree = "<group>"; };
-		A17A20260000000000000802 /* AltViewSettingsController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppKit/AltViewSettingsController.swift; sourceTree = "<group>"; };
+		A17A20260000000000000802 /* AltViewDestinationEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppKit/AltViewDestinationEditor.swift; sourceTree = "<group>"; };
 		A17A20260000000000000702 /* SnapshotMailbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AltView/SnapshotMailbox.swift; sourceTree = "<group>"; };
 		A17A20260000000000000602 /* SenderClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AltView/SenderClient.swift; sourceTree = "<group>"; };
 		A17A20260000000000000502 /* SecureConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AltView/SecureConnection.swift; sourceTree = "<group>"; };
@@ -166,7 +174,11 @@
 				03A1D26528672D1700511E73 /* HelpView.swift */,
 				C0DE09110000000000000010 /* ChapterGridController.swift */,
 				C0DE09110000000000000006 /* WorkspaceProjection.swift */,
-				D15020261010000000000004 /* ProjectionMonitorSettingsController.swift */,
+				D17020261014000000000001 /* OutputConfiguration.swift */,
+				D17020261014000000000002 /* DiscoveryService.swift */,
+				D17020261014000000000003 /* ManageOutputsController.swift */,
+				D17020261014000000000004 /* OutputProfileEditor.swift */,
+				D15020261010000000000004 /* ProjectionMonitorNameController.swift */,
 				D15020261010000000000003 /* ProjectionSleepPrevention.swift */,
 				D15020261010000000000002 /* ProjectionMonitorIdentifier.swift */,
 				D15020261010000000000001 /* ProjectionScreenResolver.swift */,
@@ -192,7 +204,7 @@
 				A17A20260000000000000502 /* SecureConnection.swift */,
 				A17A20260000000000000602 /* SenderClient.swift */,
 				A17A20260000000000000702 /* SnapshotMailbox.swift */,
-				A17A20260000000000000802 /* AltViewSettingsController.swift */,
+				A17A20260000000000000802 /* AltViewDestinationEditor.swift */,
 				A17A20260000000000000902 /* AltViewStatusBadge.swift */,
 				039A40962872325E00A672BD /* SettingsWindowController.swift */,
 					03EEAE4E28793D69008EC35C /* AppConstants.swift */,
@@ -341,7 +353,7 @@
 				A17A20260000000000000501 /* SecureConnection.swift in Sources */,
 				A17A20260000000000000601 /* SenderClient.swift in Sources */,
 				A17A20260000000000000701 /* SnapshotMailbox.swift in Sources */,
-				A17A20260000000000000801 /* AltViewSettingsController.swift in Sources */,
+				A17A20260000000000000801 /* AltViewDestinationEditor.swift in Sources */,
 				A17A20260000000000000901 /* AltViewStatusBadge.swift in Sources */,
 				039A40972872325E00A672BD /* SettingsWindowController.swift in Sources */,
 				B26FEF50287B94F000DAD012 /* Extensions.swift in Sources */,
@@ -349,7 +361,11 @@
 				03A1D26628672D1700511E73 /* HelpView.swift in Sources */,
 				C0DE09100000000000000010 /* ChapterGridController.swift in Sources */,
 				C0DE09100000000000000006 /* WorkspaceProjection.swift in Sources */,
-				D15120261010000000000004 /* ProjectionMonitorSettingsController.swift in Sources */,
+				D17120261014000000000001 /* OutputConfiguration.swift in Sources */,
+				D17120261014000000000002 /* DiscoveryService.swift in Sources */,
+				D17120261014000000000003 /* ManageOutputsController.swift in Sources */,
+				D17120261014000000000004 /* OutputProfileEditor.swift in Sources */,
+				D15120261010000000000004 /* ProjectionMonitorNameController.swift in Sources */,
 				D15120261010000000000003 /* ProjectionSleepPrevention.swift in Sources */,
 				D15120261010000000000002 /* ProjectionMonitorIdentifier.swift in Sources */,
 				D15120261010000000000001 /* ProjectionScreenResolver.swift in Sources */,

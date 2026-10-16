@@ -6,7 +6,7 @@ xcrun swiftc -parse-as-library -D VTW_REVIEW -strict-concurrency=complete -modul
   ViewTheWord/AppConstants.swift ViewTheWord/RxVerse.swift ViewTheWord/Db.swift ViewTheWord/Core/*.swift ViewTheWord/AltView/*.swift \
   ViewTheWord/NativeReferenceTable.swift ViewTheWord/NativeSearchField.swift ViewTheWord/AppKit/*.swift \
   ViewTheWord/HelpView.swift ViewTheWord/Extensions.swift ViewTheWord/ProjectorView.swift \
-  scripts/render-navigation-review.swift -o build/review/navigation/check-navigation
+  scripts/render-navigation-review.swift scripts/benchmark-settings.swift -o build/review/navigation/check-navigation
 # LaunchServices activation is reliable for an application bundle; a raw command-
 # line executable can be refused activation by macOS, leaving no real key window.
 REVIEW_OUTPUT="$PWD/build/review/navigation"
@@ -29,7 +29,9 @@ codesign --force --sign - "$REVIEW_APP"
 rm -f "$REVIEW_OUTPUT/passed"
 : > "$REVIEW_OUTPUT/events.log"
 : > "$REVIEW_OUTPUT/events-errors.log"
-open -n -W --stdout "$REVIEW_OUTPUT/events.log" --stderr "$REVIEW_OUTPUT/events-errors.log" "$REVIEW_APP" --args "$PWD" "$@"
+# Saved-window recovery dialogs from an earlier assertion must not enter this
+# isolated fixture. Keep the app's active/key-window and focus guards intact.
+open -n -W --stdout "$REVIEW_OUTPUT/events.log" --stderr "$REVIEW_OUTPUT/events-errors.log" "$REVIEW_APP" --args "$PWD" "$@" -ApplePersistenceIgnoreState YES
 cat "$REVIEW_OUTPUT/events.log" "$REVIEW_OUTPUT/events-errors.log"
 # open reports launch success rather than the app's exit code. Only a completed
 # review writes this marker; assertions, crashes, and thrown errors fail the script.

@@ -5,8 +5,11 @@ import Network
 private func reviewProjectionDisplays() -> ProjectionDisplayManager {
     let monitor = ProjectionMonitor(id: 10, identity: "11111111-1111-1111-1111-111111111111",
                                     name: "Review Monitor", frame: CGRect(x: -10000, y: -10000, width: 1920, height: 1080))
-    let displays = ProjectionDisplayManager(displays: { [monitor] })
-    precondition(displays.select(monitor.target))
+    let suite = "ReviewMonitor.\(UUID())"
+    let defaults = UserDefaults(suiteName: suite)!
+    defaults.set(try! JSONEncoder().encode(monitor.target), forKey: AppDefaultsKey.projectionMonitorAssignment)
+    let displays = ProjectionDisplayManager(defaults: defaults, displays: { [monitor] })
+    defaults.removePersistentDomain(forName: suite)
     return displays
 }
 
@@ -14,13 +17,26 @@ private func reviewProjectionDisplays() -> ProjectionDisplayManager {
 private final class ReviewAltViewSender: AltViewSending, @unchecked Sendable {
     var connectionID: UUID?
     var connectionKeys: [Data] = []
+    var emptySubmissions = 0
     var onStatus: (@Sendable (AltViewSenderStatus) -> Void)?
     func connect(to endpoint: NWEndpoint, key: Data, expectedReceiverID: UUID?, connectionID: UUID) {
         self.connectionID = connectionID
         connectionKeys.append(key)
     }
     func disconnect() { connectionID = nil }
-    func submit(_ submission: AltViewSubmission) { preconditionFailure("Settings must not publish") }
+    func submit(_ submission: AltViewSubmission) {
+        precondition(submission.content == nil && submission.intent == nil, "Settings must not publish")
+        emptySubmissions += 1 // normal live-controller teardown is allowed
+    }
+}
+
+@MainActor
+private final class ReviewUpdateDriver: AppUpdateDriving {
+    var state = AppUpdateState(canCheckForUpdates: true) { didSet { onStateChange?(state) } }
+    var onStateChange: ((AppUpdateState) -> Void)?
+    func start() {}
+    func checkForUpdates() {}
+    func setAutomaticChecks(_ enabled: Bool) { state.automaticallyChecksForUpdates = enabled }
 }
 
 private func reviewLog(_ text: String) { FileHandle.standardOutput.write(Data((text + "\n").utf8)) }
@@ -33,7 +49,7 @@ private struct ReviewFailure: Error, CustomStringConvertible {
 @MainActor private final class ReviewFocusGuard: NSObject {
     private let window: NSWindow
     private let notifications: NotificationCenter
-    private var interrupted = false
+    private var interruption: String?
 
     init(window: NSWindow, notifications: NotificationCenter = .default) {
         self.window = window
@@ -43,11 +59,13 @@ private struct ReviewFailure: Error, CustomStringConvertible {
         notifications.addObserver(self, selector: #selector(focusLost(_:)), name: NSWindow.didResignKeyNotification, object: window)
     }
 
-    @objc private func focusLost(_ notification: Notification) { interrupted = true }
+    @objc private func focusLost(_ notification: Notification) {
+        if interruption == nil { interruption = notification.name.rawValue + "; key window: " + (NSApp.keyWindow?.title ?? "none") }
+    }
     func stop() { notifications.removeObserver(self) }
     func check() throws {
-        guard !interrupted, NSApp.isActive, window.isKeyWindow else {
-            throw ReviewFailure(description: "Focus review interrupted by an application/window switch. Keep Native Workspace Review in front and avoid mouse or keyboard input until the script finishes, then rerun the check.")
+        guard interruption == nil, NSApp.isActive, window.isKeyWindow else {
+            throw ReviewFailure(description: "Focus review interrupted by an application/window switch (\(interruption ?? "inactive/key window unavailable")). Keep Native Workspace Review in front and avoid mouse or keyboard input until the script finishes, then rerun the check.")
         }
     }
 }
@@ -72,6 +90,10 @@ struct NativeWorkspaceReview {
         let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? FileManager.default.currentDirectoryPath)
         let output = root.appendingPathComponent("build/review/navigation", isDirectory: true)
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--benchmark-settings") {
+            try await benchmarkSettings(output: output)
+            return
+        }
         let defaults = UserDefaults(suiteName: "ViewTheWord.NativeWorkspaceReview")!
         defaults.removePersistentDomain(forName: "ViewTheWord.NativeWorkspaceReview")
         defaults.set(17.0, forKey: AppDefaultsKey.verseRowFontSize)
@@ -88,10 +110,12 @@ struct NativeWorkspaceReview {
         let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [sources.primary, sources.secondary!]), defaults: defaults, projectionDisplays: displays)
         // Exercise logical output lifetime without sending fixture content to a display.
         var outputCreations = 0
-        if !inspectingProjection { live.projectorWindowFactory = { _ in outputCreations += 1; return nil } }
+        if !inspectingProjection { live.nativeWindowFactory = { _, _, _ in outputCreations += 1; return nil } }
+        let updateDriver = ReviewUpdateDriver()
         let tabs = PassageTabsController(liveProjection: live,
             history: HistoryStore(fileURL: output.appendingPathComponent("history.json")),
-            bookmarks: BookmarkStore(fileURL: output.appendingPathComponent("bookmarks.json")), savesFrames: false)
+            bookmarks: BookmarkStore(fileURL: output.appendingPathComponent("bookmarks.json")), savesFrames: false,
+            updates: AppUpdateController(driver: updateDriver))
         let controller = tabs.open()
         let workspace = controller.workspace
         workspace.history.clear()
@@ -110,7 +134,8 @@ struct NativeWorkspaceReview {
         window.orderBack(nil)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
-        for attempt in 0..<100 {
+        // LaunchServices activation can lag on a cold start; keep the real key-window requirement.
+        for attempt in 0..<1000 {
             if NSApp.isActive && window.isKeyWindow { break }
             if attempt % 10 == 0 {
                 NSApp.activate(ignoringOtherApps: true)
@@ -123,8 +148,8 @@ struct NativeWorkspaceReview {
         }
         defer { tabs.shutdown(); for tab in tabs.windows { tab.close() }; defaults.removePersistentDomain(forName: "ViewTheWord.NativeWorkspaceReview") }
         if inspectingProjection {
-            let settings = SettingsWindowController(library: live.library, defaults: defaults, altView: live.altView, projectionDisplays: displays)
-            settings.settings.selectedTabViewItemIndex = 3
+            let settings = SettingsWindowController(library: live.library, liveProjection: live)
+            settings.settings.selectedTabViewItemIndex = 0
             settings.showWindow(nil)
             reviewLog("INSPECT projection: isolated preferences, real monitors and projector lifecycle. Close the passage window to finish.")
             while window.isVisible { try await Task.sleep(nanoseconds: 100_000_000) }
@@ -133,6 +158,10 @@ struct NativeWorkspaceReview {
         }
         if CommandLine.arguments.contains("--inspect-settings") {
             try await checkNativeSettings(output: output, sources: sources, inspecting: true)
+            return
+        }
+        if CommandLine.arguments.contains("--default-output-only") || CommandLine.arguments.contains("--inspect-default-output") {
+            try await checkDefaultOutputControls(workspace, window: window, output: output, updateDriver: updateDriver)
             return
         }
         if CommandLine.arguments.contains("--settings-only") {
@@ -483,7 +512,7 @@ struct NativeWorkspaceReview {
         defaults.set(true, forKey: AppDefaultsKey.showOnlyPrimary)
         let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [output.appendingPathComponent("ENG_TEST.bible")]), defaults: defaults, projectionDisplays: reviewProjectionDisplays())
         var opens = 0
-        live.projectorWindowFactory = { _ in opens += 1; return nil }
+        live.nativeWindowFactory = { _, _, _ in opens += 1; return nil }
         let tabs = PassageTabsController(liveProjection: live,
             history: HistoryStore(fileURL: output.appendingPathComponent("cancel-history.json")),
             bookmarks: BookmarkStore(fileURL: output.appendingPathComponent("cancel-bookmarks.json")), savesFrames: false,
@@ -569,7 +598,7 @@ struct NativeWorkspaceReview {
         let defaults = UserDefaults(suiteName: defaultsName)!
         defaults.set(true, forKey: AppDefaultsKey.showOnlyPrimary)
         let live = LiveProjectionController(library: BibleLibrary(preloadedURLs: [output.appendingPathComponent("ENG_TEST.bible")]), defaults: defaults, projectionDisplays: reviewProjectionDisplays())
-        live.projectorWindowFactory = { _ in nil }
+        live.nativeWindowFactory = { _, _, _ in nil }
         let tabs = PassageTabsController(liveProjection: live,
             history: HistoryStore(fileURL: output.appendingPathComponent("focus-history.json")),
             bookmarks: BookmarkStore(fileURL: output.appendingPathComponent("focus-bookmarks.json")), savesFrames: false,
@@ -707,7 +736,7 @@ struct NativeWorkspaceReview {
         let defaultsName = "ViewTheWord.QueuedImportsReview"
         let defaults = UserDefaults(suiteName: defaultsName)!
         let live = LiveProjectionController(library: library, defaults: defaults, projectionDisplays: reviewProjectionDisplays())
-        live.projectorWindowFactory = { _ in nil }
+        live.nativeWindowFactory = { _, _, _ in nil }
         let tabs = PassageTabsController(liveProjection: live,
             history: HistoryStore(fileURL: output.appendingPathComponent("import-history.json")),
             bookmarks: BookmarkStore(fileURL: output.appendingPathComponent("import-bookmarks.json")), savesFrames: false)
@@ -739,7 +768,7 @@ struct NativeWorkspaceReview {
         precondition(Set(library.urls.map(\.lastPathComponent)) == ["ENG_FIRST.bible", "ENG_EXISTINGREPLACE.bible", "ENG_LAST.bible"])
         reviewLog("PASS queued import sheets: all files, explicit Replace/Cancel, failures continue, one active-tab presenter")
     }
-    @MainActor private static func checkAltViewPairing(_ pane: AltViewSettingsController, window: NSWindow,
+    @MainActor private static func checkAltViewPairing(_ pane: AltViewDestinationEditor, window: NSWindow,
                                                       service: AltViewProjectionService, sender: ReviewAltViewSender,
                                                       sources: BibleSources) async throws {
         let focus = ReviewFocusGuard(window: window)
@@ -785,16 +814,20 @@ struct NativeWorkspaceReview {
         try enter("invalid", in: pane.codeField)
         try press("\r", code: 36)
         try await waitUntil { pane.statusLabel.stringValue == "Enter a port from 1 to 65535." }
+        precondition(pane.statusLabel.textColor == .systemOrange)
         precondition(!service.isEnabled && sender.connectionKeys.isEmpty)
         try enter("49721", in: pane.portField)
         try press("\r", code: 36)
         try await waitUntil { pane.statusLabel.stringValue.contains("eight-character pairing code") }
+        precondition(pane.statusLabel.textColor == .systemOrange)
+        precondition(pane.codeField.stringValue == "invalid", "Saving the receiver must not discard an unsuccessful pairing draft")
         precondition(!service.isEnabled && sender.connectionKeys.isEmpty)
 
         for (index, key) in [("\r", UInt16(36)), ("\u{3}", UInt16(76))].enumerated() {
             try enter("ABCD2345", in: pane.codeField)
             try press(key.0, code: key.1)
             try await waitUntil { service.isEnabled }
+            try await waitUntil { pane.statusLabel.textColor == .secondaryLabelColor }
             guard service.isEnabled, let connectionID = service.status.connectionID else {
                 throw ReviewFailure(description: "Return/Enter in the pairing editor must connect")
             }
@@ -807,8 +840,20 @@ struct NativeWorkspaceReview {
             try press(key.0, code: key.1)
             precondition(service.status.connectionID == connectionID && sender.connectionKeys.count == index + 1,
                          "Disabled Connect Only must not restart connection setup")
-            sender.onStatus?(.init(connectionID: connectionID, connected: true, message: "Connected"))
+            var feedback = AltViewDeliveryFeedback()
+            feedback.receive(.init(kind: .feedback, outputReadiness: .closed), lease: nil, now: 0)
+            var connected = AltViewSenderStatus(connectionID: connectionID, connected: true, receiverID: UUID(),
+                ownerName: "Another sender", message: "Connected", feedback: feedback)
+            sender.onStatus?(connected)
             try await waitUntil { pane.disconnectButton.title == "Disconnect" && pane.codeField.stringValue.isEmpty }
+            try await waitUntil { pane.statusLabel.textColor == .systemGreen }
+            precondition(!service.status.ownsOutput && service.status.feedback.output == .closed,
+                         "Connected text stays green independently of ownership and output readiness")
+            connected.outputIssue = "Snapshot exceeds the receiver's text limit."
+            sender.onStatus?(connected)
+            try await waitUntil { pane.statusLabel.textColor == .systemOrange }
+            connected.outputIssue = nil; sender.onStatus?(connected)
+            try await waitUntil { pane.statusLabel.textColor == .systemGreen }
             try press(key.0, code: key.1)
             precondition(service.status.connectionID == connectionID && sender.connectionKeys.count == index + 1,
                          "Enter while connected must leave the connection intact")
@@ -816,8 +861,145 @@ struct NativeWorkspaceReview {
             precondition(service.currentContent?.body == "Existing local projection")
             service.disconnect()
             try await waitUntil { pane.connectButton.isEnabled }
+            try await waitUntil { pane.statusLabel.textColor == .secondaryLabelColor }
         }
-        reviewLog("PASS AltView pairing: field-editor Return/keypad Enter, validation, disabled setup/connected action, Connect Only never publishes")
+        reviewLog("PASS AltView pairing: field-editor Return/keypad Enter, validation, Connect Only, connection-state text colours with warning precedence")
+    }
+
+    @MainActor private static func checkProfileCreation(_ outputs: ManageOutputsController, window: NSWindow) async throws {
+        let live = outputs.live
+        outputs.selectProfile(NativeOutputProfile.audienceID)
+        await Task.yield()
+        NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+        try await waitUntil { NSApp.isActive && window.isKeyWindow }
+        let focus = ReviewFocusGuard(window: window)
+        defer { focus.stop() }
+        let profileNameField = outputs.profileEditor!.nameField
+        precondition(window.makeFirstResponder(profileNameField))
+        let profileNameEditor = profileNameField.currentEditor() as! NSTextView
+        profileNameEditor.selectAll(nil)
+        profileNameEditor.insertText("Audience edited", replacementRange: profileNameEditor.selectedRange())
+        window.contentView?.layoutSubtreeIfNeeded()
+        let assignments = live.outputs.destinations
+        try focus.check()
+        // Exercise AppKit activation with the real name editor still active.
+        // Pointer input for this compact image button is checked in inspection.
+        outputs.addProfileButton.performClick(nil)
+        let copyID = outputs.profileEditor!.profileID
+        guard copyID != NativeOutputProfile.audienceID,
+              live.outputs.profile(NativeOutputProfile.audienceID)?.name == "Audience edited",
+              live.outputs.profile(copyID)?.name == "Audience edited Copy",
+              live.outputs.destinations == assignments else {
+            throw ReviewFailure(description: "The Profiles list + action must finish the name draft, add/select its copy, and retain assignments: selected=\(copyID), source=\(live.outputs.profile(NativeOutputProfile.audienceID)?.name ?? "missing"), copy=\(live.outputs.profile(copyID)?.name ?? "missing"), assignmentsRetained=\(live.outputs.destinations == assignments)")
+        }
+        var original = live.outputs.profile(NativeOutputProfile.audienceID)!, copy = live.outputs.profile(copyID)!
+        original.name = "Audience"; copy.name = "Audience Copy"
+        precondition(live.outputs.updateProfile(original) == nil && live.outputs.updateProfile(copy) == nil)
+        reviewLog("PASS Profiles list +: native activation commits the name draft, selects an independent copy, and retains output assignments")
+    }
+
+    @MainActor private static func checkOutputListActions(_ outputs: ManageOutputsController, window: NSWindow) async throws {
+        let live = outputs.live, original = outputs.live.outputs.configuration
+        let menu = outputs.addOutputButton.menu!
+        precondition(menu.items.map(\.title) == ["Native Output", "AltView Output"])
+        precondition(menu.items.allSatisfy { !$0.isHidden } && outputs.addOutputButton.image != nil)
+        let addNative = menu.items[0]
+        NSApp.sendAction(addNative.action!, to: addNative.target, from: addNative)
+        let added = live.outputs.destinations.last!
+        precondition(added.native != nil && !added.enabled && outputs.defaultButton.isEnabled)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let list = outputs.table.enclosingScrollView!
+        let listFrame = list.convert(list.bounds, to: outputs.view)
+        func alignmentFrame(_ button: NSButton) -> NSRect {
+            button.superview!.convert(button.alignmentRect(forFrame: button.frame), to: outputs.view)
+        }
+        let addFrame = alignmentFrame(outputs.addOutputButton)
+        let defaultFrame = alignmentFrame(outputs.defaultButton)
+        precondition(abs(addFrame.minX - listFrame.minX) < 1 && abs(defaultFrame.maxX - listFrame.maxX) < 1)
+        precondition(outputs.table.focusRingType == .none && list.focusRingType == .none)
+        for button in [outputs.addOutputButton, outputs.removeOutputButton, outputs.defaultButton] {
+            let alignment = button.alignmentRect(forFrame: button.frame)
+            guard button.controlSize == .small && button.bezelStyle == .rounded && alignment.height > 0,
+                  button.frame.width >= button.intrinsicContentSize.width - 1 else {
+                throw ReviewFailure(description: "Footer control has inconsistent native alignment: \(button.accessibilityLabel() ?? button.title), size=\(button.controlSize.rawValue), frame=\(button.frame), alignment=\(alignment), intrinsic=\(button.intrinsicContentSize)")
+            }
+        }
+        precondition(window.makeFirstResponder(outputs.nameField))
+        let editor = outputs.nameField.currentEditor() as! NSTextView
+        editor.selectAll(nil); editor.insertText("Default draft", replacementRange: editor.selectedRange())
+        click(outputs.defaultButton, rect: outputs.defaultButton.bounds, window: window)
+        try await waitUntil { live.outputs.defaultDestination?.id == added.id }
+        precondition(live.outputs.defaultDestination?.name == "Default draft" && live.outputs.defaultDestination?.enabled == false)
+        precondition(outputs.defaultButton.title == "Default" && !outputs.defaultButton.isEnabled)
+        precondition(live.nativeOutputs.isEmpty && live.projector.projection == nil && live.source == nil)
+        click(outputs.removeOutputButton, rect: outputs.removeOutputButton.bounds, window: window)
+        try await waitUntil { live.outputs.destination(added.id) == nil }
+        precondition(live.outputs.defaultDestination == nil)
+        live.outputs.setDefaultDestination(original.defaultDestinationID); outputs.reload()
+        precondition(live.outputs.configuration == original)
+        outputs.selectProfile(NativeOutputProfile.audienceID)
+        precondition(outputs.addOutputButton.isHiddenOrHasHiddenAncestor && !outputs.addProfileButton.isHiddenOrHasHiddenAncestor)
+        outputs.selectDestination(original.destinations[0].id)
+        window.contentView?.layoutSubtreeIfNeeded()
+        precondition(!outputs.addOutputButton.isHiddenOrHasHiddenAncestor && outputs.addProfileButton.isHiddenOrHasHiddenAncestor)
+        precondition(alignmentFrame(outputs.addOutputButton).height > 0)
+        precondition(abs(alignmentFrame(outputs.defaultButton).maxX - listFrame.maxX) < 1)
+        reviewLog("PASS output footer: aligned native + menu / minus / Make Default, real name-editor commit, disabled default, removal to None, and retained mode-specific footers without an outer focus ring")
+    }
+
+    @MainActor private static func checkNativeOutputActions(_ outputs: ManageOutputsController, window: NSWindow) async throws {
+        let live = outputs.live, destination = live.outputs.destinations.first { $0.native != nil }!
+        let original = live.outputs.profile(destination.native!.profileID)!
+        let assignments = live.outputs.destinations
+        outputs.selectDestination(destination.id)
+        window.contentView?.layoutSubtreeIfNeeded()
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        let buttons = descendants(outputs.view).compactMap { $0 as? NSButton }
+        func button(_ title: String) -> NSButton { buttons.first { $0.title == title }! }
+        for (picker, titles) in [(outputs.monitorPicker, ["Identify", "Name Monitor…"]),
+                                 (outputs.profilePicker, ["Edit Profile…", "Clear Background"])] {
+            let first = button(titles[0]), second = button(titles[1])
+            let pickerFrame = picker.convert(picker.bounds, to: outputs.view)
+            let firstFrame = first.convert(first.bounds, to: outputs.view)
+            let secondFrame = second.convert(second.bounds, to: outputs.view)
+            precondition(abs(firstFrame.minX - pickerFrame.minX) < 1 && firstFrame.maxY < pickerFrame.minY,
+                         "Supporting actions must sit directly below their own picker at its leading edge")
+            precondition(abs(firstFrame.width - secondFrame.width) < 1 && abs(firstFrame.height - secondFrame.height) < 1)
+            precondition(abs(secondFrame.minX - firstFrame.maxX - 8) < 1)
+            for action in [first, second] {
+                precondition(action.controlSize == .small && action.font == .systemFont(ofSize: NSFont.systemFontSize(for: .small)))
+            }
+        }
+        let clear = button("Clear Background")
+        clear.performClick(nil)
+        try await waitUntil { live.outputs.profile(original.id)?.transparent == true && !clear.isEnabled }
+        precondition(live.outputs.destinations == assignments && live.projector.projection == nil)
+        precondition(live.outputs.updateProfile(original) == nil); live.refreshPreferences(); outputs.reload()
+        button("Edit Profile…").performClick(nil)
+        precondition(outputs.profileEditor?.profileID == original.id)
+        reviewLog("PASS native output actions: aligned picker groups, equal intrinsic Small buttons, shared-profile transparency and Edit Profile")
+    }
+
+    @MainActor private static func checkReusedProfileEditing(_ outputs: ManageOutputsController, window: NSWindow) async throws {
+        let live = outputs.live
+        let audience = live.outputs.profile(NativeOutputProfile.audienceID)!, confidence = live.outputs.profile(NativeOutputProfile.confidenceID)!
+        let revision = live.projector.revision, assignments = live.outputs.destinations
+        outputs.selectProfile(audience.id)
+        let form = outputs.profileEditor!, slider = form.rows[0].slider
+        precondition(window.makeFirstResponder(form.nameField))
+        let editor = form.nameField.currentEditor() as! NSTextView
+        editor.selectAll(nil); editor.insertText("Audience draft", replacementRange: editor.selectedRange())
+        outputs.table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        precondition(outputs.profileEditor === form && form.profileID == confidence.id && form.rows[0].slider === slider)
+        precondition(live.outputs.profile(audience.id)?.name == "Audience draft" && live.outputs.profile(confidence.id)?.name == confidence.name)
+        slider.doubleValue = 91; slider.sendAction(slider.action, to: slider.target)
+        precondition(live.outputs.profile(confidence.id)?.verse.size == 91 && live.outputs.profile(audience.id)?.verse.size == audience.verse.size)
+        precondition(live.outputs.updateProfile(audience) == nil && live.outputs.updateProfile(confidence) == nil)
+        outputs.selectDestination(assignments[0].id)
+        outputs.selectProfile(audience.id)
+        precondition(outputs.profileEditor === form && form.nameField.stringValue == audience.name && slider.doubleValue == audience.verse.size)
+        precondition(live.outputs.destinations == assignments && live.projector.revision == revision && live.source == nil)
+        reviewLog("PASS reused profile form: real field-editor draft commits to its original UUID; rebound slider edits only the selected profile; navigation preserves output")
     }
 
     @MainActor static func checkNativeSettings(output: URL, sources: BibleSources, inspecting: Bool = false, pairingOnly: Bool = false) async throws {
@@ -831,7 +1013,7 @@ struct NativeWorkspaceReview {
         var catalog = [sources.primary, sources.secondary!, imported]
         let library = BibleLibrary(preloadedURLs: catalog, catalogProvider: { catalog })
         let sender = ReviewAltViewSender()
-        let altView = AltViewProjectionService(defaults: defaults) { callback in sender.onStatus = callback; return sender }
+
         let monitorFixtures = (1...4).map { index in
             let identity = String(repeating: "\(index)", count: 8) + "-1111-1111-1111-111111111111"
             let size = index == 4 ? CGSize(width: 2560, height: 1440) : CGSize(width: 1920, height: 1080)
@@ -840,25 +1022,106 @@ struct NativeWorkspaceReview {
         }
         let monitors = ProjectionDisplayManager(displays: { monitorFixtures })
         for (monitor, name) in zip(monitorFixtures, ["Front Left", "Front Right", "Lobby"]) { monitors.rename(monitor.target, to: name) }
-        let settings = SettingsWindowController(library: library, defaults: defaults, altView: altView, projectionDisplays: monitors)
-        settings.settings.altView.discoveryEnabled = false // Appearance fixtures never browse the live network.
+        let live = LiveProjectionController(library: library, defaults: defaults, projectionDisplays: monitors,
+            altViewServiceFactory: { saved, discovery in
+                AltViewProjectionService(destination: saved.receiver, template: saved.template, store: ReviewPairings(), discovery: discovery) {
+                    sender.onStatus = $0; return sender
+                }
+            })
+        live.nativeWindowFactory = { _, _, _ in nil }
+        let confidenceID = live.outputs.addNative()
+        var confidence = live.outputs.destination(confidenceID)!
+        confidence.name = "Confidence"
+        confidence.assignment = .native(.init(monitor: monitorFixtures[0].target, profileID: NativeOutputProfile.confidenceID))
+        precondition(live.outputs.update(confidence) == nil)
+        let settings = SettingsWindowController(library: library, liveProjection: live)
+        settings.settings.outputs.discoveryEnabled = false // Appearance fixtures never browse the live network.
         let window = settings.window!
         positionFixtureWindow(window)
         settings.showWindow(nil)
-        defer { settings.close(); defaults.removePersistentDomain(forName: suite) }
+        defer { settings.close(); live.shutdown(); defaults.removePersistentDomain(forName: suite) }
         try await waitUntil { window.isKeyWindow }
+        func views(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(views) }
+        let outputsView = settings.settings.outputs.view
+        let addRemote = settings.settings.outputs.addOutputButton.menu!.items.first { $0.title == "AltView Output" }!
+        NSApp.sendAction(addRemote.action!, to: addRemote.target, from: addRemote)
+        guard let remoteID = live.outputs.destinations.last?.id,
+              let altView = live.altViewServices[remoteID],
+              let editor = settings.settings.outputs.remoteEditor,
+              editor.codeField.isDescendant(of: outputsView), editor.receiverPicker.isDescendant(of: outputsView) else {
+            throw ReviewFailure(description: "Add AltView must immediately select a complete connection editor without revisiting its row")
+        }
+        precondition(!altView.isEnabled && !altView.status.connected && !live.windowOpened)
+        reviewLog("PASS Add AltView: complete connection controls appear during native activation, without reselection or connecting")
         func descendants(_ controller: NSViewController) -> [NSViewController] { [controller] + controller.children.flatMap(descendants) }
         precondition(!descendants(settings.settings).contains { String(describing: type(of: $0)).contains("NSHostingController") })
         if !inspecting {
-            settings.settings.selectedTabViewItemIndex = 2
-            try await waitUntil { settings.settings.altView.codeField.window === window }
-            try await checkAltViewPairing(settings.settings.altView, window: window, service: altView, sender: sender, sources: sources)
+            let outputs = settings.settings.outputs
+            if !pairingOnly {
+                try await checkOutputListActions(outputs, window: window)
+                try await checkProfileCreation(outputs, window: window)
+                try await checkNativeOutputActions(outputs, window: window)
+                try await checkReusedProfileEditing(outputs, window: window)
+            }
+            settings.settings.outputs.selectDestination(remoteID)
+            try await waitUntil { settings.settings.outputs.remoteEditor?.codeField.window === window }
+            try await checkAltViewPairing(settings.settings.outputs.remoteEditor!, window: window, service: altView, sender: sender, sources: sources)
             if pairingOnly { return }
+            let remoteName = live.outputs.destination(remoteID)!.name
+            precondition(window.makeFirstResponder(outputs.nameField))
+            let remoteNameEditor = outputs.nameField.currentEditor() as! NSTextView
+            remoteNameEditor.selectAll(nil)
+            remoteNameEditor.insertText("   ", replacementRange: remoteNameEditor.selectedRange())
+            precondition(window.makeFirstResponder(outputs.enabledButton))
+            guard live.outputs.destination(remoteID)?.name == remoteName && outputs.nameField.stringValue == remoteName &&
+                  !outputs.validationLabel.isHidden && outputs.validationLabel.stringValue.contains("Use a name") else {
+                throw ReviewFailure(description: "Invalid AltView output name did not restore its saved value and visible validation: saved=\(live.outputs.destination(remoteID)?.name ?? "missing"), field=\(outputs.nameField.stringValue), validation=\(outputs.validationLabel.stringValue), hidden=\(outputs.validationLabel.isHidden)")
+            }
+            outputs.selectDestination(confidenceID)
+            precondition(outputs.validationLabel.isHidden, "A previous destination's validation must not follow selection")
+            try await waitUntil { outputs.enabledButton.window === window }
+            window.contentView?.layoutSubtreeIfNeeded()
+            // Checkbox views stretch with the form, but only their glyph/title
+            // hit region activates them. Dispatch the click on the glyph.
+            func clickCheckbox(_ button: NSButton) {
+                click(button, rect: NSRect(x: 4, y: 0, width: 14, height: button.bounds.height), window: window)
+            }
+            clickCheckbox(outputs.enabledButton)
+            try await waitUntil { live.outputs.destination(confidenceID)?.enabled == true }
+            precondition(live.nativeOutputs[confidenceID] != nil && live.projector.projection == nil && !live.windowOpened,
+                         "Enabling Confidence must start a clock before a verse is committed")
+            outputs.reload(); window.contentView?.layoutSubtreeIfNeeded()
+            clickCheckbox(outputs.standbyClockButton)
+            try await waitUntil { live.outputs.profile(NativeOutputProfile.confidenceID)?.standby == .hidden }
+            precondition(live.nativeOutputs[confidenceID] == nil && live.outputs.profile(NativeOutputProfile.confidenceID)?.standby == .hidden)
+            outputs.reload(); window.contentView?.layoutSubtreeIfNeeded()
+            clickCheckbox(outputs.standbyClockButton)
+            try await waitUntil { live.outputs.profile(NativeOutputProfile.confidenceID)?.standby == .clock }
+            precondition(live.nativeOutputs[confidenceID] != nil && live.projector.projectionOwner == nil,
+                         "The native clock checkbox must reopen standby without publishing")
+            precondition(window.makeFirstResponder(outputs.nameField))
+            let nameEditor = outputs.nameField.currentEditor() as! NSTextView
+            nameEditor.selectAll(nil)
+            nameEditor.insertText("Confidence renamed", replacementRange: nameEditor.selectedRange())
+            let audienceID = live.outputs.destinations[0].id
+            let audienceName = live.outputs.destination(audienceID)!.name
+            outputs.selectDestination(audienceID)
+            precondition(live.outputs.destination(confidenceID)?.name == "Confidence renamed" &&
+                         live.outputs.destination(audienceID)?.name == audienceName && outputs.nameField.stringValue == audienceName,
+                         "Switching destinations must finish the actual name editor against its original destination")
+            outputs.selectDestination(confidenceID)
+            reviewLog("PASS Confidence clock: native checkbox starts before scripture, turns off its standalone window, and reopens without live ownership")
+            reviewLog("PASS output name editing: field-editor draft remains with its original destination across selection changes")
+            reviewLog("PASS AltView output name validation: invalid edits restore the saved name, show an error, and clear on selection change")
         }
         for (name, dark) in [("light", false), ("dark", true)] {
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-            for (index, pane) in [(0, "display"), (1, "library"), (2, "altview"), (3, "monitors")] {
-                settings.settings.selectedTabViewItemIndex = index
+            for pane in ["outputs", "confidence", "profiles", "altview", "library"] {
+                settings.settings.selectedTabViewItemIndex = pane == "library" ? 1 : 0
+                if pane == "outputs" { settings.settings.outputs.selectDestination(live.outputs.destinations[0].id) }
+                if pane == "confidence" { settings.settings.outputs.selectDestination(confidenceID) }
+                if pane == "profiles" { settings.settings.outputs.selectProfile(NativeOutputProfile.audienceID) }
+                if pane == "altview" { settings.settings.outputs.selectDestination(remoteID) }
                 try await Task.sleep(nanoseconds: 100_000_000)
                 window.contentView?.layoutSubtreeIfNeeded()
                 window.displayIfNeeded()
@@ -868,6 +1131,12 @@ struct NativeWorkspaceReview {
                 try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("settings-\(pane)-\(name).png"))
             }
         }
+        if inspecting {
+            settings.settings.selectedTabViewItemIndex = 0
+            settings.settings.outputs.selectProfile(NativeOutputProfile.audienceID)
+            while window.isVisible { try await Task.sleep(nanoseconds: 200_000_000) }
+            return
+        }
         altView.connect(to: .init(name: "Fixture", host: "127.0.0.1", port: 49721), code: "ABCD2345")
         try await waitUntil { sender.connectionID != nil }
         let entries = [AltViewTemplateDescriptor(id: .scripture, name: "Scripture"), .init(id: .lyrics, name: "Lyrics")]
@@ -876,10 +1145,11 @@ struct NativeWorkspaceReview {
             ("override", AltViewTemplateCapabilities(templates: entries, policy: .fixed(.lyrics))),
             ("legacy", AltViewTemplateCapabilities())
         ] {
-            sender.onStatus?(AltViewSenderStatus(connectionID: sender.connectionID, connected: true,
+            sender.onStatus?(AltViewSenderStatus(connectionID: sender.connectionID, connected: true, receiverID: UUID(),
                 message: "Connected · waiting for projection", templateCapabilities: capabilities))
-            settings.settings.selectedTabViewItemIndex = 2
-            try await waitUntil { settings.settings.altView.templatePicker.isEnabled }
+            settings.settings.selectedTabViewItemIndex = 0
+            settings.settings.outputs.selectDestination(remoteID)
+            try await waitUntil { settings.settings.outputs.remoteEditor!.templatePicker.isEnabled }
             for (appearance, dark) in [("light", false), ("dark", true)] {
                 window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
                 try await Task.sleep(nanoseconds: 100_000_000)
@@ -891,21 +1161,44 @@ struct NativeWorkspaceReview {
                 try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("settings-altview-\(name)-\(appearance).png"))
             }
         }
+        let connectedEditor = settings.settings.outputs.remoteEditor!
+        let beforeHidden = connectedEditor.statusLabel.stringValue
+        let connectionID = sender.connectionID, connectionCount = sender.connectionKeys.count, emptySubmissions = sender.emptySubmissions
+        settings.settings.selectedTabViewItemIndex = 1
+        sender.onStatus?(.init(connectionID: connectionID, connected: true, receiverID: UUID(), message: "Hidden connection status"))
+        try await waitUntil { altView.status.message == "Hidden connection status" }
+        for _ in 0..<20 { await Task.yield() }
+        precondition(connectedEditor.statusLabel.stringValue == beforeHidden, "Hidden editors must not process connection UI updates")
+        settings.settings.selectedTabViewItemIndex = 0
+        try await waitUntil { connectedEditor.statusLabel.stringValue.contains("Hidden connection status") }
+        settings.close()
+        let beforeClosed = connectedEditor.statusLabel.stringValue
+        sender.onStatus?(.init(connectionID: connectionID, connected: true, receiverID: UUID(), message: "Closed connection status"))
+        try await waitUntil { altView.status.message == "Closed connection status" }
+        for _ in 0..<20 { await Task.yield() }
+        precondition(connectedEditor.statusLabel.stringValue == beforeClosed && altView.status.connected)
+        settings.showWindow(nil)
+        try await waitUntil { connectedEditor.statusLabel.stringValue.contains("Closed connection status") }
+        precondition(sender.connectionID == connectionID && sender.connectionKeys.count == connectionCount && sender.emptySubmissions == emptySubmissions)
+        reviewLog("PASS hidden Settings editors: Library/closed windows pause UI work, reopening catches up, connection stays intact")
         altView.disconnect()
         settings.settings.selectedTabViewItemIndex = 0
-        try await waitUntil { settings.settings.display.rows[0].slider.window === window }
+        settings.settings.outputs.selectProfile(NativeOutputProfile.audienceID)
+        try await waitUntil { settings.settings.outputs.profileEditor?.rows.first?.slider.window === window }
         try await Task.sleep(nanoseconds: 100_000_000)
         window.contentView?.layoutSubtreeIfNeeded()
-        if inspecting {
-            while window.isVisible { try await Task.sleep(nanoseconds: 200_000_000) }
-            return
-        }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         try await waitUntil { window.isKeyWindow && NSApp.isActive }
-        for (row, key) in zip(settings.settings.display.rows, keys) {
+        for (row, index) in zip(settings.settings.outputs.profileEditor!.rows, [0, 1, 2, 3]) {
             let slider = row.slider
-            let before = defaults.double(forKey: key)
+            _ = slider.scrollToVisible(slider.bounds)
+            window.contentView?.layoutSubtreeIfNeeded()
+            func savedValue() -> Double {
+                let profile = live.outputs.profile(NativeOutputProfile.audienceID)!
+                return [profile.verse.size, profile.reference.size, profile.translationNames.size, profile.padding][index]
+            }
+            let before = savedValue()
             let target = slider.target
             let action = slider.action!
             var trackingActions = 0
@@ -913,7 +1206,7 @@ struct NativeWorkspaceReview {
                 NSApp.sendAction(action, to: target, from: sender)
                 if slider.isTrackingMouse {
                     trackingActions += 1
-                    precondition(defaults.double(forKey: key) == before, "Tracking must keep the saved value unchanged until mouse-up")
+                    precondition(savedValue() == before, "Tracking must keep the saved value unchanged until mouse-up")
                     precondition(row.valueLabel.stringValue == "\(Int(slider.doubleValue.rounded())) pts", "The readout must follow the tracked value")
                 }
             }
@@ -924,7 +1217,7 @@ struct NativeWorkspaceReview {
             slider.action = action
             precondition(trackingActions > 0 && slider.doubleValue > before,
                          "The slider must receive the window-dispatched track click: actions=\(trackingActions), before=\(before), after=\(slider.doubleValue)")
-            precondition(defaults.double(forKey: key) == slider.doubleValue && slider.doubleValue.rounded() == slider.doubleValue)
+            precondition(savedValue() == slider.doubleValue && slider.doubleValue.rounded() == slider.doubleValue)
             window.makeFirstResponder(slider)
             for modifiers: NSEvent.ModifierFlags in [[], .option] {
                 for initial in [slider.minValue, ((slider.minValue + slider.maxValue) / 2).rounded(), slider.maxValue] {
@@ -937,15 +1230,15 @@ struct NativeWorkspaceReview {
                         precondition(slider.doubleValue == expected,
                                      "Arrow keys must move exactly one point within the range: expected=\(expected), actual=\(slider.doubleValue)")
                     }
-                    precondition(defaults.double(forKey: key) == slider.doubleValue,
+                    precondition(savedValue() == slider.doubleValue,
                                  "Keyboard adjustments must save immediately")
                 }
             }
         }
-        let saved = keys.map { defaults.double(forKey: $0) }
-        settings.close()
-        settings.showWindow(nil)
-        precondition(settings.settings.display.rows.map { $0.slider.doubleValue } == saved, "Reopening Settings must restore the saved values")
+        let saved = live.outputs.profile(NativeOutputProfile.audienceID)!
+        settings.close(); settings.showWindow(nil)
+        precondition(live.outputs.profile(NativeOutputProfile.audienceID) == saved, "Reopening Settings must restore the saved profile")
+        precondition(keys.map { defaults.double(forKey: $0) } == [149, 27, 59], "Profile editing must never update legacy global appearance keys")
 
         settings.settings.selectedTabViewItemIndex = 1
         let pane = settings.settings.bibleLibrary
@@ -969,7 +1262,7 @@ struct NativeWorkspaceReview {
         let bitmap = frame.bitmapImageRepForCachingDisplay(in: frame.bounds)!
         frame.cacheDisplay(in: frame.bounds, to: bitmap)
         try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("settings-library-empty.png"))
-        reviewLog("PASS native Settings: light/dark panes, tracking drafts, one-point arrows and Option-arrows with range limits, keyboard commits, reopening, library selection, removal cancellation, empty catalog")
+        reviewLog("PASS native Manage Outputs: light/dark destinations and profiles, tracking drafts, one-point arrows and Option-arrows with range limits, keyboard commits, reopening, library selection, removal cancellation, empty catalog")
     }
     @MainActor static func checkSettingsImportLifecycle(output: URL) async throws {
         let importer = ReviewImportGate()
@@ -989,7 +1282,7 @@ struct NativeWorkspaceReview {
             library.importFile(later, presenter: .main)
             try await waitUntil { await importer.waiting }
             await importer.finish(.failure(BibleImportError.bibleAlreadyExists(existing.lastPathComponent)))
-            // Settings opens on Display. Its import decision must still appear.
+            // Settings opens on Manage Outputs. Its import decision must still appear.
             try await waitUntil { window.attachedSheet != nil }
             let prompt = library.alert(for: .settings)!
             window.endSheet(window.attachedSheet!, returnCode: response)
@@ -1029,7 +1322,7 @@ struct NativeWorkspaceReview {
         try await waitUntil { !library.isImporting && library.urls.contains(later) }
         precondition(!library.alerts.contains { if case .replacement = $0.content { return true }; return false })
         if let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .abort) }
-        reviewLog("PASS Settings import sheets: Display tab presentation, non-button cancellation, explicit replacement, closing during validation resumes later files")
+        reviewLog("PASS Settings import sheets: Manage Outputs presentation, non-button cancellation, explicit replacement, closing during validation resumes later files")
     }
 
     @MainActor static func sendKey(_ key: String, code: UInt16, modifiers: NSEvent.ModifierFlags = [], window: NSWindow) {
@@ -1194,6 +1487,107 @@ struct NativeWorkspaceReview {
         reviewLog("PASS \(outline.accessibilityLabel()!): full-width scrolling rows, text x=\(textOrigin)")
         return textOrigin
     }
+    @MainActor private static func checkDefaultOutputControls(_ workspace: MainWorkspaceController, window: NSWindow,
+                                                            output: URL, updateDriver: ReviewUpdateDriver) async throws {
+        let live = workspace.liveProjection, store = workspace.liveProjection.outputs
+        let audience = store.destinations[0].id, other = store.addNative()
+        var second = store.destination(other)!
+        second.name = "Confidence"; precondition(store.update(second) == nil)
+        let settings = SettingsWindowController(library: live.library, liveProjection: live)
+        settings.settings.outputs.discoveryEnabled = false
+        defer { settings.close() }
+        let reference = VerseReference(book: "John", chapter: 3, verse: 16)!
+        workspace.navigate(to: reference, project: false)
+        try await settle(workspace)
+        func command(_ title: String) -> NSMenuItem { workspace.outputOptions.menu!.items.first { $0.title == title }! }
+        let original = store.profile(store.destination(audience)!.native!.profileID)!
+        let quick = command("Transparent background")
+        NSApp.sendAction(quick.action!, to: quick.target, from: quick)
+        precondition(store.profile(original.id) == original)
+        precondition(store.destination(audience)?.native?.profileID != original.id)
+        precondition(store.destination(other)?.native?.profileID == original.id)
+        precondition(live.projector.projection == nil && live.nativeOutputs.isEmpty)
+        let revision = live.projector.revision
+        let manager = settings.settings.outputs
+        _ = manager.view
+        settings.settings.selectedTabViewItemIndex = 0
+        settings.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true); settings.window!.makeKeyAndOrderFront(nil)
+        manager.selectDestination(other)
+        do { try await waitUntil { NSApp.isActive && settings.window!.isKeyWindow && manager.defaultButton.window === settings.window! } }
+        catch {
+            throw ReviewFailure(description: "Make Default fixture did not attach: active=\(NSApp.isActive), key=\(NSApp.keyWindow?.title ?? "none"), pane=\(settings.settings.selectedTabViewItemIndex), attached=\(manager.defaultButton.window === settings.window!), visible=\(!manager.defaultButton.isHiddenOrHasHiddenAncestor)")
+        }
+        settings.window!.contentView?.layoutSubtreeIfNeeded()
+        click(manager.defaultButton, rect: manager.defaultButton.bounds, window: settings.window!)
+        try await waitUntil { store.defaultDestination?.id == other }
+        precondition(store.defaultDestination?.enabled == false)
+        let restored = OutputConfigurationStore(defaults: workspace.defaults, displays: live.projectionDisplays)
+        precondition(restored.defaultDestination?.id == other)
+        settings.close(); window.makeKeyAndOrderFront(nil)
+        try await waitUntil { window.isKeyWindow }
+        let focusGuard = ReviewFocusGuard(window: window)
+        defer { focusGuard.stop() }
+        for (name, width, dark, disabled) in [("default-output-light", 1200.0, false, false),
+                                             ("default-output-disabled", 1200.0, false, true),
+                                             ("default-output-dark", 1200.0, true, false),
+                                             ("default-output-compact", 950.0, false, false),
+                                             ("default-output-long-name", 950.0, false, false),
+                                             ("default-output-update", 950.0, false, false)] {
+            let fieldEditor = workspace.search.field.currentEditor()
+            let showsUpdate = name == "default-output-update"
+            updateDriver.state.availableVersion = showsUpdate ? "4.2.0" : nil
+            var named = store.destination(audience)!
+            named.name = name == "default-output-long-name" || showsUpdate ? "The main audience output with a deliberately long descriptive name" : "Audience"
+            precondition(store.update(named) == nil)
+            store.setDefaultDestination(disabled ? other : audience)
+            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            window.setContentSize(NSSize(width: width, height: 760))
+            workspace.render()
+            if fieldEditor == nil { workspace.focusSearch(nil) }
+            try await waitUntil { workspace.search.field.currentEditor() != nil }
+            try await Task.sleep(nanoseconds: 300_000_000)
+            window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            try focusGuard.check()
+            guard workspace.outputOptions.window === window && !workspace.outputOptions.isHiddenOrHasHiddenAncestor,
+                  workspace.projectionOptions.window === window && !workspace.projectionOptions.isHiddenOrHasHiddenAncestor,
+                  workspace.viewOptions.window === window && !workspace.viewOptions.isHiddenOrHasHiddenAncestor,
+                  workspace.search.field.window === window && workspace.search.field.frame.width > 150 else {
+                throw ReviewFailure(description: "Toolbar controls overflowed in \(name): output=\(workspace.outputOptions.window === window), projection=\(workspace.projectionOptions.window === window), searchWidth=\(workspace.search.field.frame.width)")
+            }
+            if let fieldEditor, workspace.search.field.currentEditor() !== fieldEditor || window.firstResponder !== fieldEditor {
+                throw ReviewFailure(description: "Changing the default output or toolbar width interrupted search editing in \(name)")
+            }
+            if showsUpdate {
+                let button = window.toolbar!.items.first { $0.itemIdentifier == .workspaceUpdate }?.view
+                precondition(button?.window === window && button?.isHiddenOrHasHiddenAncestor == false,
+                             "The update reminder must remain available beside quick controls")
+            }
+            for title in ["Text alignment", "Verse size", "Projection monitor", "Transparent background"] {
+                precondition(command(title).isEnabled != disabled)
+            }
+            precondition(command("Manage Outputs…").isEnabled)
+            if disabled { precondition(command("Default output is disabled.").action != nil) }
+            let frame = window.contentView!.superview!
+            let bitmap = frame.bitmapImageRepForCachingDisplay(in: frame.bounds)!
+            frame.cacheDisplay(in: frame.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent(name + ".png"))
+        }
+        precondition(live.projector.revision == revision && live.source == nil && live.nativeOutputs.isEmpty)
+        let editor = workspace.search.field.currentEditor()
+        updateDriver.state.availableVersion = nil
+        workspace.render()
+        try await waitUntil { !window.toolbar!.items.contains { $0.itemIdentifier == .workspaceUpdate } }
+        try focusGuard.check()
+        precondition(workspace.search.field.currentEditor() === editor && window.firstResponder === editor)
+        reviewLog("PASS default output: native Make Default selection, saved disabled target, isolated quick appearance, greyed menu actions, shared Projection menu, light/dark/compact toolbar and update reminder without interrupting search")
+        if CommandLine.arguments.contains("--inspect-default-output") {
+            store.setDefaultDestination(other); workspace.render()
+            reviewLog("INSPECT default-output toolbar and disabled controls. Close the passage window to finish.")
+            while window.isVisible { try await Task.sleep(nanoseconds: 100_000_000) }
+        }
+    }
+
     @MainActor static func click(_ view: NSView, rect: NSRect, window: NSWindow) {
         let location = view.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
         let time = ProcessInfo.processInfo.systemUptime
@@ -1407,4 +1801,10 @@ private actor ReviewBibleGate: BibleReading {
         if readFailure { throw CocoaError(.fileReadCorruptFile) }
         return (1...3).map { AVerse(reference: VerseReference(book: "John", chapter: 3, verse: $0)!, verse: "Hope and faith") }
     }
+}
+
+private actor ReviewPairings: AltViewPairingStoring {
+    private var values: [String: AltViewPairing] = [:]
+    func read(account: String) -> AltViewPairing? { values[account] }
+    func save(_ pairing: AltViewPairing, account: String) { values[account] = pairing }
 }

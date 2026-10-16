@@ -5,6 +5,7 @@ extension NSToolbarItem.Identifier {
     static let workspaceSearchMode = Self("workspace-search-mode")
     static let workspaceView = Self("workspace-view")
     static let workspaceProjection = Self("workspace-projection")
+    static let workspaceOutput = Self("workspace-output")
     static let workspaceUpdate = Self("workspace-update")
 }
 
@@ -88,6 +89,7 @@ extension MainWorkspaceController: NSToolbarDelegate {
         clearHistoryButton.action = #selector(clearHistory(_:))
         viewOptions.setAccessibilityLabel("View options")
         projectionOptions.setAccessibilityLabel("Projection options")
+        outputOptions.setAccessibilityLabel("Default output controls")
     }
 
     private func makeDetailView() -> NSView {
@@ -179,7 +181,7 @@ extension MainWorkspaceController: NSToolbarDelegate {
         return toolbar
     }
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .flexibleSpace, .workspaceSearch, .workspaceSearchMode, .flexibleSpace, .workspaceView, .workspaceProjection]
+        [.toggleSidebar, .flexibleSpace, .workspaceSearch, .workspaceSearchMode, .flexibleSpace, .workspaceView, .workspaceOutput, .workspaceProjection]
             + (updates?.state.availableVersion == nil ? [] : [.workspaceUpdate])
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -190,7 +192,7 @@ extension MainWorkspaceController: NSToolbarDelegate {
         if identifier == .workspaceSearch {
             let item = NSSearchToolbarItem(itemIdentifier: identifier)
             item.searchField = search.field
-            item.preferredWidthForSearchField = 340
+            item.preferredWidthForSearchField = 240
             item.resignsFirstResponderWithCancel = false
             item.label = "Search"
             item.visibilityPriority = .high
@@ -201,7 +203,10 @@ extension MainWorkspaceController: NSToolbarDelegate {
         switch identifier {
         case .workspaceSearchMode: item.label = "Search mode"; item.view = searchModeControl; item.visibilityPriority = .high
         case .workspaceView: item.label = "View"; item.view = viewOptions
-        case .workspaceProjection: item.label = "Projection"; item.view = projectionOptions
+        case .workspaceProjection: item.label = "Projection"; item.view = projectionOptions; item.visibilityPriority = .high
+        case .workspaceOutput:
+            item.label = outputOptions.accessibilityLabel() ?? "Default output"
+            item.toolTip = outputOptions.toolTip; item.view = outputOptions; item.visibilityPriority = .high
         case .workspaceUpdate:
             item.label = "Update"
             item.visibilityPriority = .high
@@ -268,19 +273,19 @@ extension MainWorkspaceController: NSToolbarDelegate {
         }
     }
     func renderStatus() {
-        altViewStatusBadge.render(liveProjection.altView, showOutputStatus: true)
+        altViewStatusBadge.render(liveProjection.altViewServices.values.map { $0 })
         let live = windowOpened && projector.projectionOwner != nil
-        if !live { preview.performClose(nil) }
+        if !live && !liveProjection.hasNativeWindows { preview.performClose(nil) }
         statusLabel.stringValue = live ? "\(projector.isBlanked ? "Blanked" : "Live") · \(projector.projectorViewData.title)" : "Projection stopped"
         statusLabel.textColor = live && !projector.isBlanked ? .systemGreen : .secondaryLabelColor
         loadingLabel.stringValue = liveProjection.isProjecting ? "Projecting…" : navigation.isLoading ? "Loading…" : ""
         blankButton.title = projector.isBlanked ? "Unblank" : "Blank"
-        previewButton.isEnabled = live
+        previewButton.isEnabled = live || liveProjection.hasNativeWindows
         blankButton.isEnabled = live
-        stopButton.isEnabled = live || liveProjection.isProjecting
-        let displays = liveProjection.projectionDisplays
-        screenLabel.stringValue = "Output: \(displays.selectionLabel)\(displays.selectionProblem == nil ? "" : " · unavailable")"
-        screenLabel.toolTip = displays.selectionProblem
+        stopButton.isEnabled = live || liveProjection.isProjecting || liveProjection.hasNativeWindows
+        screenLabel.stringValue = liveProjection.outputSummary
+        screenLabel.toolTip = liveProjection.message
+
     }
 
     func renderTabHeading(_ sources: BibleSources?) {

@@ -108,8 +108,9 @@ extension NSMenu {
         addItem(item)
         return item
     }
-    @MainActor func submenu(_ title: String, build: (NSMenu) -> Void) {
+    @MainActor func submenu(_ title: String, enabled: Bool = true, build: (NSMenu) -> Void) {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = enabled
         let menu = NSMenu(title: title)
         menu.autoenablesItems = false
         build(menu)

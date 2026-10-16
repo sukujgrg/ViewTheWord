@@ -52,7 +52,7 @@ final class NativeWorkspaceTests: XCTestCase {
             bookmarks: BookmarkStore(fileURL: directory.appendingPathComponent("bookmarks.json")),
             liveProjection: live)
         // Projection intent is tested without opening live output on a display.
-        workspace.liveProjection.projectorWindowFactory = { _ in nil }
+        workspace.liveProjection.nativeWindowFactory = { _, _, _ in nil }
         let controller = MainWindowController(workspace: workspace, savesFrame: false)
         controller.window!.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         controller.window!.orderBack(nil)
@@ -79,11 +79,8 @@ final class NativeWorkspaceTests: XCTestCase {
             let menu = try XCTUnwrap(button.menu)
             XCTAssertEqual(button.title, "Projection")
             XCTAssertEqual(menu.items.filter { !$0.isHidden && !$0.isSeparatorItem }.map(\.title),
-                           ["Projection monitor", "Text alignment", "Reading direction", "Stack translations vertically",
-                            "Show translation names", "Transparent background"])
-            let monitorItem = try XCTUnwrap(menu.items.first { $0.title == "Projection monitor" })
-            let monitors = try XCTUnwrap(monitorItem.submenu)
-            XCTAssertEqual(monitors.items.map(\.title), ["1 · Fixture Monitor"])
+                           ["Project selected passage", "Blank", "Stop", "Manage Outputs…"])
+            XCTAssertTrue(menu.items.allSatisfy { $0.submenu == nil })
             button.selectItem(at: 1)
             button.synchronizeTitleAndSelectedItem()
             XCTAssertEqual(button.title, "Projection", "Choosing a menu command must not change the toolbar title")
@@ -415,11 +412,11 @@ final class NativeWorkspaceTests: XCTestCase {
         let old = VerseReference(book: "John", chapter: 3, verse: 16)!
         let new = VerseReference(book: "John", chapter: 3, verse: 17)!
         subject.projector.project(.empty, owner: .textInputTarget(old))
-        subject.liveProjection.handleProjectorWindowClosed()
+        subject.liveProjection.closeProjector()
         subject.projector.project(.empty, owner: .verseRowSelection(new))
         try await settle(subject)
         XCTAssertEqual(subject.projector.projectionOwner, .verseRowSelection(new))
-        subject.liveProjection.handleProjectorWindowClosed()
+        subject.liveProjection.closeProjector()
         try await settle(subject)
         XCTAssertNil(subject.projector.projectionOwner)
     }

@@ -65,8 +65,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(undo(_:)) { menuItem.title = bookmarkUndo.undoMenuItemTitle; return bookmarkUndo.canUndo }
         if menuItem.action == #selector(redo(_:)) { menuItem.title = bookmarkUndo.redoMenuItemTitle; return bookmarkUndo.canRedo }
-        if menuItem.action == #selector(showPreview(_:)) || menuItem.action == #selector(toggleBlank(_:)) { return workspace.windowOpened }
-        if menuItem.action == #selector(stopProjection(_:)) { return workspace.windowOpened || workspace.liveProjection.isProjecting }
+        if menuItem.action == #selector(showPreview(_:)) { return workspace.windowOpened || workspace.liveProjection.hasNativeWindows }
+        if menuItem.action == #selector(toggleBlank(_:)) { return workspace.windowOpened }
+        if menuItem.action == #selector(stopProjection(_:)) { return workspace.windowOpened || workspace.liveProjection.isProjecting || workspace.liveProjection.hasNativeWindows }
         if menuItem.action == #selector(moveTabLeft(_:)) { return window?.tabGroup?.windows.first !== window }
         if menuItem.action == #selector(moveTabRight(_:)) { return window?.tabGroup?.windows.last !== window }
         return true
@@ -165,15 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = false
-        UserDefaults.standard.register(defaults: [
-            AppDefaultsKey.fontSizeVerse: AppDefaults.verseFontSize,
-            AppDefaultsKey.fontSizeVerseRef: AppDefaults.referenceFontSize,
-            AppDefaultsKey.projectorPadding: AppDefaults.projectorPadding,
-            AppDefaultsKey.verseRowFontSize: 17.0,
-            AppDefaultsKey.projectorShowTranslationInfo: true,
-            AppDefaultsKey.projectorTextAlignment: ProjectorTextAlignmentMode.center.rawValue,
-            AppDefaultsKey.projectorReadingDirection: ProjectorReadingDirectionMode.auto.rawValue
-        ])
+        UserDefaults.standard.register(defaults: [AppDefaultsKey.verseRowFontSize: 17.0])
         buildMenu()
         applyAppearance()
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
@@ -183,7 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showMainWindow()
         NSApplication.shared.activate(ignoringOtherApps: true)
         updates?.start()
-        passages.liveProjection.altView.restoreConnection()
+        passages.liveProjection.restoreOutputConnections()
     }
     private func applyAppearance() {
         let name: NSAppearance.Name = UserDefaults.standard.bool(forKey: AppDefaultsKey.preferDarkMode) ? .darkAqua : .aqua
@@ -205,8 +198,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for url in urls { BibleLibrary.shared.importFile(url, presenter: .main) }
     }
     @objc func showSettings(_ sender: Any?) {
-        if settingsWindow == nil { settingsWindow = SettingsWindowController(altView: passages.liveProjection.altView, projectionDisplays: passages.liveProjection.projectionDisplays) }
+        if settingsWindow == nil { settingsWindow = SettingsWindowController(liveProjection: passages.liveProjection) }
         settingsWindow?.showWindow(sender)
+    }
+    @objc func showManageOutputs(_ sender: Any?) {
+        showSettings(sender); settingsWindow?.settings.selectedTabViewItemIndex = 0
     }
     @objc func showHelp(_ sender: Any?) {
         if helpWindow == nil {

@@ -48,6 +48,8 @@ final class MainWorkspaceController: NSViewController {
     let clearHistoryButton = NSButton(title: "Clear", target: nil, action: nil)
     let viewOptions = NSPopUpButton(frame: .zero, pullsDown: true)
     let projectionOptions = NSPopUpButton(frame: .zero, pullsDown: true)
+    let outputOptions = NSPopUpButton(frame: .zero, pullsDown: true)
+    var defaultOutputMenuInput: DefaultOutputMenuInput?
     let resultsHeader = NSStackView()
     let footer = NSStackView()
     let preview = NSPopover()
@@ -128,7 +130,7 @@ final class MainWorkspaceController: NSViewController {
         buildInterface()
         connectActions()
         previousSources = sources
-        for publisher in [navigation.objectWillChange, liveProjection.objectWillChange, liveProjection.projectionDisplays.objectWillChange, liveProjection.altView.objectWillChange, projector.objectWillChange, history.objectWillChange,
+        for publisher in [navigation.objectWillChange, liveProjection.objectWillChange, liveProjection.projectionDisplays.objectWillChange, liveProjection.outputs.objectWillChange, projector.objectWillChange, history.objectWillChange,
                           bookmarks.objectWillChange, library.objectWillChange] {
             publisher.sink { [weak self] _ in self?.scheduleRender() }.store(in: &subscriptions)
         }
