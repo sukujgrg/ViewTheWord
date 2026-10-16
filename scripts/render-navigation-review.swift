@@ -176,8 +176,13 @@ struct NativeWorkspaceReview {
             return
         }
         if CommandLine.arguments.contains("--settings-only") {
+            try await checkEmptyOutputSettings(output: output, sources: sources)
             try await checkNativeSettings(output: output, sources: sources)
             try await checkSettingsImportLifecycle(output: output)
+            return
+        }
+        if CommandLine.arguments.contains("--empty-outputs-only") {
+            try await checkEmptyOutputSettings(output: output, sources: sources)
             return
         }
         if CommandLine.arguments.contains("--altview-pairing-only") {
@@ -212,6 +217,7 @@ struct NativeWorkspaceReview {
         try await checkSearchModeControls(workspace, window: window, output: output)
         try await checkDelayedSearchFocus(output: output)
         try await checkQueuedLibraryAlerts(output: output)
+        try await checkEmptyOutputSettings(output: output, sources: sources)
         try await checkNativeSettings(output: output, sources: sources)
         try await checkSettingsImportLifecycle(output: output)
         window.makeKeyAndOrderFront(nil)
@@ -1148,6 +1154,91 @@ struct NativeWorkspaceReview {
         precondition(outputs.profileEditor === form && form.nameField.stringValue == audience.name && slider.doubleValue == audience.verse.size)
         precondition(live.outputs.destinations == assignments && live.projector.revision == revision && live.source == nil)
         reviewLog("PASS reused profile form: real field-editor draft commits to its original UUID; rebound slider edits only the selected profile; navigation preserves output")
+    }
+
+    @MainActor static func checkEmptyOutputSettings(output: URL, sources: BibleSources) async throws {
+        let suite = "ViewTheWord.EmptyOutputSettingsReview"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        let library = BibleLibrary(preloadedURLs: [sources.primary, sources.secondary!])
+        let live = LiveProjectionController(library: library, defaults: defaults, projectionDisplays: reviewProjectionDisplays())
+        for destination in live.outputs.destinations { live.outputs.remove(destination.id) }
+        let settings = SettingsWindowController(library: library, liveProjection: live)
+        settings.settings.outputs.discoveryEnabled = false
+        let window = settings.window!
+        positionFixtureWindow(window)
+        defer { settings.close(); live.shutdown(); defaults.removePersistentDomain(forName: suite) }
+        settings.showWindow(nil)
+        try await waitUntil { window.isKeyWindow }
+        let outputs = settings.settings.outputs
+        func checkSize(_ expected: NSSize) throws {
+            let size = window.contentLayoutRect.size
+            guard size.width >= 780, size.height >= 580,
+                  abs(size.width - expected.width) < 1, abs(size.height - expected.height) < 1 else {
+                throw ReviewFailure(description: "Empty Outputs changed Settings size: expected \(expected), got \(size)")
+            }
+        }
+        func capture(_ name: String) throws {
+            let frame = window.contentView!.superview!
+            let bitmap = frame.bitmapImageRepForCachingDisplay(in: frame.bounds)!
+            frame.cacheDisplay(in: frame.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("settings-empty-outputs-\(name).png"))
+        }
+        func checkEmptyAndLibrary(_ size: NSSize, captureName: String? = nil) async throws {
+            // Let AppKit perform its normal display pass. Do not force layout
+            // or resize between tab changes: either would mask this regression.
+            try await Task.sleep(nanoseconds: 100_000_000)
+            try checkSize(size)
+            precondition(outputs.table.numberOfRows == 0 && outputs.addOutputButton.isEnabled &&
+                         !outputs.removeOutputButton.isEnabled && !outputs.defaultButton.isEnabled)
+            if let captureName { try capture(captureName) }
+            settings.settings.selectedTabViewItemIndex = 1
+            try await Task.sleep(nanoseconds: 100_000_000)
+            try checkSize(size)
+            let pane = settings.settings.bibleLibrary
+            guard pane.importButton.window === window, !pane.importButton.visibleRect.isEmpty,
+                  !pane.removeButton.visibleRect.isEmpty, pane.table.numberOfRows == 2,
+                  pane.table.visibleRect.width > 500, pane.table.visibleRect.height > 300,
+                  pane.table.rowView(atRow: 0, makeIfNecessary: false) != nil else {
+                throw ReviewFailure(description: "Bible Library did not lay out its translations immediately after empty Outputs")
+            }
+            if let captureName { try capture("library-" + captureName) }
+            settings.settings.selectedTabViewItemIndex = 0
+            try await Task.sleep(nanoseconds: 100_000_000)
+            try checkSize(size)
+        }
+        try await checkEmptyAndLibrary(NSSize(width: 820, height: 650))
+        for (name, appearance, size) in [("light", NSAppearance.Name.aqua, NSSize(width: 820, height: 650)),
+                                         ("dark-compact", .darkAqua, NSSize(width: 780, height: 580)),
+                                         ("dark-large", .darkAqua, NSSize(width: 920, height: 720))] {
+            window.appearance = NSAppearance(named: appearance)
+            window.setContentSize(size)
+            try await checkEmptyAndLibrary(size, captureName: name)
+        }
+        let size = window.contentLayoutRect.size
+        outputs.selectProfile(NativeOutputProfile.audienceID)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        outputs.section.selectedSegment = 0
+        NSApp.sendAction(outputs.section.action!, to: outputs.section.target, from: outputs.section)
+        try await checkEmptyAndLibrary(size)
+        for title in ["Native Output", "AltView Output"] {
+            let command = outputs.addOutputButton.menu!.items.first { $0.title == title }!
+            NSApp.sendAction(command.action!, to: command.target, from: command)
+            try await Task.sleep(nanoseconds: 100_000_000)
+            precondition(live.outputs.destinations.count == 1 && outputs.removeOutputButton.isEnabled)
+            click(outputs.removeOutputButton, rect: outputs.removeOutputButton.bounds, window: window)
+            try await checkEmptyAndLibrary(size)
+        }
+        settings.close()
+        // Reopening is a later user action, after AppKit finishes closing and
+        // chooses the remaining passage window as key.
+        try await Task.sleep(nanoseconds: 100_000_000)
+        settings.showWindow(nil)
+        try await waitUntil({ window.isKeyWindow }, diagnostic: { "Reopened empty Settings did not become key; active=\(NSApp.isActive), key=\(NSApp.keyWindow?.title ?? "none")" })
+        try await checkEmptyAndLibrary(size)
+        precondition(live.outputs.destinations.isEmpty && live.outputs.configuration.defaultDestinationID == nil &&
+                     live.nativeOutputs.isEmpty && live.projector.projection == nil)
+        reviewLog("PASS empty Outputs: initial/reopened Settings, last native/AltView removal, Profiles round trip, retained normal/compact/large sizes, immediate Bible Library rows and actions, light/dark renders without resizing between tabs")
     }
 
     @MainActor static func checkNativeSettings(output: URL, sources: BibleSources, inspecting: Bool = false, pairingOnly: Bool = false) async throws {

@@ -294,7 +294,20 @@ final class ManageOutputsController: NSViewController, NSTableViewDataSource, NS
             let stack = NSStackView(views: [label, restore]); stack.orientation = .vertical; stack.alignment = .leading
             showDetail(stack); return
         }
-        guard let id = selectedID else { showDetail(nativeLabel("Add an output to get started.")); return }
+        guard let id = selectedID else {
+            // The detail fills Settings. Pinning a label itself to all four
+            // edges also makes its intrinsic height the pane's maximum height.
+            let empty = NSView()
+            let label = nativeLabel("Add an output to get started.")
+            label.translatesAutoresizingMaskIntoConstraints = false
+            empty.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: empty.leadingAnchor),
+                label.topAnchor.constraint(equalTo: empty.topAnchor),
+                label.trailingAnchor.constraint(lessThanOrEqualTo: empty.trailingAnchor)
+            ])
+            showDetail(empty); return
+        }
         if profilesMode {
             let editor = reusableProfileEditor ?? OutputProfileEditor(store: live.outputs, profileID: id)
             reusableProfileEditor = editor
