@@ -51,10 +51,10 @@ final class AltViewTemplateTests: XCTestCase {
         XCTAssertTrue(welcome.isValidReceiverMessage)
         XCTAssertEqual(try JSONDecoder().decode(AltViewWireMessage.self, from: JSONEncoder().encode(welcome)), welcome)
         for fields in [#""templates":{}"#, #""templates":[{"id":"scripture","name":4}]"#, #""templatePolicy":{"mode":"unknown"}"#] {
-            let json = "{\"version\":2,\"kind\":\"feedback\",\"outputReadiness\":\"ready\",\(fields)}"
+            let json = "{\"version\":3,\"kind\":\"feedback\",\"outputReadiness\":\"ready\",\(fields)}"
             XCTAssertThrowsError(try JSONDecoder().decode(AltViewWireMessage.self, from: Data(json.utf8)))
         }
-        let legacy = try JSONDecoder().decode(AltViewWireMessage.self, from: Data(#"{"version":2,"kind":"feedback","outputReadiness":"ready","templates":null,"templatePolicy":null}"#.utf8))
+        let legacy = try JSONDecoder().decode(AltViewWireMessage.self, from: Data(#"{"version":3,"kind":"feedback","outputReadiness":"ready","templates":null,"templatePolicy":null}"#.utf8))
         XCTAssertTrue(legacy.isValidReceiverMessage)
         XCTAssertNil(legacy.templates)
     }

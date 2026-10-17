@@ -429,7 +429,7 @@ final class AltViewProjectionTests: XCTestCase {
         let tab = UUID()
         live.publishRow(prepared, from: tab)
         XCTAssertTrue(client.submissions.isEmpty, "Off means no networking")
-        XCTAssertNil(live.connectAltView(remoteID, to: .init(name: "Test", host: "127.0.0.1", port: 54321), code: "ABCD2345"))
+        XCTAssertNil(live.connectEnabledAltView(remoteID, to: .init(name: "Test", host: "127.0.0.1", port: 54321), code: "ABCD2345"))
         try await eventually { !client.connections.isEmpty }
         client.welcome()
         XCTAssertTrue(client.submissions.isEmpty, "Connect Only never sends already-live content")
@@ -524,16 +524,17 @@ final class AltViewProjectionTests: XCTestCase {
         first.connect(to: destination, code: "ABCD2345")
         try await eventually { firstClient.connections.count == 1 }
         firstClient.callback?(.init(connectionID: firstClient.connections[0].0, connected: true, receiverID: receiverID))
+        let stable = try XCTUnwrap(first.destination)
         for _ in 0..<100 {
-            if try await store.read(account: destination.account) != nil { break }
+            if try await store.read(account: stable.account) != nil { break }
             await Task.yield()
         }
-        let saved = try await store.read(account: destination.account)
+        let saved = try await store.read(account: stable.account)
         XCTAssertEqual(saved?.receiverID, receiverID)
         XCTAssertEqual(saved?.key, Data("ABCD2345".utf8))
         let destinationData = try XCTUnwrap(defaults.data(forKey: AppDefaultsKey.outputConfiguration))
         let savedConfiguration = try JSONDecoder().decode(OutputConfiguration.self, from: destinationData)
-        XCTAssertEqual(savedConfiguration.destinations.first { $0.altView != nil }?.altView?.receiver, destination)
+        XCTAssertEqual(savedConfiguration.destinations.first { $0.altView != nil }?.altView?.receiver, stable)
         XCTAssertFalse(String(decoding: destinationData, as: UTF8.self).contains("ABCD2345"))
         let secondClient = RecordingAltViewSender()
         let second = configuredAltViewService(defaults: defaults, store: store) { callback in secondClient.callback = callback; return secondClient }
@@ -569,7 +570,7 @@ final class AltViewProjectionTests: XCTestCase {
         XCTAssertTrue(service.status.connected)
         XCTAssertTrue(service.pairingNote?.contains("Keychain") == true)
         service.disconnect()
-        service.connect(to: destination, code: "")
+        service.connect(to: try XCTUnwrap(service.destination), code: "")
         try await eventually { client.connections.count == 2 }
         XCTAssertEqual(client.connections.last?.1, receiverID, "A failed save still allows reuse within this session")
     }
@@ -654,6 +655,28 @@ final class AltViewProjectionTests: XCTestCase {
         if let destination = service.destination { service.connect(to: destination, code: "") }
         await Task.yield()
         XCTAssertFalse(service.isEnabled)
+    }
+
+    func testFirstPairingStartsIdentityTrackingAndFollowsRenamedReceiverWithSettingsClosed() async throws {
+        let browser = RecordingAltViewDiscovery(), client = RecordingAltViewSender()
+        let discovery = AltViewDiscoveryService(factory: { browser.callback = $0; return browser })
+        let service = AltViewProjectionService(store: MemoryAltViewPairings(), discovery: discovery) {
+            client.callback = $0; return client
+        }
+        defer { service.disconnect() }
+        service.connect(to: AltViewDestination(name: "Hall", serviceDomain: "local."), code: "ABCD2345")
+        try await eventually { client.connections.count == 1 }
+        XCTAssertEqual(browser.starts, 0)
+        client.welcome()
+        let identity = try XCTUnwrap(service.destination?.receiverIdentity)
+        XCTAssertEqual(browser.starts, 1, "The authenticated identity must start background discovery even after an unpinned first connection")
+        let renamed = AltViewDiscoveredReceiver(name: "Renamed Hall", endpoint: .service(name: "Renamed Hall", type: AltViewProtocol.serviceType, domain: "local.", interface: nil), receiverID: identity)
+        browser.callback?([renamed], nil)
+        try await eventually { client.endpointUpdates.last?.0 == renamed.endpoint }
+        XCTAssertTrue(client.submissions.isEmpty)
+        XCTAssertEqual(service.destination?.receiverIdentity, identity)
+        service.disconnect()
+        XCTAssertEqual(browser.stops, 1)
     }
 
     func testLocalRestoreWaitsForFreshDiscoveryAndCancellationIgnoresLatePortChanges() async throws {

@@ -31,7 +31,7 @@ struct AltViewDestination: Codable, Equatable, Sendable {
         return .service(name: name, type: AltViewProtocol.serviceType, domain: serviceDomain ?? "local.", interface: nil)
     }
     var account: String {
-        if let localReceiverID { return "local:\(localReceiverID)" }
+        if let receiverIdentity { return "receiver:\(receiverIdentity)" }
         if let host { return "host:\(host.lowercased()):\(port)" }
         return "bonjour:\(name):\(serviceDomain ?? "local.")"
     }

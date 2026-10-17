@@ -97,11 +97,11 @@ final class AltViewProjectionService: ObservableObject {
     func startDiscovery() { discovery.request(visibleDiscoveryID, needed: true) }
     func stopDiscovery() { discovery.request(visibleDiscoveryID, needed: false) }
     private func refreshDiscovery() {
-        discovery.request(discoveryID, needed: isEnabled && destination?.localReceiverID != nil)
+        discovery.request(discoveryID, needed: isEnabled && destination?.receiverIdentity != nil)
     }
     func receiveDiscovered(_ receivers: [AltViewDestination], notice: String?) {
-        guard isEnabled, let id = destination?.localReceiverID,
-              let fresh = receivers.first(where: { $0.localReceiverID == id && $0.isValid }) else { return }
+        guard isEnabled, let id = destination?.receiverIdentity,
+              let fresh = receivers.first(where: { $0.receiverIdentity == id && $0.isValid }) else { return }
         destination = fresh
         if startedSender, let connectionID { sender.updateEndpoint(fresh.endpoint, connectionID: connectionID) }
         else { startSenderIfReady() }
@@ -138,7 +138,11 @@ final class AltViewProjectionService: ObservableObject {
                 self.publicationIntent = nil
                 return
             }
-            let receiverID = (parsed == nil ? pairing?.receiverID : nil) ?? destination.receiverIdentity
+            if parsed == nil, let saved = pairing?.receiverID, let expected = destination.receiverIdentity, saved != expected {
+                self.status = AltViewSenderStatus(connectionID: id, message: "Saved receiver identity differs. Enter the receiver’s pairing code again.", failureReason: "Receiver identity changed")
+                self.publicationIntent = nil; return
+            }
+            let receiverID = destination.receiverIdentity ?? (parsed == nil ? pairing?.receiverID : nil)
             if let issue = self.validateReceiver(destination, receiverID) {
                 self.status = AltViewSenderStatus(connectionID: id, message: issue, failureReason: "Receiver already assigned")
                 self.publicationIntent = nil
@@ -151,10 +155,10 @@ final class AltViewProjectionService: ObservableObject {
     }
     private func startSenderIfReady() {
         guard !startedSender, isEnabled, let connectionID, let key = pendingKey, var destination else { return }
-        if let id = destination.localReceiverID {
-            guard let fresh = receivers.first(where: { $0.localReceiverID == id && $0.isValid }) else {
+        if let id = destination.receiverIdentity, destination.localReceiverID != nil || destination.host == nil {
+            guard let fresh = receivers.first(where: { $0.receiverIdentity == id && $0.isValid }) else {
                 status = AltViewSenderStatus(connectionID: connectionID, waitingToRetry: true,
-                                            message: "Waiting to discover AltView on This Mac. Open AltView and enable receiving.")
+                                            message: "Waiting to discover the selected AltView receiver. Open AltView and resume connections.")
                 return
             }
             destination = fresh
@@ -220,11 +224,14 @@ final class AltViewProjectionService: ObservableObject {
         guard status.connected, savedConnectionID != connectionID,
               let receiverID = status.receiverID, let key = pendingKey, let destination else { return }
         savedConnectionID = connectionID
+        var stable = destination; stable.receiverID = receiverID
+        self.destination = stable
+        refreshDiscovery()
         let pairing = AltViewPairing(key: key, receiverID: receiverID)
-        pairings[destination.account] = pairing
-        onConfigurationChanged(.paired(destination, receiverID))
+        pairings[stable.account] = pairing
+        onConfigurationChanged(.paired(stable, receiverID))
         Task { [weak self, store] in
-            do { try await store.save(pairing, account: destination.account) }
+            do { try await store.save(pairing, account: stable.account) }
             catch {
                 guard let self, self.connectionID == connectionID else { return }
                 self.pairingNote = "Connected for this session. Pairing could not be saved in Keychain; enter the code again after restarting."

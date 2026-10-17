@@ -46,7 +46,7 @@ final class AltViewDestinationEditor: NSViewController, NSTextFieldDelegate {
     deinit { renderTask?.cancel() }
     override func loadView() {
         view = NSView()
-        let explanation = NSTextField(wrappingLabelWithString: "AltView receives the committed scripture. Its Audience layout uses Primary verse; Confidence can show both translations. Appearance and rendering are controlled in AltView.")
+        let explanation = NSTextField(wrappingLabelWithString: "Pair the AltView receiver once using its code from Connections. Enable this scripture output separately, then Project to send. Pairing never enables or takes output. AltView owns appearance and display assignments. Update all three apps together for protocol 3.")
         explanation.font = .systemFont(ofSize: 12)
         explanation.textColor = .secondaryLabelColor
         receiverPicker.target = self; receiverPicker.action = #selector(destinationChanged(_:))
@@ -66,7 +66,7 @@ final class AltViewDestinationEditor: NSViewController, NSTextFieldDelegate {
         for button in [connectButton, disconnectButton] { button.target = self; button.bezelStyle = .rounded }
         connectButton.action = #selector(connect(_:)); disconnectButton.action = #selector(disconnect(_:))
         connectButton.keyEquivalent = "\r"
-        let hint = NSTextField(wrappingLabelWithString: "Enabled saved receivers connect automatically at startup and reconnects after a network drop. Project a verse to send it; Blank and Stop follow ViewTheWord. This Mac is the default for a new connection; its current port is discovered automatically. Saved receivers keep their selection. This does not restrict AltView’s LAN listener. Appearance and displays are set in AltView.")
+        let hint = NSTextField(wrappingLabelWithString: "Saved receivers connect automatically at startup and reconnect after a network drop. Project a verse to send it; Blank and Stop follow ViewTheWord. This Mac is the default for a new connection; its current port is discovered automatically. Saved receivers keep their selection. This does not restrict AltView’s LAN listener. Appearance and displays are set in AltView.")
         hint.font = .systemFont(ofSize: 11); hint.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.maximumNumberOfLines = 0
@@ -75,7 +75,7 @@ final class AltViewDestinationEditor: NSViewController, NSTextFieldDelegate {
         let actions = horizontalStack([connectButton, disconnectButton, NSView(), statusBadge])
         let stack = NSStackView(views: [explanation, row("Receiver", receiverPicker),
                                       row("Address", horizontalStack([hostField, portField])),
-                                      row("Pairing code", codeField), actions, validationLabel, row("Layout", templatePicker), templateHint, statusLabel, hint])
+                                      row("Receiver code", codeField), actions, validationLabel, row("Layout", templatePicker), templateHint, statusLabel, hint])
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)

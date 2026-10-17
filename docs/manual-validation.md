@@ -1,5 +1,23 @@
 # Manual validation before a live presentation
 
+## Current receiver pairing — 18 October 2026
+
+Use protocol 3 builds of AltView, eucaly and ViewTheWord together. Pair a receiver
+while scripture output is disabled; it must stay disabled and leave another
+presenter's output intact. Enable scripture separately, then Project. Pairings
+use the stable receiver UUID as their Keychain account, including after a receiver
+rename or fresh endpoint resolution. A different receiver UUID must not inherit
+trust. Missing former service/manual pairing records require an explicit code.
+
+Restart both apps and verify connect-only restoration with Settings closed, then
+network loss/reconnect, Stop, Cancel and takeover. Reset Pairing in AltView must
+stop text and Media, rotate both credentials and reject the old code; repair with
+the new code without losing the receiver's display assignment. ViewTheWord remains
+a scripture sender and neither requests Media credentials nor starts Media.
+Verify signed-app Keychain restoration, Local Network consent and HDMI behavior
+on the two Macs; automated production-source loopback covers protocol behavior.
+Earlier v1/v2 and AltView Confidence entries below are historical.
+
 ## Monitor management and sleep — 10 October 2026
 
 The monitor and activity regressions use synthetic inventories and injected activity callbacks. An isolated native fixture also verified remembered naming and disclosure, selection locking, explicit projection above the already-running eucaly presentation, operator search focus, retained system/display idle-sleep assertions while blanked and transparent, and Stop removing only ViewTheWord’s projector/assertions while eucaly remained underneath. Real cable removal, mirrored-display changes, ambiguous hardware identities, and long service-length sleep behavior still require the manual checks below.

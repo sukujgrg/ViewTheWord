@@ -2,7 +2,7 @@
 import Foundation
 
 enum AltViewProtocol {
-    static let version = 2
+    static let version = 3
     static let confidenceText = "confidenceTextV1"
     static let capabilities = [confidenceText]
     static let serviceType = "_altview._tcp"
