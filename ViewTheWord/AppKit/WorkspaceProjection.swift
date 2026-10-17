@@ -125,8 +125,8 @@ final class LiveProjectionController: ObservableObject {
     /// remote restoration still connects without publishing or taking output.
     func restoreOutputConnections() {
         guard !didRestoreOutputs else { return }; didRestoreOutputs = true
-        for destination in outputs.destinations where destination.enabled {
-            if destination.native != nil { showStandby(destination.id); continue }
+        for destination in outputs.destinations {
+            if destination.native != nil { if destination.enabled { showStandby(destination.id) }; continue }
             guard let receiver = destination.altView?.receiver, outputs.conflict(for: destination) == nil else { continue }
             altViewServices[destination.id]?.connect(to: receiver, code: "")
         }
@@ -158,8 +158,9 @@ final class LiveProjectionController: ObservableObject {
                     altViewServices[destination.id] = service
                     remoteSubscriptions[destination.id] = service.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send(); self?.schedulePreferences() }
                 }
-                if !destination.enabled || outputs.conflict(for: destination) != nil,
-                   let service = altViewServices[destination.id], service.isEnabled { service.disconnect() }
+                if !destination.enabled, let service = altViewServices[destination.id], service.hasPublication { service.stop() }
+                if outputs.conflict(for: destination) != nil,
+                   let service = altViewServices[destination.id], service.isEnabled { service.stop() }
             }
         }
         for output in Array(nativeOutputs.values) {
@@ -180,7 +181,6 @@ final class LiveProjectionController: ObservableObject {
     }
     @discardableResult func connectAltView(_ id: UUID, to receiver: AltViewDestination, code: String) -> String? {
         guard var destination = outputs.destination(id), var assignment = destination.altView else { return "Choose an AltView output." }
-        destination.enabled = true
         if assignment.receiver?.account != receiver.account { assignment.receiverID = receiver.receiverIdentity }
         assignment.receiver = receiver; destination.assignment = .altView(assignment)
         if let issue = outputs.update(destination) { return issue }

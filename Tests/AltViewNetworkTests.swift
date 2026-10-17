@@ -721,6 +721,9 @@ extension AltViewNetworkTests {
         try await eventually { service.status.connected && editor.disconnectButton.title == "Disconnect" }
         XCTAssertEqual(state.receiver.ownerID, originalOwner); XCTAssertEqual(state.receiver.content.body, "Other presentation")
         XCTAssertFalse(live.windowOpened)
+        XCTAssertFalse(live.outputs.destination(remoteID)!.enabled, "Pairing cannot enable scripture output")
+        var enabled = live.outputs.destination(remoteID)!; enabled.enabled = true
+        XCTAssertNil(live.outputs.update(enabled)); live.refreshPreferences()
         let savedReceiver = try XCTUnwrap(live.outputs.destination(remoteID)?.altView?.receiver)
         for _ in 0..<100 { if await pairings.read(account: savedReceiver.account) != nil { break }; await Task.yield() }
         let pairing = await pairings.read(account: savedReceiver.account)

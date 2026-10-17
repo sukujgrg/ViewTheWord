@@ -71,7 +71,7 @@ final class OutputProfilesTests: XCTestCase {
         live.nativeWindowFactory = { _, _, _ in nil }
         let audience = live.outputs.destinations[0].id, native = live.outputs.addNative(), remote = live.outputs.addAltView()
         assign(live.outputs, audience, to: monitor(1), profile: NativeOutputProfile.audienceID)
-        XCTAssertNil(live.connectAltView(remote, to: .init(name: "Receiver", host: "receiver.local", port: 54321), code: "ABCD2345"))
+        XCTAssertNil(live.connectEnabledAltView(remote, to: .init(name: "Receiver", host: "receiver.local", port: 54321), code: "ABCD2345"))
         try await eventually { sender.connectionID != nil }; sender.welcome(); await settle()
         live.publishRow(projection(), from: UUID())
         let configuration = live.outputs.configuration, data = live.projector.projectorViewData, revision = live.projector.revision
@@ -133,7 +133,8 @@ final class OutputProfilesTests: XCTestCase {
     }
     func testAltViewEditorsPauseHiddenUpdatesRetainDraftsAndDiscardChangedDestinations() async throws {
         let sender = OutputSender()
-        let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [] }),
+        let discovery = AltViewDiscoveryService(factory: { _ in OutputDiscovery() })
+        let live = LiveProjectionController(defaults: defaults(), projectionDisplays: ProjectionDisplayManager(displays: { [] }), discovery: discovery,
             altViewServiceFactory: { saved, discovery in
                 AltViewProjectionService(destination: saved.receiver, store: OutputPairings(), discovery: discovery) { sender.callback = $0; return sender }
             })
@@ -141,7 +142,7 @@ final class OutputProfilesTests: XCTestCase {
         let id = live.outputs.addAltView(), other = live.outputs.addAltView(); live.refreshPreferences()
         let manager = ManageOutputsController(live: live); manager.discoveryEnabled = false; _ = manager.view; manager.selectDestination(id)
         let editor = try XCTUnwrap(manager.remoteEditor)
-        XCTAssertNil(live.connectAltView(id, to: .init(name: "Receiver", host: "receiver.local", port: 54321), code: "ABCD2345"))
+        XCTAssertNil(live.connectEnabledAltView(id, to: .init(name: "Receiver", host: "receiver.local", port: 54321), code: "ABCD2345"))
         try await eventually { sender.connectionID != nil }; sender.welcome(); await settle()
         let receiverItem = editor.receiverPicker.item(at: 0), templateItem = editor.templatePicker.item(at: 0)
         func status(_ message: String) { sender.callback?(.init(connectionID: sender.connectionID, connected: true, receiverID: sender.receiverID, message: message)) }
@@ -596,7 +597,7 @@ final class OutputProfilesTests: XCTestCase {
         let audience = live.outputs.destinations[0].id, confidence = live.outputs.addNative(), remote = live.outputs.addAltView()
         assign(live.outputs, audience, to: monitor(1), profile: NativeOutputProfile.audienceID)
         assign(live.outputs, confidence, to: nil, profile: NativeOutputProfile.confidenceID, enabled: false)
-        XCTAssertNil(live.connectAltView(remote, to: .init(name: "Receiver", host: "receiver.local", port: 54321), code: "ABCD2345"))
+        XCTAssertNil(live.connectEnabledAltView(remote, to: .init(name: "Receiver", host: "receiver.local", port: 54321), code: "ABCD2345"))
         try await eventually { sender.connectionID != nil }; sender.welcome(); await settle()
         let manager = ManageOutputsController(live: live); manager.discoveryEnabled = false; _ = manager.view
         manager.selectDestination(confidence)
@@ -780,7 +781,7 @@ final class OutputProfilesTests: XCTestCase {
         let nativeID = live.outputs.destinations[0].id
         assign(live.outputs, nativeID, to: monitor(1), profile: NativeOutputProfile.audienceID, enabled: false)
         let remoteID = live.outputs.addAltView(); live.refreshPreferences()
-        XCTAssertNil(live.connectAltView(remoteID, to: .init(name: "Remote", host: "receiver.local", port: 54321), code: "ABCD2345"))
+        XCTAssertNil(live.connectEnabledAltView(remoteID, to: .init(name: "Remote", host: "receiver.local", port: 54321), code: "ABCD2345"))
         try await eventually { client.connectionID != nil }; client.welcome()
         live.publishRow(projection(), from: UUID())
         assign(live.outputs, nativeID, to: monitor(1), profile: NativeOutputProfile.audienceID)
@@ -817,7 +818,7 @@ final class OutputProfilesTests: XCTestCase {
         let manager = ManageOutputsController(live: live); manager.discoveryEnabled = false; _ = manager.view
         manager.selectDestination(id1)
         let receiver1 = AltViewDestination(name: "One", host: "receiver1.local", port: 54321), receiver2 = AltViewDestination(name: "Two", host: "receiver2.local", port: 54321)
-        XCTAssertNil(live.connectAltView(id1, to: receiver1, code: "ABCD2345")); XCTAssertNil(live.connectAltView(id2, to: receiver2, code: "ABCD2345"))
+        XCTAssertNil(live.connectEnabledAltView(id1, to: receiver1, code: "ABCD2345")); XCTAssertNil(live.connectEnabledAltView(id2, to: receiver2, code: "ABCD2345"))
         try await eventually { first.connectionID != nil && second.connectionID != nil }
         first.welcome(); second.welcome(); await settle()
         XCTAssertTrue(first.submissions.isEmpty && second.submissions.isEmpty, "Connect Only cannot publish")
@@ -852,9 +853,9 @@ final class OutputProfilesTests: XCTestCase {
         XCTAssertEqual(browser.starts, 1)
         live.altViewServices[one]?.stopDiscovery(); XCTAssertEqual(browser.stops, 0)
         live.altViewServices[two]?.stopDiscovery(); XCTAssertEqual(browser.stops, 1)
-        XCTAssertNil(live.connectAltView(one, to: .init(name: "One", host: "receiver.local", port: 54321), code: "ABCD2345"))
+        XCTAssertNil(live.connectEnabledAltView(one, to: .init(name: "One", host: "receiver.local", port: 54321), code: "ABCD2345"))
         try await eventually { first.connectionID != nil }; first.welcome(); await settle()
-        XCTAssertNil(live.connectAltView(two, to: .init(name: "Alias", host: "192.0.2.1", port: 54321), code: "ABCD2345"))
+        XCTAssertNil(live.connectEnabledAltView(two, to: .init(name: "Alias", host: "192.0.2.1", port: 54321), code: "ABCD2345"))
         try await eventually { second.connectionID != nil }
         live.publishRow(projection(), from: UUID()); XCTAssertTrue(second.submissions.isEmpty, "Unknown authenticated identity must be checked before any take")
         second.welcome(); await settle()
@@ -873,7 +874,7 @@ final class OutputProfilesTests: XCTestCase {
         let observation = service.objectWillChange.sink { notifications += 1 }
         for _ in 0..<4 { live.refreshPreferences(); await settle() }
         XCTAssertEqual(notifications, 0, "Disabled destinations must not continuously emit disconnect/status refreshes")
-        XCTAssertNil(live.connectAltView(id, to: .init(name: "Previous", host: "previous.local", port: 54321), code: "ABCD2345"))
+        XCTAssertNil(live.connectEnabledAltView(id, to: .init(name: "Previous", host: "previous.local", port: 54321), code: "ABCD2345"))
         try await eventually { client.connectionID != nil }; client.welcome(); await settle(); service.disconnect()
         let preferred = AltViewDestination(name: "New choice", host: "preferred.local", port: 54321)
         var destination = live.outputs.destination(id)!, assignment = live.outputs.destination(id)!.altView!
@@ -1019,7 +1020,7 @@ final class OutputProfilesTests: XCTestCase {
         assign(live.outputs, audience, to: monitor(1), profile: NativeOutputProfile.audienceID)
         assign(live.outputs, other, to: monitor(2), profile: NativeOutputProfile.audienceID)
         live.outputs.setDefaultDestination(disabled)
-        XCTAssertNil(live.connectAltView(remote, to: .init(name: "Receiver", host: "receiver.local", port: 54321), code: "ABCD2345"))
+        XCTAssertNil(live.connectEnabledAltView(remote, to: .init(name: "Receiver", host: "receiver.local", port: 54321), code: "ABCD2345"))
         try await eventually { sender.connectionID != nil }; sender.welcome(); await settle()
         let workspace = MainWorkspaceController(liveProjection: live); _ = workspace.view
         defer { workspace.shutdown() }
@@ -1087,7 +1088,7 @@ final class OutputProfilesTests: XCTestCase {
         defer { live.shutdown() }
         let one = live.outputs.addAltView(), two = live.outputs.addAltView()
         for (id, host) in [(one, "one.local"), (two, "two.local")] {
-            XCTAssertNil(live.connectAltView(id, to: .init(name: host, host: host, port: 54321), code: "ABCD2345"))
+            XCTAssertNil(live.connectEnabledAltView(id, to: .init(name: host, host: host, port: 54321), code: "ABCD2345"))
         }
         try await eventually { first.connectionID != nil && second.connectionID != nil }
         for sender in [first, second] {
@@ -1114,5 +1115,17 @@ final class OutputProfilesTests: XCTestCase {
         XCTAssertTrue(workspace.outputOptions.menu!.items.contains { $0.title == "Default output is disabled." })
         NSApp.sendAction(lyrics.action!, to: lyrics.target, from: lyrics)
         XCTAssertEqual(live.outputs.destination(one)?.altView?.template, .lyrics)
+    }
+}
+
+@MainActor
+extension LiveProjectionController {
+    /// Fixture preparation: enable is an explicit action, separate from pairing.
+    func connectEnabledAltView(_ id: UUID, to receiver: AltViewDestination, code: String) -> String? {
+        guard var destination = outputs.destination(id) else { return "Missing fixture destination" }
+        destination.enabled = true
+        if let issue = outputs.update(destination) { return issue }
+        refreshPreferences()
+        return connectAltView(id, to: receiver, code: code)
     }
 }
